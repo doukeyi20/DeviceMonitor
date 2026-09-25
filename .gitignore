@@ -1,0 +1,18 @@
+# Visual Studio local state and user-specific settings
+.vs/
+*.user
+*.suo
+*.rsuser
+
+# .NET build outputs
+**/bin/
+**/obj/
+
+# Local databases and environment settings
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+.env
+.env.*
