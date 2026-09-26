@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using DeviceMonitor.Core.Models;
 
 namespace DeviceMonitor.ViewModels
 {
@@ -30,8 +31,19 @@ namespace DeviceMonitor.ViewModels
             }
         }
 
-        public MainViewModel()
+        // 当前登录的用户信息
+        public UserAccount CurrentUser { get; }
+
+        // 用于显示用户信息
+        public string CurrentUserRoleName =>
+    CurrentUser.Role == UserRole.Administrator
+        ? "管理员"
+        : "操作员";
+
+        public MainViewModel(UserAccount currentUser)
         {
+            CurrentUser = currentUser
+    ?? throw new ArgumentNullException(nameof(currentUser));
             var monitoringPage = new MonitoringViewModel();
             var deviceManagementPage = new DeviceManagementViewModel();
             // 创建页面列表

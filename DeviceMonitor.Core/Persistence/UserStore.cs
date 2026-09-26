@@ -6,7 +6,7 @@ using DeviceMonitor.Core.Security;
 namespace DeviceMonitor.Core.Persistence
 {
     /// <summary>
-    /// 用户记录存储，操作数据库
+    /// 用户记录存储，操作数据库，进行登录功能各种验证的功能类
     /// </summary>
     public sealed class UserStore
     {
@@ -24,6 +24,8 @@ namespace DeviceMonitor.Core.Persistence
             }.ToString();
         }
 
+
+        // 检查数据库中是否已有用户记录。= 检查是否有用户
         public bool HasAnyUser()
         {
             using SqliteConnection connection =
@@ -38,7 +40,7 @@ namespace DeviceMonitor.Core.Persistence
         }
 
 
-        // 插入一条用户记录
+        // 添加用户
         public void AddUser(
             string userName,
             UserRole role,
@@ -79,6 +81,44 @@ namespace DeviceMonitor.Core.Persistence
 
             // 真正插入一条用户记录。
             command.ExecuteNonQuery();
+        }
+
+        // 创建管理员时判断并写入数据库
+        public bool TryCreateFirstAdministrator(string userName, string password)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(userName);
+            ArgumentException.ThrowIfNullOrWhiteSpace(password);
+
+            if (password.Length < 6)
+            {
+                throw new ArgumentException(
+                    "密码至少需要 6 个字符。",
+                    nameof(password));
+            }
+
+            var passwordData = PasswordHasher.Hash(password);
+
+            using SqliteConnection connection = new SqliteConnection(_connectionString);
+            connection.Open();
+
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = """
+        INSERT INTO Users
+            (UserName, PasswordSalt, PasswordHash,
+             PasswordIterations, Role, IsEnabled)
+        SELECT
+            $userName, $salt, $hash,
+            $iterations, $role, 1
+        WHERE NOT EXISTS (SELECT 1 FROM Users);
+        """;
+
+            command.Parameters.AddWithValue("$userName", userName.Trim());
+            command.Parameters.AddWithValue("$salt", passwordData.Salt);
+            command.Parameters.AddWithValue("$hash", passwordData.Hash);
+            command.Parameters.AddWithValue("$iterations", passwordData.Iterations);
+            command.Parameters.AddWithValue("$role", (int)UserRole.Administrator);
+
+            return command.ExecuteNonQuery() == 1;
         }
 
         public UserAccount? CheckLogin(string userName, string password)

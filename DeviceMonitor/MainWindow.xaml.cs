@@ -9,16 +9,18 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Navigation;
 using System.Windows.Shapes;
+using DeviceMonitor.Core.Models;
+
 
 namespace DeviceMonitor
 {
 
     public partial class MainWindow : Window
     {
-        public MainWindow()
+        public MainWindow(UserAccount currentUser)
         {
             InitializeComponent();
-            DataContext = new MainViewModel();
+            DataContext = new MainViewModel(currentUser);
         }
     }
 }

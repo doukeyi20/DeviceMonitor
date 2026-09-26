@@ -2,6 +2,7 @@
 using System.Configuration;
 using System.Data;
 using System.Windows;
+using DeviceMonitor.Views;
 
 namespace DeviceMonitor
 {
@@ -10,8 +11,9 @@ namespace DeviceMonitor
     /// </summary>
     public partial class App : Application
     {
+        // 程序运行时，先运行 OnStartup 方法
         protected override void OnStartup(StartupEventArgs e)
-        {
+        { 
             base.OnStartup(e);
 
             try
@@ -20,10 +22,15 @@ namespace DeviceMonitor
                 DatabaseInitializer initializer = new DatabaseInitializer();
                 initializer.Initialize();
 
-                // 数据库准备好之后，再创建并显示主窗口。
-                MainWindow mainWindow = new MainWindow();
-                this.MainWindow = mainWindow;
-                mainWindow.Show();
+                // 数据库准备好后，把数据库路径交给用户存储类。
+                UserStore userStore = new UserStore(initializer.DatabasePath);
+
+                // 先显示登录窗口，而不是直接进入业务主窗口。
+                LoginWindow loginWindow = new LoginWindow(userStore);
+                this.MainWindow = loginWindow;
+                // 进入登录窗口，可以看登录窗口的代码了
+
+                loginWindow.Show();
             }
             catch (Exception ex)
             {

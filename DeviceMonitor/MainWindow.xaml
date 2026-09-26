@@ -39,11 +39,28 @@
                 Background="White"
                 BorderBrush="#E5E7EB"
                 BorderThickness="0,0,0,1">
-            <TextBlock Margin="24,0"
-                       Text="{Binding WindowTitle}"
-                       FontSize="20"
-                       FontWeight="SemiBold"
-                       VerticalAlignment="Center" />
+            <Grid Margin="24,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0"
+               Text="{Binding WindowTitle}"
+               FontSize="20"
+               FontWeight="SemiBold"
+               VerticalAlignment="Center" />
+
+                <StackPanel Grid.Column="1"
+                Orientation="Horizontal"
+                VerticalAlignment="Center">
+                    <TextBlock Text="{Binding CurrentUser.UserName}"
+                   FontWeight="SemiBold" />
+                    <TextBlock Text="  ·  " />
+                    <TextBlock Text="{Binding CurrentUserRoleName}"
+                   Foreground="#6B7280" />
+                </StackPanel>
+            </Grid>
         </Border>
 
         <!-- 左侧导航 -->

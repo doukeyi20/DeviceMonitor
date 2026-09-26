@@ -32,7 +32,7 @@ namespace DeviceMonitor.Core.Persistence
             DatabasePath = Path.Combine(_databaseDirectory, "device-monitor.db");
         }
 
-        // 创建库所在文件夹并连接数据库
+        // 创建库所在文件夹并连接数据库并建User表
         public void Initialize()
         {
             // 文件夹不存在就创建；已存在也可以安全调用。
