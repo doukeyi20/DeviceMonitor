@@ -21,6 +21,11 @@
         <DataTemplate DataType="{x:Type vm:DeviceManagementViewModel}">
             <views:DeviceManagementView />
         </DataTemplate>
+        
+        <DataTemplate DataType="{x:Type vm:UserManagementViewModel}">
+            <views:UserManagementView />
+        </DataTemplate>
+        
     </Window.Resources>
 
     <Grid>
@@ -95,7 +100,7 @@
                 Padding="24"
                 Background="White"
                 CornerRadius="8">
-            <!-- Content绑定当前页面的ViewModel对象，由DataTemplate决定用CurrentPage指定的对象的对应界面展示 -->
+            <!-- Content绑定当前页面的ViewModel对象，由DataTemplate决定用CurrentPage指定的对象的对应界面展示，并且每个界面绑定的数据源就是对应的CurrentPage存的对象 -->
             <ContentControl Content="{Binding CurrentPage}" 
                 HorizontalContentAlignment="Stretch"
                             VerticalContentAlignment="Stretch" />

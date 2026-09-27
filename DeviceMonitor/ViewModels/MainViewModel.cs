@@ -1,11 +1,15 @@
 ﻿using CommunityToolkit.Mvvm.ComponentModel;
+using DeviceMonitor.Core.Models;
+using DeviceMonitor.Core.Persistence;
 using System;
 using System.Collections.Generic;
 using System.Text;
-using DeviceMonitor.Core.Models;
 
 namespace DeviceMonitor.ViewModels
 {
+    /// <summary>
+    /// 主界面的数据对象
+    /// </summary>
     public class MainViewModel:ObservableObject
     {
         public string WindowTitle { get; } = "设备监测与数据追溯系统";
@@ -40,20 +44,33 @@ namespace DeviceMonitor.ViewModels
         ? "管理员"
         : "操作员";
 
-        public MainViewModel(UserAccount currentUser)
+        public MainViewModel(UserAccount currentUser, UserStore userStore)
         {
             CurrentUser = currentUser
-    ?? throw new ArgumentNullException(nameof(currentUser));
-            var monitoringPage = new MonitoringViewModel();
-            var deviceManagementPage = new DeviceManagementViewModel();
-            // 创建页面列表
-            Pages = new PageViewModel[]
-                {
-                    monitoringPage,
-                    deviceManagementPage
-                };
+                ?? throw new ArgumentNullException(nameof(currentUser));
+            ArgumentNullException.ThrowIfNull(userStore);
 
-            // 启动时默认显示实时监控。
+            var monitoringPage = new MonitoringViewModel();
+
+            // 通过用户角色，决定左侧导航栏显示哪些页面。
+            if (CurrentUser.Role == UserRole.Administrator)
+            {
+                Pages = new PageViewModel[]
+                {
+            monitoringPage,
+            new DeviceManagementViewModel(),
+            new UserManagementViewModel(CurrentUser, userStore)
+                };
+            }
+            else
+            {
+                Pages = new PageViewModel[]
+                {
+            monitoringPage
+                };
+            }
+
+            // 两种角色进入系统时，都默认显示实时监控。
             _currentPage = monitoringPage;
         }
 

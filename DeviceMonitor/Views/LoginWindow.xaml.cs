@@ -13,6 +13,10 @@ using System.Windows.Shapes;
 
 namespace DeviceMonitor.Views
 {
+
+    /// <summary>
+    /// 登录界面的交互逻辑
+    /// </summary>
     public partial class LoginWindow : Window
     {
         // 得到数据库操作对象，供后续登录验证和管理员账户创建使用。
@@ -125,12 +129,15 @@ namespace DeviceMonitor.Views
                     return;
                 }
 
-                // 账号验证通过后，带着用户信息打开主界面。
-                DeviceMonitor.MainWindow mainWindow = new DeviceMonitor.MainWindow(account);
+                // 账号验证通过后，带着用户信息和数据库操作对象创建主界面。
+                DeviceMonitor.MainWindow mainWindow = new DeviceMonitor.MainWindow(account, _userStore);
+
                 // 将主窗口设置为应用程序的主窗口，确保关闭登录窗口后应用程序不会退出。
                 Application.Current.MainWindow = mainWindow;
-                // 显示主窗口，进入主窗口就可以看主窗口的代码了
+
+                // 打开主窗口，初始化主窗口的内容，进入主窗口就可以看主窗口的代码了
                 mainWindow.Show();
+
                 Close(); // 关闭登录窗口
             }
             catch (Exception ex)

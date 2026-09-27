@@ -4,7 +4,9 @@ using System.Text;
 
 namespace DeviceMonitor.Core.Models
 {
-    // 用户信息类
+    /// <summary>
+    /// 用户账户对象
+    /// </summary>
     public class UserAccount
     {
         // 数据库中用户的唯一编号。

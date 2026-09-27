@@ -10,6 +10,7 @@ using System.Windows.Media.Imaging;
 using System.Windows.Navigation;
 using System.Windows.Shapes;
 using DeviceMonitor.Core.Models;
+using DeviceMonitor.Core.Persistence;
 
 
 namespace DeviceMonitor
@@ -17,10 +18,10 @@ namespace DeviceMonitor
 
     public partial class MainWindow : Window
     {
-        public MainWindow(UserAccount currentUser)
+        public MainWindow(UserAccount currentUser, UserStore userStore)
         {
             InitializeComponent();
-            DataContext = new MainViewModel(currentUser);
+            DataContext = new MainViewModel(currentUser, userStore);
         }
     }
 }

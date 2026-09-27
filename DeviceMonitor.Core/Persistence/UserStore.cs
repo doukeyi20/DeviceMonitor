@@ -2,6 +2,7 @@
 using Microsoft.Data.Sqlite;
 using System;
 using DeviceMonitor.Core.Security;
+using System.Collections.Generic;
 
 namespace DeviceMonitor.Core.Persistence
 {
@@ -25,7 +26,10 @@ namespace DeviceMonitor.Core.Persistence
         }
 
 
-        // 检查数据库中是否已有用户记录。= 检查是否有用户
+        /// <summary>
+        /// 检查数据库中是否已有用户账户的方法。用于首次启动时判断是否需要创建管理员。
+        /// </summary>
+        /// <returns></returns>
         public bool HasAnyUser()
         {
             using SqliteConnection connection =
@@ -39,51 +43,13 @@ namespace DeviceMonitor.Core.Persistence
             return Convert.ToInt64(command.ExecuteScalar()) == 1;
         }
 
-
-        // 添加用户
-        public void AddUser(
-            string userName,
-            UserRole role,
-            string password)
-        {
-            ArgumentException.ThrowIfNullOrWhiteSpace(userName);
-
-            if (role != UserRole.Operator &&
-                role != UserRole.Administrator)
-            {
-                throw new ArgumentOutOfRangeException(nameof(role));
-            }
-
-            // 密码只用于生成盐和哈希，不把原文写入数据库。
-            var passwordData = PasswordHasher.Hash(password);
-
-            // 打开数据库；方法结束时 using 会关闭连接。
-            using SqliteConnection connection =
-                new SqliteConnection(_connectionString);
-            connection.Open();
-
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = """
-                INSERT INTO Users
-                    (UserName, PasswordSalt, PasswordHash,
-                     PasswordIterations, Role, IsEnabled)
-                VALUES
-                    ($userName, $salt, $hash,
-                     $iterations, $role, 1);
-                """;
-
-            // 给 SQL 中的占位符填值。
-            command.Parameters.AddWithValue("$userName", userName.Trim());
-            command.Parameters.AddWithValue("$salt", passwordData.Salt);
-            command.Parameters.AddWithValue("$hash", passwordData.Hash);
-            command.Parameters.AddWithValue("$iterations", passwordData.Iterations);
-            command.Parameters.AddWithValue("$role", (int)role);
-
-            // 真正插入一条用户记录。
-            command.ExecuteNonQuery();
-        }
-
-        // 创建管理员时判断并写入数据库
+        /// <summary>
+        /// 创建第一个管理员的方法
+        /// </summary>
+        /// <param name="userName"></param>
+        /// <param name="password"></param>
+        /// <returns></returns>
+        /// <exception cref="ArgumentException"></exception>
         public bool TryCreateFirstAdministrator(string userName, string password)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(userName);
@@ -119,8 +85,17 @@ namespace DeviceMonitor.Core.Persistence
             command.Parameters.AddWithValue("$role", (int)UserRole.Administrator);
 
             return command.ExecuteNonQuery() == 1;
+
         }
 
+
+
+        /// <summary>
+        /// 检查用户名和密码是否匹配的方法。匹配成功返回 UserAccount 对象，失败返回 null。
+        /// </summary>
+        /// <param name="userName"></param>
+        /// <param name="password"></param>
+        /// <returns></returns>
         public UserAccount? CheckLogin(string userName, string password)
         {
             if (string.IsNullOrWhiteSpace(userName) ||
@@ -176,6 +151,162 @@ namespace DeviceMonitor.Core.Persistence
 
             // 返回给界面的用户信息中不包含密码或哈希。
             return new UserAccount(id, savedUserName, role, isEnabled);
+        }
+
+
+
+
+        /// <summary>
+        /// 创建操作员账户的方法。只有管理员可以创建操作员，且用户名不能重复。
+        /// </summary>
+        /// <param name="currentUser"></param>
+        /// <param name="userName"></param>
+        /// <param name="password"></param>
+        /// <returns></returns>
+        /// <exception cref="UnauthorizedAccessException"></exception>
+        /// <exception cref="ArgumentException"></exception>
+        public bool TryCreateOperator(
+            UserAccount currentUser,
+            string userName,
+            string password)
+        {
+            ArgumentNullException.ThrowIfNull(currentUser);
+
+            // 真正执行写入的地方也检查角色，不能只靠隐藏菜单。
+            if (currentUser.Role != UserRole.Administrator ||
+                !currentUser.IsEnabled)
+            {
+                throw new UnauthorizedAccessException("只有管理员可以创建操作员。");
+            }
+
+            ArgumentException.ThrowIfNullOrWhiteSpace(userName);
+            ArgumentException.ThrowIfNullOrWhiteSpace(password);
+
+            if (password.Length < 6)
+            {
+                throw new ArgumentException("密码至少需要 6 个字符。");
+            }
+
+            var passwordData = PasswordHasher.Hash(password);
+
+            using SqliteConnection connection =
+                new SqliteConnection(_connectionString);
+            connection.Open();
+
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = """
+        INSERT INTO Users
+            (UserName, PasswordSalt, PasswordHash,
+             PasswordIterations, Role, IsEnabled)
+        VALUES
+            ($userName, $salt, $hash,
+             $iterations, $role, 1)
+        ON CONFLICT(UserName) DO NOTHING;
+        """;
+
+            command.Parameters.AddWithValue("$userName", userName.Trim());
+            command.Parameters.AddWithValue("$salt", passwordData.Salt);
+            command.Parameters.AddWithValue("$hash", passwordData.Hash);
+            command.Parameters.AddWithValue("$iterations", passwordData.Iterations);
+            command.Parameters.AddWithValue("$role", (int)UserRole.Operator);
+
+            // 插入 1 行为成功；用户名重复时不插入，返回 false。
+            return command.ExecuteNonQuery() == 1;
+        }
+
+
+
+
+
+        /// <summary>
+        /// 调用当时的账户列表
+        /// </summary>
+        /// <param name="currentUser"></param>
+        /// <returns></returns>
+        /// <exception cref="UnauthorizedAccessException"></exception>
+        public IReadOnlyList<UserAccount> GetUsers(UserAccount currentUser)
+        {
+            ArgumentNullException.ThrowIfNull(currentUser);
+
+            // 查询用户也属于管理操作，不能只依赖界面隐藏菜单。
+            if (currentUser.Role != UserRole.Administrator ||
+                !currentUser.IsEnabled)
+            {
+                throw new UnauthorizedAccessException("只有管理员可以查看账户。");
+            }
+
+            using SqliteConnection connection =
+                new SqliteConnection(_connectionString);
+            connection.Open();
+
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = """
+        SELECT Id, UserName, Role, IsEnabled
+        FROM Users
+        ORDER BY Role DESC, UserName COLLATE NOCASE;
+        """;
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            var users = new List<UserAccount>();
+
+            // 数据库每读到一行，就还原成一个 UserAccount。
+            while (reader.Read())
+            {
+                users.Add(new UserAccount(
+                    reader.GetInt64(0),
+                    reader.GetString(1),
+                    (UserRole)reader.GetInt32(2),
+                    reader.GetInt64(3) == 1));
+            }
+
+            return users;
+        }
+
+        /// <summary>
+        /// 修改指定操作员的启用状态
+        /// </summary>
+        /// <param name="currentUser"></param>
+        /// <param name="operatorId"></param>
+        /// <param name="enabled"></param>
+        /// <returns></returns>
+        /// <exception cref="UnauthorizedAccessException"></exception>
+        /// <exception cref="ArgumentOutOfRangeException"></exception>
+        public bool TrySetOperatorEnabled(
+    UserAccount currentUser, long operatorId, bool enabled)
+        {
+            ArgumentNullException.ThrowIfNull(currentUser);
+
+            // 修改账户必须由管理员发起。
+            if (currentUser.Role != UserRole.Administrator ||
+                !currentUser.IsEnabled)
+            {
+                throw new UnauthorizedAccessException("只有管理员可以修改操作员状态。");
+            }
+
+            if (operatorId <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(operatorId));
+            }
+
+            using SqliteConnection connection =
+                new SqliteConnection(_connectionString);
+            connection.Open();
+
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = """
+        UPDATE Users
+        SET IsEnabled = $enabled
+        WHERE Id = $operatorId
+          AND Role = $operatorRole
+          AND IsEnabled <> $enabled;
+        """;
+
+            command.Parameters.AddWithValue("$enabled", enabled ? 1 : 0);
+            command.Parameters.AddWithValue("$operatorId", operatorId);
+            command.Parameters.AddWithValue("$operatorRole", (int)UserRole.Operator);
+
+            // 只有确实修改了一个操作员，才返回 true。
+            return command.ExecuteNonQuery() == 1;
         }
     }
 }
