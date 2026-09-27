@@ -33,6 +33,7 @@ namespace DeviceMonitor.Views
         private void CreateOperatorButton_Click(
     object sender, RoutedEventArgs e)
         {
+            // 取得这个页面正在使用的 UserManagementViewModel
             if (DataContext is not UserManagementViewModel viewModel)
             {
                 MessageBox.Show("用户管理页面未准备好。");
@@ -120,6 +121,7 @@ namespace DeviceMonitor.Views
         /// <param name="enabled"></param>
         private void ChangeSelectedOperatorStatus(bool enabled)
         {
+            
             if (DataContext is not UserManagementViewModel viewModel ||
                 UsersGrid.SelectedItem is not UserAccount selected ||
                 selected.Role != UserRole.Operator ||

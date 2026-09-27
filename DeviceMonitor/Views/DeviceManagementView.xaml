@@ -1,11 +1,14 @@
-﻿<UserControl x:Class="DeviceMonitor.Views.DeviceManagementView"
+<UserControl x:Class="DeviceMonitor.Views.DeviceManagementView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-
-    <Grid>
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             FontFamily="Microsoft YaHei UI"
+             Foreground="{StaticResource PrimaryTextBrush}">
+    <StackPanel>
         <TextBlock Text="{Binding Title}"
-                   FontSize="26"
-                   FontWeight="SemiBold"
-                   VerticalAlignment="Top" />
-    </Grid>
+                   FontSize="27"
+                   FontWeight="SemiBold" />
+        <TextBlock Text="设备清单与连接配置将在这里管理"
+                   Margin="0,7,0,0"
+                   Foreground="{StaticResource SecondaryTextBrush}" />
+    </StackPanel>
 </UserControl>
