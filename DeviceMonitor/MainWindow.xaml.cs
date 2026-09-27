@@ -18,10 +18,11 @@ namespace DeviceMonitor
 
     public partial class MainWindow : Window
     {
-        public MainWindow(UserAccount currentUser, UserStore userStore)
+        public MainWindow(UserAccount currentUser, UserStore userStore, DeviceStore deviceStore)
         {
             InitializeComponent();
-            DataContext = new MainViewModel(currentUser, userStore);
+
+            DataContext = new MainViewModel(currentUser, userStore, deviceStore);
         }
     }
 }

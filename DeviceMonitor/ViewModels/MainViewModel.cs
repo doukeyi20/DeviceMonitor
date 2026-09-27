@@ -44,11 +44,16 @@ namespace DeviceMonitor.ViewModels
         ? "管理员"
         : "操作员";
 
-        public MainViewModel(UserAccount currentUser, UserStore userStore)
+        
+
+
+        public MainViewModel(UserAccount currentUser, UserStore userStore, DeviceStore deviceStore)
         {
-            CurrentUser = currentUser
-                ?? throw new ArgumentNullException(nameof(currentUser));
-            ArgumentNullException.ThrowIfNull(userStore);
+            CurrentUser = currentUser ?? throw new ArgumentNullException(nameof(currentUser));
+
+             ArgumentNullException.ThrowIfNull(userStore);
+
+             ArgumentNullException.ThrowIfNull(deviceStore);
 
             var monitoringPage = new MonitoringViewModel();
 
@@ -58,7 +63,7 @@ namespace DeviceMonitor.ViewModels
                 Pages = new PageViewModel[]
                 {
             monitoringPage,
-            new DeviceManagementViewModel(),
+            new DeviceManagementViewModel(CurrentUser, deviceStore),
             new UserManagementViewModel(CurrentUser, userStore)
                 };
             }

@@ -22,10 +22,15 @@ namespace DeviceMonitor.Views
         // 得到数据库操作对象，供后续登录验证和管理员账户创建使用。
         private readonly UserStore _userStore;
 
-        public LoginWindow(UserStore userStore)
+        private readonly DeviceStore _deviceStore;
+
+        public LoginWindow(UserStore userStore, DeviceStore deviceStore)
         {
             InitializeComponent();
+
             _userStore = userStore ?? throw new ArgumentNullException(nameof(userStore));
+
+            _deviceStore = deviceStore ?? throw new ArgumentNullException(nameof(deviceStore));
 
             // 只有一个用户都没有时，才显示首次创建管理员的入口。
             FirstAdminButton.Visibility = _userStore.HasAnyUser()
@@ -106,6 +111,12 @@ namespace DeviceMonitor.Views
             }
         }
 
+
+        /// <summary>
+        /// 登录按钮点击事件处理程序
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
         private void LoginButton_Click(object sender, RoutedEventArgs e)
         {
             string userName = UserNameInput.Text.Trim();
@@ -130,7 +141,7 @@ namespace DeviceMonitor.Views
                 }
 
                 // 账号验证通过后，带着用户信息和数据库操作对象创建主界面。
-                DeviceMonitor.MainWindow mainWindow = new DeviceMonitor.MainWindow(account, _userStore);
+                DeviceMonitor.MainWindow mainWindow = new DeviceMonitor.MainWindow(account, _userStore, _deviceStore);
 
                 // 将主窗口设置为应用程序的主窗口，确保关闭登录窗口后应用程序不会退出。
                 Application.Current.MainWindow = mainWindow;

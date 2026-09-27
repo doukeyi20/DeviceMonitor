@@ -3,12 +3,98 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              FontFamily="Microsoft YaHei UI"
              Foreground="{StaticResource PrimaryTextBrush}">
-    <StackPanel>
-        <TextBlock Text="{Binding Title}"
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   Text="{Binding Title}"
                    FontSize="27"
                    FontWeight="SemiBold" />
-        <TextBlock Text="设备清单与连接配置将在这里管理"
+
+        <TextBlock Grid.Row="1"
+                   Text="已保存的 Modbus TCP 设备配置"
                    Margin="0,7,0,0"
                    Foreground="{StaticResource SecondaryTextBrush}" />
-    </StackPanel>
+
+        <Grid Grid.Row="2" Margin="0,24,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Column="0"
+                Orientation="Horizontal"
+                VerticalAlignment="Center">
+                <TextBlock Text="已保存设备：" />
+                <TextBlock Text="{Binding Devices.Count}" />
+                <TextBlock Text=" 台" />
+            </StackPanel>
+
+            <Button Grid.Column="1"
+            Content="新增设备"
+            Width="120"
+            Height="40"
+            Click="AddDeviceButton_Click"
+            Style="{StaticResource PrimaryActionButtonStyle}" />
+        </Grid>
+
+        <!-- 当前只显示配置，不在表格里直接编辑。 -->
+        <!-- 宽窗口按比例铺开；窄窗口保留最小列宽并出现横向滚动。 -->
+        <DataGrid Grid.Row="3"
+          ItemsSource="{Binding Devices}"
+          AutoGenerateColumns="False"
+          CanUserAddRows="False"
+          CanUserDeleteRows="False"
+          CanUserReorderColumns="False"
+          CanUserResizeColumns="False"
+          IsReadOnly="True"
+          HeadersVisibility="Column"
+          ScrollViewer.HorizontalScrollBarVisibility="Auto"
+          MinHeight="260">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="编号"
+                            Binding="{Binding Id}"
+                            Width="*"
+                            MinWidth="60" />
+                <DataGridTextColumn Header="设备名称"
+                            Binding="{Binding Name}"
+                            Width="2*"
+                            MinWidth="130" />
+                <DataGridTextColumn Header="主机地址"
+                            Binding="{Binding Host}"
+                            Width="2*"
+                            MinWidth="150" />
+                <DataGridTextColumn Header="端口"
+                            Binding="{Binding Port}"
+                            Width="*"
+                            MinWidth="65" />
+                <DataGridTextColumn Header="Unit ID"
+                            Binding="{Binding UnitId}"
+                            Width="*"
+                            MinWidth="75" />
+                <DataGridTextColumn Header="采集间隔(ms)"
+                            Binding="{Binding SamplingIntervalMilliseconds}"
+                            Width="2*"
+                            MinWidth="125" />
+                <DataGridTextColumn Header="连接超时(ms)"
+                            Binding="{Binding ConnectTimeoutMilliseconds}"
+                            Width="2*"
+                            MinWidth="125" />
+                <DataGridTextColumn Header="读取超时(ms)"
+                            Binding="{Binding ReadTimeoutMilliseconds}"
+                            Width="2*"
+                            MinWidth="125" />
+                <DataGridTextColumn Header="写入超时(ms)"
+                            Binding="{Binding WriteTimeoutMilliseconds}"
+                            Width="2*"
+                            MinWidth="125" />
+            </DataGrid.Columns>
+        </DataGrid>
+    </Grid>
 </UserControl>

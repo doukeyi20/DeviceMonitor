@@ -20,13 +20,16 @@ namespace DeviceMonitor
             {
                 // 启动时先确保数据库文件存在。
                 DatabaseInitializer initializer = new DatabaseInitializer();
+                
                 initializer.Initialize();
 
-                // 数据库准备好后，把数据库路径交给用户存储类。
+                // 数据库准备好后，把数据库路径交给数据库操作类。
                 UserStore userStore = new UserStore(initializer.DatabasePath);
 
+                DeviceStore deviceStore = new DeviceStore(initializer.DatabasePath);
+
                 // 先显示登录窗口，而不是直接进入业务主窗口。
-                LoginWindow loginWindow = new LoginWindow(userStore);
+                LoginWindow loginWindow = new LoginWindow(userStore, deviceStore);
                 this.MainWindow = loginWindow;
                 // 进入登录窗口，可以看登录窗口的代码了
 

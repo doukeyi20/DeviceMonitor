@@ -65,7 +65,28 @@ namespace DeviceMonitor.Core.Persistence
     );
     """;
 
-            // 执行建表命令。建表不返回数据，所以用 ExecuteNonQuery。
+            // 执行建User表命令。建表不返回数据，所以用 ExecuteNonQuery。
+            command.ExecuteNonQuery();
+
+            // 准备设备配置Devices表。这里只保存配置，不保存运行时的在线/离线状态。
+            command.CommandText = """
+    CREATE TABLE IF NOT EXISTS Devices (
+        Id INTEGER PRIMARY KEY,
+        Name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        Host TEXT NOT NULL,
+        Port INTEGER NOT NULL CHECK (Port BETWEEN 1 AND 65535),
+        UnitId INTEGER NOT NULL CHECK (UnitId BETWEEN 0 AND 255),
+        SamplingIntervalMilliseconds INTEGER NOT NULL
+            CHECK (SamplingIntervalMilliseconds > 0),
+        ConnectTimeoutMilliseconds INTEGER NOT NULL
+            CHECK (ConnectTimeoutMilliseconds > 0),
+        ReadTimeoutMilliseconds INTEGER NOT NULL
+            CHECK (ReadTimeoutMilliseconds > 0),
+        WriteTimeoutMilliseconds INTEGER NOT NULL
+            CHECK (WriteTimeoutMilliseconds > 0)
+    );
+    """;
+
             command.ExecuteNonQuery();
 
         }
