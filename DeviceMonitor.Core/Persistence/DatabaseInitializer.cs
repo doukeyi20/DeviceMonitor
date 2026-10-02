@@ -9,6 +9,11 @@ namespace DeviceMonitor.Core.Persistence
     // 用于初始化数据库
     public class DatabaseInitializer
     {
+        // 当前程序支持的最新数据库结构版本。
+        // 版本 1：Users 表和设备基本配置。
+        // 版本 2：Devices 表增加 IsEnabled，保存是否允许采集。
+        private const int CurrentDatabaseVersion = 2;
+
         // 保存数据库所在的文件夹路径。
         private readonly string _databaseDirectory;
 
@@ -32,7 +37,10 @@ namespace DeviceMonitor.Core.Persistence
             DatabasePath = Path.Combine(_databaseDirectory, "device-monitor.db");
         }
 
-        // 创建库所在文件夹并连接数据库并建User表
+        /// <summary>
+        /// 准备数据库，并根据结构版本执行初始化。
+        /// 保留已有数据，并将 Users、Devices 两张表升级到当前结构版本。
+        /// </summary>
         public void Initialize()
         {
             // 文件夹不存在就创建；已存在也可以安全调用。
@@ -52,6 +60,28 @@ namespace DeviceMonitor.Core.Persistence
             // 创建与当前连接关联的 SQL 命令。 = 得到能执行命令的命令对象
             using SqliteCommand command = connection.CreateCommand();
 
+            // 建表与版本登记作为一组修改；全部成功后才正式保存。
+            using SqliteTransaction transaction = connection.BeginTransaction();
+            command.Transaction = transaction;
+
+            // 读取数据库文件中保存的结构版本；未登记过版本时为 0。
+            command.CommandText = "PRAGMA user_version;";
+            int databaseVersion = Convert.ToInt32(command.ExecuteScalar());
+
+            // 旧程序不能处理比自己更新的数据库结构。
+            if (databaseVersion > CurrentDatabaseVersion)
+            {
+                throw new InvalidOperationException(
+                    $"数据库结构版本为 {databaseVersion}，" +
+                    $"当前程序只支持到版本 {CurrentDatabaseVersion}。");
+            }
+
+            // 已经准备过当前版本，结束方法；using 仍会释放各项资源。
+            if (databaseVersion == CurrentDatabaseVersion)
+            {
+                return;
+            }
+
             // 三个引号包住的是一段多行字符串，里面写的是 SQLite 建表语句。
             command.CommandText = """
     CREATE TABLE IF NOT EXISTS Users (
@@ -68,7 +98,8 @@ namespace DeviceMonitor.Core.Persistence
             // 执行建User表命令。建表不返回数据，所以用 ExecuteNonQuery。
             command.ExecuteNonQuery();
 
-            // 准备设备配置Devices表。这里只保存配置，不保存运行时的在线/离线状态。
+            // 先准备版本 1 的设备表，再按版本补齐新列。
+            // 新数据库和旧数据库使用同一条升级路线，避免重复添加 IsEnabled。
             command.CommandText = """
     CREATE TABLE IF NOT EXISTS Devices (
         Id INTEGER PRIMARY KEY,
@@ -88,6 +119,26 @@ namespace DeviceMonitor.Core.Persistence
     """;
 
             command.ExecuteNonQuery();
+
+            if (databaseVersion < 2)
+            {
+                // 在原来的表上添加一列，不会新建另一张设备表，也不会删除旧记录。
+                // 旧设备一律先停用，避免升级后未经确认就自动采集。
+                // IsEnabled 是保存的启停配置，不是运行时的在线/离线状态。
+                command.CommandText = """
+                    ALTER TABLE Devices
+                    ADD COLUMN IsEnabled INTEGER NOT NULL DEFAULT 0
+                        CHECK (IsEnabled IN (0, 1));
+                    """;
+                command.ExecuteNonQuery();
+
+                // 只有添加新列成功，才登记版本 2。
+                command.CommandText = "PRAGMA user_version = 2;";
+                command.ExecuteNonQuery();
+            }
+
+            // 表结构与版本号一起保存；中途出错时事务会回滚。
+            transaction.Commit();
 
         }
 

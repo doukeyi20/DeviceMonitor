@@ -63,6 +63,7 @@ namespace DeviceMonitor.ViewModels
                 Pages = new PageViewModel[]
                 {
             monitoringPage,
+            new AcquisitionViewModel(CurrentUser, deviceStore),
             new DeviceManagementViewModel(CurrentUser, deviceStore),
             new UserManagementViewModel(CurrentUser, userStore)
                 };

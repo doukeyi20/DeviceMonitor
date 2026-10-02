@@ -28,6 +28,11 @@
         <DataTemplate DataType="{x:Type vm:UserManagementViewModel}">
             <views:UserManagementView />
         </DataTemplate>
+
+        <!-- 采集管理的数据对象，使用 AcquisitionView 展示。 -->
+        <DataTemplate DataType="{x:Type vm:AcquisitionViewModel}">
+            <views:AcquisitionView />
+        </DataTemplate>
         
     </Window.Resources>
 

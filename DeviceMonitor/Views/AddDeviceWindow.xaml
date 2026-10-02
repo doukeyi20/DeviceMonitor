@@ -19,10 +19,12 @@
         </Grid.RowDefinitions>
 
         <StackPanel Grid.Row="0">
-            <TextBlock Text="新增 Modbus TCP 设备"
+            <TextBlock x:Name="FormTitle"
+                       Text="新增 Modbus TCP 设备"
                        FontSize="24"
                        FontWeight="SemiBold" />
-            <TextBlock Text="按设备实际参数填写；所有字段都需要输入。"
+            <TextBlock x:Name="FormDescription"
+                       Text="按设备实际参数填写；所有字段都需要输入。"
                        Margin="0,6,0,0"
                        Foreground="{StaticResource SecondaryTextBrush}" />
         </StackPanel>

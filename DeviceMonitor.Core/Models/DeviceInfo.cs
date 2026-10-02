@@ -19,6 +19,9 @@ namespace DeviceMonitor.Core.Models
         public int ReadTimeoutMilliseconds { get; }
         public int WriteTimeoutMilliseconds { get; }
 
+        // 是否允许采集；true 不代表设备已经连接成功或当前在线。
+        public bool IsEnabled { get; }
+
         public DeviceInfo(
             long id,
             string name,
@@ -28,7 +31,8 @@ namespace DeviceMonitor.Core.Models
             int samplingIntervalMilliseconds,
             int connectTimeoutMilliseconds,
             int readTimeoutMilliseconds,
-            int writeTimeoutMilliseconds)
+            int writeTimeoutMilliseconds,
+            bool isEnabled)
         {
             Id = id;
             Name = name;
@@ -39,6 +43,7 @@ namespace DeviceMonitor.Core.Models
             ConnectTimeoutMilliseconds = connectTimeoutMilliseconds;
             ReadTimeoutMilliseconds = readTimeoutMilliseconds;
             WriteTimeoutMilliseconds = writeTimeoutMilliseconds;
+            IsEnabled = isEnabled;
         }
 
     }

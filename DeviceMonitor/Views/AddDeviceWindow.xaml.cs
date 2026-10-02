@@ -11,9 +11,6 @@ using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using DeviceMonitor.Core.Models;
 using DeviceMonitor.ViewModels;
-using System;
-using System.Windows;
-using System.Windows.Controls;
 
 namespace DeviceMonitor.Views
 {
@@ -23,15 +20,39 @@ namespace DeviceMonitor.Views
     public partial class AddDeviceWindow : Window
     {
         private readonly DeviceManagementViewModel _viewModel;
+        private readonly long? _editingDeviceId;
 
-        public AddDeviceWindow(DeviceManagementViewModel viewModel)
+        // deviceToEdit 为空表示新增；有值表示编辑，并把旧配置填进表单。
+        public AddDeviceWindow(
+            DeviceManagementViewModel viewModel,
+            DeviceInfo? deviceToEdit = null)
         {
             InitializeComponent();
 
             _viewModel = viewModel
-    ?? throw new ArgumentNullException(nameof(viewModel));
+                ?? throw new ArgumentNullException(nameof(viewModel));
 
+            if (deviceToEdit is not null)
+            {
+                _editingDeviceId = deviceToEdit.Id;
+                Title = "编辑设备";
+                FormTitle.Text = "编辑 Modbus TCP 设备";
+                FormDescription.Text = "修改配置后保存；设备编号保持不变。";
+                SaveDeviceButton.Content = "保存修改";
 
+                DeviceNameInput.Text = deviceToEdit.Name;
+                HostInput.Text = deviceToEdit.Host;
+                PortInput.Text = deviceToEdit.Port.ToString();
+                UnitIdInput.Text = deviceToEdit.UnitId.ToString();
+                SamplingIntervalInput.Text =
+                    deviceToEdit.SamplingIntervalMilliseconds.ToString();
+                ConnectTimeoutInput.Text =
+                    deviceToEdit.ConnectTimeoutMilliseconds.ToString();
+                ReadTimeoutInput.Text =
+                    deviceToEdit.ReadTimeoutMilliseconds.ToString();
+                WriteTimeoutInput.Text =
+                    deviceToEdit.WriteTimeoutMilliseconds.ToString();
+            }
         }
 
         private void SaveDeviceButton_Click(object sender, RoutedEventArgs e)
@@ -96,12 +117,24 @@ namespace DeviceMonitor.Views
 
             try
             {
-                bool added = _viewModel.TryAddDevice(input);
-
-                if (!added)
+                // 同一份表单负责收集、校验配置；只有保存动作按模式分流。
+                bool saved;
+                if (_editingDeviceId is null)
                 {
-                    // 名称重复时不关闭窗口，用户可以直接修改名称。
-                    ShowInputError("设备名称已存在，请换一个名称。", DeviceNameInput);
+                    saved = _viewModel.TryAddDevice(input);
+                }
+                else
+                {
+                    saved = _viewModel.TryUpdateDevice(_editingDeviceId.Value, input);
+                }
+
+                if (!saved)
+                {
+                    // 编辑时还可能是设备被别处删除；保留窗口让用户查看输入。
+                    string message = _editingDeviceId is null
+                        ? "设备名称已存在，请换一个名称。"
+                        : "修改未保存：名称可能已被占用，或该设备已不存在。";
+                    ShowInputError(message, DeviceNameInput);
                     return;
                 }
 
