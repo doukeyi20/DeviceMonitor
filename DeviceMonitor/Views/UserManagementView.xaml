@@ -1,39 +1,56 @@
+<!--
+    阅读入口：DataContext 是已有 UserManagementViewModel；Users/SelectedUser 是账户列表和当前选择。
+    创建/启停/重置密码走命令；读密码框、弹确认/提示/密码窗口走事件回到后台。
+    Loaded 订阅这些后台方法，Unloaded 解除订阅；密码框不长期绑定到 ViewModel。
+-->
 <UserControl x:Class="DeviceMonitor.Views.UserManagementView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:models="clr-namespace:DeviceMonitor.Core.Models;assembly=DeviceMonitor.Core"
+             Loaded="UserManagementView_Loaded"
+             Unloaded="UserManagementView_Unloaded"
+             DataContextChanged="UserManagementView_DataContextChanged"
              FontFamily="Microsoft YaHei UI"
              Foreground="{StaticResource PrimaryTextBrush}">
 
-    <ScrollViewer VerticalScrollBarVisibility="Auto"
+    <ScrollViewer x:Name="PageScrollViewer" VerticalScrollBarVisibility="Auto"
                   HorizontalScrollBarVisibility="Disabled">
-        <StackPanel Margin="0,0,4,8">
-            <TextBlock Text="{Binding Title}"
-                       FontSize="27"
-                       FontWeight="SemiBold" />
-            <TextBlock Text="创建账户并管理操作员的启用状态"
-                       Margin="0,7,0,0"
-                       Foreground="{StaticResource SecondaryTextBrush}" />
+        <Grid Height="{Binding ViewportHeight, ElementName=PageScrollViewer}">
+            <Grid.Style>
+                <Style TargetType="Grid">
+                    <Setter Property="MinHeight" Value="330" />
+                    <Style.Triggers>
+                        <!-- 创建表单展开时保留足够高度；小窗口可滚动，不压扁账户表。 -->
+                        <DataTrigger Binding="{Binding IsExpanded, ElementName=CreateOperatorExpander}" Value="True">
+                            <Setter Property="MinHeight" Value="470" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Grid.Style>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
 
-            <!-- 只调整表单布局；控件名称和后台事件保持原样。 -->
-            <Border Margin="0,24,0,0"
-                    Padding="22"
-                    Background="{StaticResource SoftSurfaceBrush}"
-                    BorderBrush="{StaticResource BorderBrushNeutral}"
-                    BorderThickness="1"
-                    CornerRadius="10">
-                <StackPanel>
-                    <TextBlock Text="创建操作员"
-                               FontSize="18"
-                               FontWeight="SemiBold" />
-                    <TextBlock Text="填写用户名和初始密码"
-                               Margin="0,4,0,0"
-                               FontSize="13"
-                               Foreground="{StaticResource SecondaryTextBrush}" />
+            <TextBlock Text="{Binding Title}" Style="{StaticResource PageTitleStyle}" />
+            <TextBlock Grid.Row="1" Text="创建操作员并管理账户的启用状态"
+                       Margin="0,5,0,0" TextWrapping="Wrap"
+                       Style="{StaticResource SubtleTextStyle}" />
 
-                    <Grid Margin="0,20,0,18">
+            <!-- 平时先看账户表；需要新增时再展开输入，不让大表单挤走启停按钮。 -->
+            <Border Grid.Row="2" Margin="0,14,0,12" Style="{StaticResource ToolbarCardStyle}">
+                <Expander x:Name="CreateOperatorExpander" IsExpanded="False"
+                          Header="创建操作员（需要时展开）" FontSize="14" FontWeight="SemiBold">
+                    <Grid Margin="0,12,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="16" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="12" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
                         <Grid.RowDefinitions>
@@ -41,86 +58,118 @@
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
-                        <StackPanel Grid.Row="0"
-                                    Grid.ColumnSpan="3"
-                                    Margin="0,0,0,16">
+                        <StackPanel Grid.Column="0">
                             <TextBlock Text="用户名" FontWeight="SemiBold" />
                             <TextBox x:Name="NewUserNameInput"
-                                     Height="40"
-                                     Margin="0,7,0,0" />
+                                     Text="{Binding NewUserName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                     Height="36" Margin="0,5,0,0" FontWeight="Normal" />
                         </StackPanel>
-
-                        <StackPanel Grid.Row="1" Grid.Column="0">
+                        <StackPanel Grid.Column="2">
                             <TextBlock Text="初始密码" FontWeight="SemiBold" />
-                            <PasswordBox x:Name="NewPasswordInput"
-                                         Height="40"
-                                         Margin="0,7,0,0" />
+                            <!-- 密码框名字不变，创建命令仍通过后台读取这里的密码。 -->
+                            <PasswordBox x:Name="NewPasswordInput" Height="36" Margin="0,5,0,0" FontWeight="Normal" />
                         </StackPanel>
-
-                        <StackPanel Grid.Row="1" Grid.Column="2">
+                        <StackPanel Grid.Column="4">
                             <TextBlock Text="确认密码" FontWeight="SemiBold" />
-                            <PasswordBox x:Name="ConfirmPasswordInput"
-                                         Height="40"
-                                         Margin="0,7,0,0" />
+                            <PasswordBox x:Name="ConfirmPasswordInput" Height="36" Margin="0,5,0,0" FontWeight="Normal" />
                         </StackPanel>
+                        <Grid Grid.Row="1" Grid.ColumnSpan="5" Margin="0,10,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="密码至少 6 个字符，两次输入需一致。"
+                                       TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,12,0"
+                                       FontSize="12" Foreground="{StaticResource SecondaryTextBrush}" />
+                            <Button x:Name="CreateOperatorButton" Grid.Column="1"
+                                    Content="创建操作员" Height="36"
+                                    Style="{StaticResource PrimaryActionButtonStyle}"
+                                    Command="{Binding CreateOperatorCommand}" />
+                        </Grid>
                     </Grid>
-
-                    <Button x:Name="CreateOperatorButton"
-                            Content="创建操作员"
-                            Width="160"
-                            Height="40"
-                            HorizontalAlignment="Right"
-                            Style="{StaticResource PrimaryActionButtonStyle}"
-                            Click="CreateOperatorButton_Click" />
-                </StackPanel>
+                </Expander>
             </Border>
 
-            <TextBlock Text="已有账户"
-                       Margin="0,28,0,12"
-                       FontSize="18"
-                       FontWeight="SemiBold" />
+            <!-- 先选中一行，再在表格上方启停；无需滚到所有账户下面找按钮。 -->
+            <Border Grid.Row="3" Grid.RowSpan="3" Style="{StaticResource SectionCardStyle}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <WrapPanel Margin="0,0,0,6">
+                        <TextBlock Text="已有账户" Style="{StaticResource SectionHeadingStyle}"
+                                   VerticalAlignment="Center" Margin="0,0,18,6" />
+                        <WrapPanel Margin="0,0,0,6">
+                            <Button Content="刷新账户" Height="34" Margin="0,0,8,0"
+                                    Command="{Binding RefreshUsersCommand}"
+                                    ToolTip="重新读取账户列表；不清空正在填写的新账户。"
+                                    Style="{StaticResource SecondaryActionButtonStyle}" />
+                            <Button x:Name="EnableOperatorButton"
+                                    Content="启用选中操作员" Height="34"
+                                    Style="{StaticResource SecondaryActionButtonStyle}"
+                                    Command="{Binding EnableOperatorCommand}" />
+                            <Button x:Name="DisableOperatorButton"
+                                    Content="停用选中操作员" Height="34" Margin="8,0,0,0"
+                                    Style="{StaticResource DangerActionButtonStyle}"
+                                    Command="{Binding DisableOperatorCommand}" />
+                            <Button x:Name="ResetOperatorPasswordButton" Content="重置密码" Height="34" Margin="8,0,0,0"
+                                    Command="{Binding ResetOperatorPasswordCommand}"
+                                    ToolTip="仅重置选中操作员的密码，不改变启停状态。"
+                                    Style="{StaticResource SecondaryActionButtonStyle}" />
+                        </WrapPanel>
+                    </WrapPanel>
+                    <StackPanel Grid.Row="1" Margin="0,0,0,10">
+                        <TextBlock Text="先选择操作员；管理员不能在这里启停。"
+                                   TextWrapping="Wrap" Style="{StaticResource SubtleTextStyle}" />
+                        <TextBlock Text="{Binding PageMessage}" Margin="0,4,0,0"
+                                   TextWrapping="Wrap" Style="{StaticResource SubtleTextStyle}" />
+                    </StackPanel>
 
-            <DataGrid x:Name="UsersGrid"
-                      ItemsSource="{Binding Users}"
-                      AutoGenerateColumns="False"
-                      CanUserAddRows="False"
-                      IsReadOnly="True"
-                      SelectionChanged="UsersGrid_SelectionChanged"
-                      Height="300">
-                <DataGrid.Columns>
-                    <DataGridTextColumn Header="用户名"
-                                        Binding="{Binding UserName}"
-                                        Width="*" />
-                    <DataGridTextColumn Header="角色"
-                                        Binding="{Binding Role}"
-                                        Width="120" />
-                    <DataGridCheckBoxColumn Header="已启用"
-                                            Binding="{Binding IsEnabled, Mode=OneWay}"
-                                            Width="100" />
-                </DataGrid.Columns>
-            </DataGrid>
-
-            <!-- 先选中操作员，再执行明确的启用或停用操作。 -->
-            <StackPanel Orientation="Horizontal"
-                        HorizontalAlignment="Right"
-                        Margin="0,14,0,0">
-                <Button x:Name="EnableOperatorButton"
-                        Content="启用选中操作员"
-                        Width="170"
-                        Height="40"
-                        IsEnabled="False"
-                        Style="{StaticResource SecondaryActionButtonStyle}"
-                        Click="EnableOperatorButton_Click" />
-
-                <Button x:Name="DisableOperatorButton"
-                        Content="停用选中操作员"
-                        Width="170"
-                        Height="40"
-                        Margin="12,0,0,0"
-                        IsEnabled="False"
-                        Style="{StaticResource SecondaryActionButtonStyle}"
-                        Click="DisableOperatorButton_Click" />
-            </StackPanel>
-        </StackPanel>
+                    <DataGrid x:Name="UsersGrid" Grid.Row="2" MinHeight="100"
+                              ItemsSource="{Binding Users}" AutoGenerateColumns="False"
+                              CanUserAddRows="False" CanUserDeleteRows="False" CanUserReorderColumns="False"
+                              IsReadOnly="True" SelectedItem="{Binding SelectedUser, Mode=TwoWay}"
+                              SelectionMode="Single" SelectionUnit="FullRow"
+                              ScrollViewer.VerticalScrollBarVisibility="Auto"
+                              ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="用户名" Binding="{Binding UserName}" Width="*" MinWidth="140">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Margin" Value="8,0" />
+                                        <Setter Property="VerticalAlignment" Value="Center" />
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <!-- 只翻译显示文字，账户的 Role 枚举和权限判断不变。 -->
+                            <DataGridTemplateColumn Header="角色" Width="120">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Margin="8,0" VerticalAlignment="Center">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Text" Value="{Binding Role}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding Role}" Value="{x:Static models:UserRole.Administrator}">
+                                                            <Setter Property="Text" Value="管理员" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding Role}" Value="{x:Static models:UserRole.Operator}">
+                                                            <Setter Property="Text" Value="操作员" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridCheckBoxColumn Header="已启用" Binding="{Binding IsEnabled, Mode=OneWay}" Width="100" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </Border>
+        </Grid>
     </ScrollViewer>
 </UserControl>

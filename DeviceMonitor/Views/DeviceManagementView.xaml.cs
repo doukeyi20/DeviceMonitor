@@ -1,247 +1,147 @@
-﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Text;
+using System;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Documents;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
 using DeviceMonitor.Core.Models;
 using DeviceMonitor.ViewModels;
 
 namespace DeviceMonitor.Views
 {
+
     /// <summary>
-    /// DeviceManagementView.xaml 的交互逻辑
+    /// 设备管理页的后台：加载时把开表单、确认和提示方法订阅到已有 ViewModel。
+    /// DataContext 来自主窗口的 DataTemplate，不在本文件另建第二个设备管理 ViewModel。
     /// </summary>
     public partial class DeviceManagementView : UserControl
     {
+        private DeviceManagementViewModel? _subscribedViewModel;
+
+        /// <summary>
+        /// WPF 根据 DataTemplate 创建设备管理页面时调用这里，只加载 XAML。
+        /// DataContext 会指向 MainViewModel.Pages 中已有的 DeviceManagementViewModel，不在这里重复创建。
+        /// </summary>
         public DeviceManagementView()
         {
             InitializeComponent();
         }
 
         /// <summary>
-        /// 页面显示时，关注测试状态；切换页面再回来也能显示正确的按钮状态。
+        /// 页面显示时 WPF 调用：从 DataContext 取已有对象，再登记开表单/提示/确认方法；这里不刷新数据库。
         /// </summary>
         private void DeviceManagementView_Loaded(object sender, RoutedEventArgs e)
         {
-            if (DataContext is DeviceManagementViewModel viewModel)
-            {
-                // 先移除再添加，避免页面重复加载时重复订阅。
-                viewModel.PropertyChanged -= ViewModel_PropertyChanged;
-                viewModel.PropertyChanged += ViewModel_PropertyChanged;
-            }
-
-            UpdateConnectionTestButtonState();
-        }
-
-        private void DeviceManagementView_Unloaded(object sender, RoutedEventArgs e)
-        {
-            if (DataContext is DeviceManagementViewModel viewModel)
-            {
-                // 离开页面时取消订阅，避免 ViewModel 一直持有旧界面。
-                viewModel.PropertyChanged -= ViewModel_PropertyChanged;
-            }
-        }
-
-        private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
-        {
-            if (e.PropertyName == nameof(DeviceManagementViewModel.IsTestingConnection))
-            {
-                UpdateConnectionTestButtonState();
-            }
+            SubscribeViewModel();
         }
 
         /// <summary>
-        /// 没选设备或正在测试时禁用按钮；设备停用不影响手动测试连接。
+        /// 页面的数据源更换时，由 XAML 的 DataContextChanged 事件调用。
+        /// 如果页面已经加载，就重新 SubscribeViewModel，改为响应新的 ViewModel。
         /// </summary>
-        private void UpdateConnectionTestButtonState()
+        private void DeviceManagementView_DataContextChanged(
+            object sender, DependencyPropertyChangedEventArgs e)
         {
-            bool isTesting = DataContext is DeviceManagementViewModel viewModel &&
-                viewModel.IsTestingConnection;
-
-            TestConnectionButton.IsEnabled =
-                DevicesGrid.SelectedItem is DeviceInfo && !isTesting;
-            TestConnectionButton.Content = isTesting ? "测试中…" : "测试连接";
+            if (IsLoaded)
+                SubscribeViewModel();
         }
 
-        private void AddDeviceButton_Click(object sender, RoutedEventArgs e)
+        /// <summary>
+        /// Loaded 或换数据源时调用。先解除旧订阅，再把本页面的方法登记到新的 ViewModel 上。
+        /// 登记用 +=；并不是登记这一刻就弹窗口。
+        /// </summary>
+        private void SubscribeViewModel()
         {
-            if (DataContext is not DeviceManagementViewModel viewModel)
+            // 先解除旧的订阅，避免重复订阅。
+            UnsubscribeViewModel();
+
+            if (DataContext is DeviceManagementViewModel viewModel)
             {
-                MessageBox.Show("设备管理页面尚未准备好。");
-                return;
+                _subscribedViewModel = viewModel;  // 传对象
+                viewModel.DeviceEditorRequested += OpenDeviceEditor;  // 把弹出窗口的方法订阅
+                viewModel.MessageRequested += ShowMessage;  // 把显示消息的方法订阅
+                viewModel.ConfirmationRequested += ConfirmAction; // 停用、删除都先问一次。
             }
+        }
 
-            // 弹窗是独立窗口，不会自动继承当前页面的 DataContext，
-            // 因此明确把同一个 ViewModel 对象传进去。
-            AddDeviceWindow dialog = new AddDeviceWindow(viewModel);
 
+
+        /// <summary>
+        /// 已由 SubscribeViewModel 订阅到 DeviceEditorRequested；ViewModel 的 AddDevice 新增设备命令或 EditDevice 编辑设备命令触发事件时调用这里。
+        /// null 表示新增，具体 DeviceInfo 表示编辑；创建 AddDeviceWindow，传入已有设备管理 ViewModel，再 ShowDialog 显示表单。
+        /// </summary>
+        private void OpenDeviceEditor(DeviceInfo? device)
+        {
+            if (_subscribedViewModel is null)
+                return;
+
+            try
+            {
+                // 把同一份设备管理 ViewModel 交给表单，让它保存后能刷新管理列表。
+                // 表单会另建 DeviceEditorViewModel 作为自己的数据源；null 是新增，有设备对象就是编辑。
+                // 创建编辑窗口
+                AddDeviceWindow dialog = new AddDeviceWindow(_subscribedViewModel, device);
+
+                // 设置窗口的 Owner 为当前页面所在的 Window，这样 ShowDialog 才会阻塞当前窗口。
+                Window? owner = Window.GetWindow(this);
+
+                if (owner is not null)
+                    dialog.Owner = owner;
+
+                // 显示窗口，阻塞当前线程直到窗口关闭；
+                dialog.ShowDialog();
+            }
+            catch (Exception ex)
+            {
+                ShowMessage($"打开设备表单失败：{ex.Message}", "打开失败");
+            }
+        }
+
+        // 验证弹窗：由 ViewModel 的 ConfirmationRequested 事件触发时调用，显示 MessageBox，用户点击 Yes/No 后把结果写回 request.Confirmed。
+        private void ConfirmAction(DeviceConfirmationRequest request)
+        {
             Window? owner = Window.GetWindow(this);
-            if (owner != null)
-            {
-                dialog.Owner = owner;
-            }
-
-            dialog.ShowDialog();
+            MessageBoxResult result = owner is not null
+                ? MessageBox.Show(owner, request.Message, request.Title,
+                    MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
+                : MessageBox.Show(request.Message, request.Title,
+                    MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+            request.Confirmed = result == MessageBoxResult.Yes;
         }
 
 
         /// <summary>
-        /// 设备的选择，选择后才能允许启用操作或编辑设备。
+        /// 平时由 ViewModel 的 MessageRequested 事件调用；OpenDeviceEditor 打开失败时也直接调用。
+        /// 找到承载页面的窗口，再显示 MessageBox；不进行数据库操作。
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        private void DevicesGrid_SelectionChanged(
-            object sender, SelectionChangedEventArgs e)
+        private void ShowMessage(string message, string title)
         {
-            DeviceInfo? selectedDevice =
-                DevicesGrid.SelectedItem as DeviceInfo;
-
-            EditDeviceButton.IsEnabled = selectedDevice != null;
-
-            // 选中了未启用的设备，才能点击启用。
-            EnableDeviceButton.IsEnabled =
-                selectedDevice != null && !selectedDevice.IsEnabled;
-
-            // 选中了已启用的设备，才能点击停用。
-            DisableDeviceButton.IsEnabled =
-                selectedDevice != null && selectedDevice.IsEnabled;
-
-            UpdateConnectionTestButtonState();
-        }
-
-        /// <summary>
-        /// 点击测试：取得设备配置，等待 ViewModel 完成一次 TCP 连接测试。
-        /// </summary>
-        private async void TestConnectionButton_Click(object sender, RoutedEventArgs e)
-        {
-            if (DataContext is not DeviceManagementViewModel viewModel ||
-                DevicesGrid.SelectedItem is not DeviceInfo selectedDevice)
-            {
-                MessageBox.Show("请先选择一台设备。", "测试连接");
-                return;
-            }
-
-            try
-            {
-                // async void 仅用于界面事件；被调用的方法返回 Task，才能等待完成。
-                // 等待网络时不会阻塞界面，网络通信本身不写在 View 后台。
-                await viewModel.TestConnectionAsync(selectedDevice);
-            }
-            catch (Exception ex)
-            {
-                // 正常的连接失败由 ViewModel 显示；这里防止意外异常直接关闭程序。
-                MessageBox.Show($"测试连接时发生错误：{ex.Message}", "测试连接");
-            }
-            finally
-            {
-                UpdateConnectionTestButtonState();
-            }
-        }
-
-        /// <summary>
-        /// 点击启用：取得选中设备，交给 ViewModel 保存。
-        /// </summary>
-        private void EnableDeviceButton_Click(
-            object sender, RoutedEventArgs e)
-        {
-            if (DataContext is not DeviceManagementViewModel viewModel ||
-                DevicesGrid.SelectedItem is not DeviceInfo selectedDevice)
-            {
-                MessageBox.Show("请先选择一台设备。", "启用设备");
-                return;
-            }
-
-            try
-            {
-                // 只传设备编号和目标状态，不需要再传数据库路径。
-                bool changed = viewModel.TrySetDeviceEnabled(
-                    selectedDevice.Id, true);
-
-                if (!changed)
-                {
-                    MessageBox.Show(
-                        "设备不存在，或已经处于启用状态。列表已刷新。",
-                        "启用设备");
-                }
-            }
-            catch (Exception ex)
-            {
-                // 捕获异常并提示，避免按钮操作出错时程序直接退出。
-                MessageBox.Show(
-                    $"启用设备时发生错误：{ex.Message}",
-                    "操作失败");
-            }
-        }
-
-        /// <summary>
-        /// 点击停用：把选中设备的启用状态保存为 false。
-        /// </summary>
-        private void DisableDeviceButton_Click(
-            object sender, RoutedEventArgs e)
-        {
-            if (DataContext is not DeviceManagementViewModel viewModel ||
-                DevicesGrid.SelectedItem is not DeviceInfo selectedDevice)
-            {
-                MessageBox.Show("请先选择一台设备。", "停用设备");
-                return;
-            }
-
-            try
-            {
-                // 与启用使用同一个方法，区别只是这里传 false。
-                bool changed = viewModel.TrySetDeviceEnabled(
-                    selectedDevice.Id, false);
-
-                if (!changed)
-                {
-                    MessageBox.Show(
-                        "设备不存在，或已经处于停用状态。列表已刷新。",
-                        "停用设备");
-                }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(
-                    $"停用设备时发生错误：{ex.Message}",
-                    "操作失败");
-            }
-        }
-
-
-        /// <summary>
-        /// 编辑选中设备。
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-
-        private void EditDeviceButton_Click(object sender, RoutedEventArgs e)
-        {
-            if (DataContext is not DeviceManagementViewModel viewModel ||
-                DevicesGrid.SelectedItem is not DeviceInfo selectedDevice)
-            {
-                MessageBox.Show("请先选择一台设备。", "编辑设备");
-                return;
-            }
-
-            // 把选中的旧配置交给同一个表单；表单保存时再调用 ViewModel。
-            AddDeviceWindow dialog = new AddDeviceWindow(viewModel, selectedDevice);
             Window? owner = Window.GetWindow(this);
             if (owner is not null)
-            {
-                dialog.Owner = owner;
-            }
-
-            dialog.ShowDialog();
+                MessageBox.Show(owner, message, title);
+            else
+                MessageBox.Show(message, title);
         }
 
+        /// <summary>
+        /// 切换走、页面从显示区域移除时，由 XAML 的 Unloaded 事件调用。
+        /// 只调用 UnsubscribeViewModel 解除后台方法的登记，不销毁 MainViewModel.Pages 中的页面数据对象。
+        /// </summary>
+        private void DeviceManagementView_Unloaded(object sender, RoutedEventArgs e)
+        {
+            UnsubscribeViewModel();
+        }
 
+        /// <summary>
+        /// 离开页面或准备换订阅对象时调用，用 -= 解除原来的登记；页面数据源仍留在 MainViewModel.Pages 中。
+        /// </summary>
+        private void UnsubscribeViewModel()
+        {
+            if (_subscribedViewModel is not null)
+            {
+                // 离开页面时解除引用，防止 ViewModel 一直持有旧页面。
+                _subscribedViewModel.DeviceEditorRequested -= OpenDeviceEditor;
+                _subscribedViewModel.MessageRequested -= ShowMessage;
+                _subscribedViewModel.ConfirmationRequested -= ConfirmAction;
+                _subscribedViewModel = null;
+            }
+        }
     }
 }

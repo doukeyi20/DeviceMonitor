@@ -1,11 +1,13 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Text;
 
 namespace DeviceMonitor.Core.Models
 {
+
     /// <summary>
-    /// 用户账户对象
+    /// 登录成功或账户列表查询得到的用户基本信息：Id、用户名、角色和启停状态。
+    /// 不携带密码/盐/哈希；这是当时查到的状态，不会自动感知其他程序实例改了账户。
     /// </summary>
     public class UserAccount
     {

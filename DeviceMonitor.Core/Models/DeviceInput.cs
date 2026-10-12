@@ -1,12 +1,13 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Text;
 
 namespace DeviceMonitor.Core.Models
 {
+
     /// <summary>
-    /// 新增设备时填写的配置类。
-    /// 只负责携带数据，不负责连接设备或操作数据库。
+    /// 设备表单检查后的输入包，DeviceEditorViewModel 组装后交给保存方法。
+    /// 新增和编辑共用；没有数据库 Id，编辑目标编号单独传，不负责连接或保存。
     /// </summary>
     public class DeviceInput
     {
@@ -31,7 +32,7 @@ namespace DeviceMonitor.Core.Models
         // 读取操作的超时时间，单位：毫秒。
         public int ReadTimeoutMilliseconds { get; set; }
 
-        // 写入操作的超时时间，单位：毫秒。
+        // 发送读取请求的超时时间，单位：毫秒；不是在这里向设备寄存器写值。
         public int WriteTimeoutMilliseconds { get; set; }
 
     }

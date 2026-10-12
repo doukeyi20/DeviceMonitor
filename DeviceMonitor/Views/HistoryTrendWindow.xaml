@@ -1,0 +1,78 @@
+<!--
+    阅读入口：HistoryViewModel 为选中历史记录创建 HistoryTrendViewModel，后台交给本窗口作数据源。
+    Loaded 查询同一设备、同一点位的历史；HistoryTrendChart 只把 Records 画出来，不查询数据库。
+-->
+<Window x:Class="DeviceMonitor.Views.HistoryTrendWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:DeviceMonitor.Controls"
+        Title="点位历史趋势" Width="980" Height="660" MinWidth="720" MinHeight="480"
+        WindowStartupLocation="CenterOwner" Loaded="HistoryTrendWindow_Loaded"
+        FontFamily="Microsoft YaHei UI" FontSize="14"
+        Foreground="{StaticResource PrimaryTextBrush}" Background="{StaticResource PageBackgroundBrush}">
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Grid>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <StackPanel Margin="0,0,12,0">
+                <TextBlock Text="点位历史趋势" Style="{StaticResource PageTitleStyle}" />
+                <TextBlock Text="{Binding SeriesTitle}" Margin="0,5,0,0" Style="{StaticResource SectionHeadingStyle}"
+                           TextTrimming="CharacterEllipsis" ToolTip="{Binding SeriesTitle}" />
+                <TextBlock Text="{Binding IdentityText}" Margin="0,4,0,0" FontSize="12" TextWrapping="Wrap"
+                           Foreground="{StaticResource SecondaryTextBrush}" />
+            </StackPanel>
+            <!-- 关闭只是窗口操作，留在界面后台；它不操作数据库或启动采集。 -->
+            <Button Grid.Column="1" Content="关闭" Click="CloseButton_Click" Width="74" Height="36"
+                    VerticalAlignment="Top" Style="{StaticResource SecondaryActionButtonStyle}" />
+        </Grid>
+
+        <!-- 明确写“图中”：超过 1000 条时，这三个统计不能代表整个查询范围。 -->
+        <UniformGrid Grid.Row="1" Columns="3" Margin="0,14,0,12">
+            <Border Padding="12,8" Margin="0,0,8,0" Style="{StaticResource SectionCardStyle}">
+                <StackPanel><TextBlock Text="图中最低值" FontSize="12" Foreground="{StaticResource SecondaryTextBrush}" />
+                    <TextBlock Text="{Binding MinimumValueText}" FontSize="21" FontWeight="SemiBold" Margin="0,3,0,0" /></StackPanel>
+            </Border>
+            <Border Padding="12,8" Margin="0,0,8,0" Style="{StaticResource SectionCardStyle}">
+                <StackPanel><TextBlock Text="图中最高值" FontSize="12" Foreground="{StaticResource SecondaryTextBrush}" />
+                    <TextBlock Text="{Binding MaximumValueText}" FontSize="21" FontWeight="SemiBold" Margin="0,3,0,0" /></StackPanel>
+            </Border>
+            <Border Padding="12,8" Style="{StaticResource SectionCardStyle}">
+                <StackPanel><TextBlock Text="图中平均值" FontSize="12" Foreground="{StaticResource SecondaryTextBrush}" />
+                    <TextBlock Text="{Binding AverageValueText}" FontSize="21" FontWeight="SemiBold" Margin="0,3,0,0" /></StackPanel>
+            </Border>
+        </UniformGrid>
+
+        <Border Grid.Row="2" Padding="10" Style="{StaticResource SectionCardStyle}">
+            <Grid>
+                <!-- 图表只拿 Records 画线，不认识 Store，也不会连接设备。 -->
+                <controls:HistoryTrendChart x:Name="TrendChart" Records="{Binding Records}" />
+                <TextBlock Text="正在查询历史…" HorizontalAlignment="Center" VerticalAlignment="Center"
+                           Background="{StaticResource SurfaceBrush}" Padding="12" IsHitTestVisible="False">
+                    <TextBlock.Style><Style TargetType="TextBlock">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers><DataTrigger Binding="{Binding IsLoading}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                        </DataTrigger></Style.Triggers>
+                    </Style></TextBlock.Style>
+                </TextBlock>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="3" Margin="0,10,0,0" Padding="10,8"
+                Style="{StaticResource ToolbarCardStyle}">
+            <StackPanel>
+            <TextBlock Text="{Binding RangeText}" FontSize="11" TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}" />
+            <TextBlock Text="{Binding PageMessage}" Margin="0,4,0,0" FontSize="12" TextWrapping="Wrap"
+                       MaxHeight="38" ToolTip="{Binding PageMessage}" />
+            <TextBlock Margin="0,4,0,0" FontSize="11" TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}"
+                       Text="横轴为本机时间，纵轴为读取值。连线仅连接成功保存的读数，不代表空白时段持续正常；读取失败不会画成 0。" />
+            </StackPanel>
+        </Border>
+    </Grid>
+</Window>

@@ -1,157 +1,146 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Documents;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
-using DeviceMonitor.Core.Models;
 using DeviceMonitor.ViewModels;
 
 namespace DeviceMonitor.Views
 {
+
     /// <summary>
-    /// UserManagementView.xaml 的交互逻辑
+    /// 用户管理页的后台：从 DataContext 接住已有 UserManagementViewModel，订阅读/清密码、确认和开密码表单。
+    /// 用户名走绑定；PasswordBox 只按请求读取；账户验证和数据库修改都在 ViewModel/Store。
     /// </summary>
     public partial class UserManagementView : UserControl
     {
+        private UserManagementViewModel? _subscribedViewModel;
+
+        /// <summary>
+        /// WPF 根据 DataTemplate 创建用户管理页面时调用这里，只加载 XAML。
+        /// 界面继续使用 Pages 中已有的 UserManagementViewModel 作为 DataContext，不在这里重新创建。
+        /// </summary>
         public UserManagementView()
         {
             InitializeComponent();
         }
 
         /// <summary>
-        /// 创建操作员按钮，调用链路：UserManagementViewModel.TryCreateOperator -> UserStore.TryCreateOperator
+        /// 页面显示出来时，由 XAML 的 Loaded 事件调用。
+        /// 调用 SubscribeViewModel，把读密码、清密码和弹框方法登记到已有 ViewModel 上。
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        private void CreateOperatorButton_Click(
-    object sender, RoutedEventArgs e)
+        private void UserManagementView_Loaded(object sender, RoutedEventArgs e)
         {
-            // 取得这个页面正在使用的 UserManagementViewModel
-            if (DataContext is not UserManagementViewModel viewModel)
-            {
-                MessageBox.Show("用户管理页面未准备好。");
-                return;
-            }
-
-            string userName = NewUserNameInput.Text.Trim();
-            string password = NewPasswordInput.Password;
-
-            if (string.IsNullOrWhiteSpace(userName))
-            {
-                MessageBox.Show("请输入用户名。");
-                return;
-            }
-
-            if (password.Length < 6)
-            {
-                MessageBox.Show("密码至少需要 6 个字符。");
-                return;
-            }
-
-            if (password != ConfirmPasswordInput.Password)
-            {
-                MessageBox.Show("两次输入的密码不一致。");
-                return;
-            }
-
-            try
-            {
-                bool created = viewModel.TryCreateOperator(userName, password);
-
-                if (!created)
-                {
-                    MessageBox.Show("用户名已存在。");
-                    return;
-                }
-
-                NewUserNameInput.Clear();
-                NewPasswordInput.Clear();
-                ConfirmPasswordInput.Clear();
-                MessageBox.Show("操作员创建成功。");
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"创建操作员失败：{ex.Message}");
-            }
-        }
-
-
-
-        /// <summary>
-        /// 管理启用按钮的状态
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        private void UsersGrid_SelectionChanged(
-            object sender, SelectionChangedEventArgs e)
-        {
-            // 只管理界面按钮状态；真正的权限和目标角色由 UserStore 再检查。
-            if (EnableOperatorButton is null || DisableOperatorButton is null)
-            {
-                return;
-            }
-
-            UserAccount? selected = UsersGrid.SelectedItem as UserAccount;
-            EnableOperatorButton.IsEnabled =
-                selected is { Role: UserRole.Operator, IsEnabled: false };
-            DisableOperatorButton.IsEnabled =
-                selected is { Role: UserRole.Operator, IsEnabled: true };
-        }
-
-        private void EnableOperatorButton_Click(object sender, RoutedEventArgs e)
-        {
-            ChangeSelectedOperatorStatus(true);
-        }
-
-        private void DisableOperatorButton_Click(object sender, RoutedEventArgs e)
-        {
-            ChangeSelectedOperatorStatus(false);
+            SubscribeViewModel();
         }
 
         /// <summary>
-        /// 修改选中操作员的启用状态
+        /// 页面数据源更换时，由 XAML 的 DataContextChanged 事件调用。
+        /// 先清掉旧密码；如果页面已加载，再重新订阅新 ViewModel 的请求事件。
         /// </summary>
-        /// <param name="enabled"></param>
-        private void ChangeSelectedOperatorStatus(bool enabled)
+        private void UserManagementView_DataContextChanged(
+            object sender, DependencyPropertyChangedEventArgs e)
         {
-            
-            if (DataContext is not UserManagementViewModel viewModel ||
-                UsersGrid.SelectedItem is not UserAccount selected ||
-                selected.Role != UserRole.Operator ||
-                selected.IsEnabled == enabled)
-            {
-                return;
-            }
+            ClearPasswords();
+            if (IsLoaded)
+                SubscribeViewModel();
+        }
 
-            string action = enabled ? "启用" : "停用";
-            MessageBoxResult answer = MessageBox.Show(
-                $"确定{action}操作员“{selected.UserName}”吗？",
-                "确认账户操作",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Question);
-
-            if (answer != MessageBoxResult.Yes)
+        /// <summary>
+        /// Loaded 或换数据源时调用。先解除旧订阅，再把读密码、提示、确认、清空和开重置窗口的方法登记上。
+        /// </summary>
+        private void SubscribeViewModel()
+        {
+            UnsubscribeViewModel();
+            if (DataContext is UserManagementViewModel viewModel)
             {
-                return;
+                _subscribedViewModel = viewModel;
+                viewModel.PasswordsRequested += ReadPasswords;
+                viewModel.ConfirmationRequested += ConfirmAction;
+                viewModel.MessageRequested += ShowMessage;
+                viewModel.FormResetRequested += ClearPasswords;
+                viewModel.PasswordEditorRequested += OpenPasswordEditor;
             }
+        }
 
-            try
+        /// <summary>
+        /// 已订阅到 PasswordsRequested；UserManagementViewModel.CreateOperator 需要输入的密码时触发事件。
+        /// 读两个 PasswordBox，填回临时 request；长度、两次是否一致等检查仍交给 ViewModel。
+        /// </summary>
+        private void ReadPasswords(UserPasswordsRequest request)
+        {
+            // 只提供控件当前值，校验和数据库操作都由 ViewModel 负责。
+            request.Password = NewPasswordInput.Password;
+            request.Confirmation = ConfirmPasswordInput.Password;
+        }
+
+        /// <summary>
+        /// 由 FormResetRequested 事件在创建成功后调用；页面换数据源或离开时也直接调用。
+        /// 只清空两个密码框；控件还没创建时用空值保护，不改数据库。
+        /// </summary>
+        private void ClearPasswords()
+        {
+            // 初始化期间 DataContextChanged 可能早于子控件创建，所以使用空值保护。
+            NewPasswordInput?.Clear();
+            ConfirmPasswordInput?.Clear();
+        }
+
+        /// <summary>
+        /// 已订阅到 ConfirmationRequested；ViewModel.ChangeSelectedOperatorStatus 修改账户状态前触发事件。
+        /// 显示确认框，把是否点了“是”写回 request.Confirmed；ViewModel 收到确认才会修改数据库。
+        /// </summary>
+        private void ConfirmAction(UserConfirmationRequest request)
+        {
+            Window? owner = Window.GetWindow(this);
+            // 回车默认选“否”，避免只是想关提示，却误改了账户状态。
+            MessageBoxResult answer = owner is not null
+                ? MessageBox.Show(owner, request.Message, request.Title,
+                    MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No)
+                : MessageBox.Show(request.Message, request.Title,
+                    MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+            request.Confirmed = answer == MessageBoxResult.Yes;
+        }
+
+        /// <summary>
+        /// 已订阅到 ViewModel.MessageRequested；创建账户、启停账户成功或失败时通过事件调用这里。
+        /// 以页面所在的主窗口为所属窗口显示提示，不在这里执行业务操作。
+        /// </summary>
+        private void ShowMessage(string message, string title)
+        {
+            Window? owner = Window.GetWindow(this);
+            if (owner is not null)
+                MessageBox.Show(owner, message, title);
+            else
+                MessageBox.Show(message, title);
+        }
+
+        // 重置命令触发事件后到这里。沿用传进来的数据源，窗口只管显示和读密码框。
+        private void OpenPasswordEditor(PasswordEditViewModel viewModel)
+        {
+            var dialog = new PasswordWindow(viewModel) { Owner = Window.GetWindow(this) };
+            dialog.ShowDialog();
+        }
+
+        /// <summary>
+        /// 切换到别的页面、用户管理页面从显示区域移除时，由 XAML 的 Unloaded 事件调用。
+        /// 解除后台方法订阅，并清空密码输入；Users 列表仍保留在已有 ViewModel 中。
+        /// </summary>
+        private void UserManagementView_Unloaded(object sender, RoutedEventArgs e)
+        {
+            UnsubscribeViewModel();
+            ClearPasswords(); // 离开页面时不保留密码控件中的输入。
+        }
+
+        /// <summary>
+        /// 离开页面或换数据源前调用，解除本页全部请求订阅；不删除用户，不改变用户启停状态。
+        /// </summary>
+        private void UnsubscribeViewModel()
+        {
+            if (_subscribedViewModel is not null)
             {
-                bool changed = viewModel.TrySetOperatorEnabled(selected.Id, enabled);
-                MessageBox.Show(changed
-                    ? $"操作员“{selected.UserName}”已{action}。"
-                    : "账户不存在或状态已变化，列表已刷新。");
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"{action}操作员失败：{ex.Message}");
+                _subscribedViewModel.PasswordsRequested -= ReadPasswords;
+                _subscribedViewModel.ConfirmationRequested -= ConfirmAction;
+                _subscribedViewModel.MessageRequested -= ShowMessage;
+                _subscribedViewModel.FormResetRequested -= ClearPasswords;
+                _subscribedViewModel.PasswordEditorRequested -= OpenPasswordEditor;
+                _subscribedViewModel = null;
             }
         }
     }

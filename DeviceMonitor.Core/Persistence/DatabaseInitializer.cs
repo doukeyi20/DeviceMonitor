@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Text;
 using System.IO;
@@ -6,20 +6,33 @@ using Microsoft.Data.Sqlite;
 
 namespace DeviceMonitor.Core.Persistence
 {
-    // 用于初始化数据库
+
+    /// <summary>
+    /// 启动时准备同一份 SQLite 文件：新库建表，旧库按版本补结构，保留已有配置和历史。
+    /// 构造函数只确定路径；Initialize 才打开数据库。先理解这两件事，第一遍不用逐句研究版本升级 SQL。
+    /// </summary>
     public class DatabaseInitializer
     {
         // 当前程序支持的最新数据库结构版本。
         // 版本 1：Users 表和设备基本配置。
         // 版本 2：Devices 表增加 IsEnabled，保存是否允许采集。
-        private const int CurrentDatabaseVersion = 2;
+        // 版本 3：增加 DevicePoints 表，保存每台设备要读取的采集点。
+        // 版本 4：增加 HistoryRecords 表，保存读数和读取时间。
+        // 版本 5：为全部设备的历史时间排序增加索引，不改表中的记录。
+        // 版本 6：采集点可选报警上下限，另建报警记录表，旧点位默认不设置上下限。
+        // 版本 7：采集点编号只增不复用，避免删点时还没返回的旧读数混入新点历史。
+        private const int CurrentDatabaseVersion = 7;
 
-        // 保存数据库所在的文件夹路径。
+        // 保存数据库所在的文件夹路径。C:\Users\用户名\AppData\Local\DeviceMonitor
         private readonly string _databaseDirectory;
 
-        // 完整的数据库文件路径，供后续初始化数据库时使用。
+        // 完整的数据库文件路径，供后续初始化数据库时使用。C:\Users\用户名\AppData\Local\DeviceMonitor\device-monitor.db
         public string DatabasePath { get; }
-        
+
+        /// <summary>
+        /// 由 App.OnStartup 在正常启动时创建。
+        /// 算出本机正式数据库的文件夹和文件路径；这里只保存路径，尚未创建文件夹或打开数据库。
+        /// </summary>
         public DatabaseInitializer()
         {
             // 获取当前 Windows 用户的本地应用数据目录，
@@ -38,37 +51,62 @@ namespace DeviceMonitor.Core.Persistence
         }
 
         /// <summary>
-        /// 准备数据库，并根据结构版本执行初始化。
-        /// 保留已有数据，并将 Users、Devices 两张表升级到当前结构版本。
+        /// 测试程序需要独立的临时数据库时使用这个重载；正常 App 启动不用它。
+        /// 检查并保存明确传入的完整文件路径，随后仍要调用 Initialize 才会准备数据库。
+        /// </summary>
+        public DatabaseInitializer(string databasePath)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
+            if (!Path.IsPathFullyQualified(databasePath) ||
+                string.IsNullOrEmpty(Path.GetFileName(databasePath)))
+            {
+                throw new ArgumentException("请提供完整的数据库文件路径。", nameof(databasePath));
+            }
+
+            DatabasePath = Path.GetFullPath(databasePath);
+            _databaseDirectory = Path.GetDirectoryName(DatabasePath)
+                ?? throw new ArgumentException("数据库路径缺少文件夹。", nameof(databasePath));
+        }
+
+        /// <summary>
+        /// App.OnStartup 先调用这里，再创建各 Store。打开数据库、读版本、按需升级，全部成功才提交事务。
+        /// 版本号不是几套同时在用的同名表；完成后仍是 DatabasePath 指向的这一份库。
         /// </summary>
         public void Initialize()
         {
-            // 文件夹不存在就创建；已存在也可以安全调用。
+            // 文件路径在这个对象创建时已经生成，文件夹不存在就创建；已存在也可以安全调用。
             Directory.CreateDirectory(_databaseDirectory);
 
-            // 指定数据库文件，以及“文件不存在时创建”的打开方式。= 保存配置
+            // 准备连接设置
             string connectionString = new SqliteConnectionStringBuilder
             {
                 DataSource = DatabasePath,
-                Mode = SqliteOpenMode.ReadWriteCreate
+                Mode = SqliteOpenMode.ReadWriteCreate, // 允许读写；文件不存在时可以创建 
+                ForeignKeys = true // 开启所属关系检查，采集点不能指向一台不存在的设备。
             }.ToString();
 
-            // 打开连接时才会创建数据库文件；方法结束时 using 会关闭连接。= 传入配置，得到连接对象
+            // 创建连接对象
+            // 方法结束时 using 负责关闭连接。
             using SqliteConnection connection = new SqliteConnection(connectionString);
+            
+            // 打开数据库文件
             connection.Open();
 
-            // 创建与当前连接关联的 SQL 命令。 = 得到能执行命令的命令对象
+            // 准备执行 SQL 命令的对象
             using SqliteCommand command = connection.CreateCommand();
 
-            // 建表与版本登记作为一组修改；全部成功后才正式保存。
+            // 后面的修改要么全部成功，要么失败了撤回，不能只改一半。
             using SqliteTransaction transaction = connection.BeginTransaction();
+            // 让这条 SQL 命令也按上面的规则执行。
             command.Transaction = transaction;
 
-            // 读取数据库文件中保存的结构版本；未登记过版本时为 0。
+            // 看看数据库是第几版；新数据库还没登记时是 0。
             command.CommandText = "PRAGMA user_version;";
+            // 执行查询，把查到的版本号存起来。
             int databaseVersion = Convert.ToInt32(command.ExecuteScalar());
 
-            // 旧程序不能处理比自己更新的数据库结构。
+            // databaseVersion 是数据库版本，CurrentDatabaseVersion 是程序支持的最高版本。
+            // 数据库版本更高，程序处理不了，报错停止。
             if (databaseVersion > CurrentDatabaseVersion)
             {
                 throw new InvalidOperationException(
@@ -76,12 +114,13 @@ namespace DeviceMonitor.Core.Persistence
                     $"当前程序只支持到版本 {CurrentDatabaseVersion}。");
             }
 
-            // 已经准备过当前版本，结束方法；using 仍会释放各项资源。
+            // 版本一样，不用升级；结束这个方法，回到 App 继续启动。
             if (databaseVersion == CurrentDatabaseVersion)
             {
                 return;
             }
 
+            // 能走到这里，说明数据库版本旧，接着往下升级。
             // 三个引号包住的是一段多行字符串，里面写的是 SQLite 建表语句。
             command.CommandText = """
     CREATE TABLE IF NOT EXISTS Users (
@@ -137,7 +176,139 @@ namespace DeviceMonitor.Core.Persistence
                 command.ExecuteNonQuery();
             }
 
-            // 表结构与版本号一起保存；中途出错时事务会回滚。
+            if (databaseVersion < 3)
+            {
+                // 不改动原来的设备表，另外建表保存设备下面的采集点。
+                // DeviceId 与 Devices.Id 对应；同一设备内，点位名称不能重复。
+                command.CommandText = """
+                    CREATE TABLE IF NOT EXISTS DevicePoints (
+                        Id INTEGER PRIMARY KEY,
+                        DeviceId INTEGER NOT NULL REFERENCES Devices(Id) ON DELETE RESTRICT,
+                        Name TEXT NOT NULL COLLATE NOCASE,
+                        RegisterType INTEGER NOT NULL CHECK (RegisterType IN (3, 4)),
+                        Address INTEGER NOT NULL CHECK (Address BETWEEN 0 AND 65535),
+                        DataType INTEGER NOT NULL CHECK (DataType IN (0, 1)),
+                        UNIQUE (DeviceId, Name)
+                    );
+                    """;
+                command.ExecuteNonQuery();
+
+                command.CommandText = "PRAGMA user_version = 3;";
+                command.ExecuteNonQuery();
+            }
+
+            if (databaseVersion < 4)
+            {
+                // 另外建一张历史表，不改动已经保存的用户、设备和采集点。
+                // 名称也保存一份：以后设备或点位改名，过去的记录仍显示读取时的名称。
+                // 这里故意不关联配置表的删除操作，删除配置不会连带删除历史记录。
+                command.CommandText = """
+                    CREATE TABLE IF NOT EXISTS HistoryRecords (
+                        Id INTEGER PRIMARY KEY,
+                        DeviceId INTEGER NOT NULL CHECK (DeviceId > 0),
+                        DeviceName TEXT NOT NULL,
+                        PointId INTEGER NOT NULL CHECK (PointId > 0),
+                        PointName TEXT NOT NULL,
+                        Value INTEGER NOT NULL,
+                        ReadAtUtc TEXT NOT NULL
+                    );
+
+                    CREATE INDEX IF NOT EXISTS IX_HistoryRecords_DeviceId_ReadAtUtc
+                    ON HistoryRecords (DeviceId, ReadAtUtc);
+                    """;
+                command.ExecuteNonQuery();
+
+                // 表和索引都建好后，再把结构版本记为 4。
+                command.CommandText = "PRAGMA user_version = 4;";
+                command.ExecuteNonQuery();
+            }
+
+            if (databaseVersion < 5)
+            {
+                // 相当于给历史时间准备查找目录，不必每次把全部历史重新排序。
+                command.CommandText = """
+                    CREATE INDEX IF NOT EXISTS IX_HistoryRecords_ReadAtUtc_Id
+                    ON HistoryRecords (ReadAtUtc DESC, Id DESC);
+                    PRAGMA user_version = 5;
+                    """;
+                command.ExecuteNonQuery();
+            }
+
+            if (databaseVersion < 6)
+            {
+                // 只给原来的采集点表补两列；旧配置仍是原来的记录，不会被删除。
+                // 没填上下限时是 NULL，意味着不判断这一侧的数值报警。
+                command.CommandText = """
+                    ALTER TABLE DevicePoints ADD COLUMN LowerLimit INTEGER NULL;
+                    ALTER TABLE DevicePoints ADD COLUMN UpperLimit INTEGER NULL;
+
+                    CREATE TABLE IF NOT EXISTS AlarmRecords (
+                        Id INTEGER PRIMARY KEY,
+                        EventId TEXT NOT NULL UNIQUE,
+                        DeviceId INTEGER NOT NULL CHECK (DeviceId > 0),
+                        DeviceName TEXT NOT NULL,
+                        PointId INTEGER NULL CHECK (PointId IS NULL OR PointId > 0),
+                        PointName TEXT NOT NULL,
+                        Kind INTEGER NOT NULL CHECK (Kind IN (1, 2, 3)),
+                        State INTEGER NOT NULL CHECK (State IN (1, 2, 3)),
+                        Message TEXT NOT NULL,
+                        Value INTEGER NULL,
+                        LimitValue INTEGER NULL,
+                        StartedAtUtc TEXT NOT NULL,
+                        LastSeenAtUtc TEXT NOT NULL,
+                        EndedAtUtc TEXT NULL,
+                        Occurrences INTEGER NOT NULL CHECK (Occurrences > 0)
+                    );
+                    CREATE INDEX IF NOT EXISTS IX_AlarmRecords_StartedAtUtc_Id
+                    ON AlarmRecords (StartedAtUtc DESC, Id DESC);
+                    CREATE INDEX IF NOT EXISTS IX_AlarmRecords_DeviceId_StartedAtUtc_Id
+                    ON AlarmRecords (DeviceId, StartedAtUtc DESC, Id DESC);
+                    PRAGMA user_version = 6;
+                    """;
+                command.ExecuteNonQuery();
+            }
+
+            if (databaseVersion < 7)
+            {
+                // 点位删掉后，旧采集请求可能还在等设备响应，旧编号不能立刻给新点使用。
+                // SQLite 需要重建这张表才能加 AUTOINCREMENT；8 列数据和原约束照样保留。
+                // 这些步骤仍在同一个事务里，任何一步出错都会退回原来的表和版本。
+                command.CommandText = """
+                    CREATE TABLE DevicePoints_v7 (
+                        Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        DeviceId INTEGER NOT NULL REFERENCES Devices(Id) ON DELETE RESTRICT,
+                        Name TEXT NOT NULL COLLATE NOCASE,
+                        RegisterType INTEGER NOT NULL CHECK (RegisterType IN (3, 4)),
+                        Address INTEGER NOT NULL CHECK (Address BETWEEN 0 AND 65535),
+                        DataType INTEGER NOT NULL CHECK (DataType IN (0, 1)),
+                        LowerLimit INTEGER NULL,
+                        UpperLimit INTEGER NULL,
+                        UNIQUE (DeviceId, Name)
+                    );
+                    INSERT INTO DevicePoints_v7
+                        (Id, DeviceId, Name, RegisterType, Address, DataType, LowerLimit, UpperLimit)
+                    SELECT Id, DeviceId, Name, RegisterType, Address, DataType, LowerLimit, UpperLimit
+                    FROM DevicePoints;
+                    DROP TABLE DevicePoints;
+                    ALTER TABLE DevicePoints_v7 RENAME TO DevicePoints;
+
+                    -- sqlite_sequence 记住分配过的最大编号；空表也先准备这一条登记。
+                    INSERT INTO sqlite_sequence (name, seq)
+                    SELECT 'DevicePoints', 0
+                    WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'DevicePoints');
+                    -- 旧点可能只剩历史或报警；新编号也必须越过这些记录里的最大点位编号。
+                    UPDATE sqlite_sequence SET seq = MAX(
+                        seq,
+                        COALESCE((SELECT MAX(Id) FROM DevicePoints), 0),
+                        COALESCE((SELECT MAX(PointId) FROM HistoryRecords), 0),
+                        COALESCE((SELECT MAX(PointId) FROM AlarmRecords), 0)
+                    ) WHERE name = 'DevicePoints';
+                    PRAGMA user_version = 7;
+                    """;
+                command.ExecuteNonQuery();
+            }
+
+            // 前面的修改都成功了，到这里才一起正式保存。
             transaction.Commit();
 
         }

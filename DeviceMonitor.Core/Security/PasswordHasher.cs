@@ -1,9 +1,13 @@
-﻿using System;
+using System;
 using System.Security.Cryptography;
 
 namespace DeviceMonitor.Core.Security
 {
-    // 生成密码哈希，并验证登录时输入的密码。
+
+    /// <summary>
+    /// 保存密码前生成随机盐和 PBKDF2 哈希；验证时用同样的盐、次数重新计算，再安全比较。
+    /// 这里只处理密码，不连数据库。第一遍只需知道 Hash 生成保存信息，Verify 返回是否匹配。
+    /// </summary>
     public static class PasswordHasher
     {
         private const int SaltSize = 16;
@@ -11,6 +15,9 @@ namespace DeviceMonitor.Core.Security
         private const int Iterations = 600_000;
         private const int MaxVerificationIterations = 2_000_000;
 
+        /// <summary>
+        /// UserStore 创建账户、修改密码、重置密码时调用。返回盐、哈希和迭代次数，保存这些而不是明文。
+        /// </summary>
         public static (byte[] Salt, byte[] Hash, int Iterations)
             Hash(string password)
         {
@@ -31,6 +38,9 @@ namespace DeviceMonitor.Core.Security
             return (salt, hash, Iterations);
         }
 
+        /// <summary>
+        /// UserStore 登录或修改自己的密码时调用。根据原来保存的盐和次数计算输入密码的哈希，再比较是否相同。
+        /// </summary>
         public static bool Verify(
             string password,
             byte[] salt,
