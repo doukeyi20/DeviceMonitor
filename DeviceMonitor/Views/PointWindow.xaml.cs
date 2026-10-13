@@ -16,8 +16,7 @@ namespace DeviceMonitor.Views
 {
 
     /// <summary>
-    /// 采集点管理弹窗：接住外面准备好的 PointViewModel 作为 DataContext。
-    /// 输入和按钮已绑定；本后台只处理删除确认及关闭后的解除订阅。
+    /// 采集点管理窗口，沿用传来的 PointViewModel，后台只处理删除确认。
     /// </summary>
     public partial class PointWindow : Window
     {
@@ -25,29 +24,27 @@ namespace DeviceMonitor.Views
         private readonly PointViewModel _viewModel;
 
         /// <summary>
-        /// 由 AcquisitionView.OpenPointWindow 创建；传入的 PointViewModel 已由 CreatePointViewModel 准备好。
-        /// 不再创建新 ViewModel；保存同一个对象、订阅删除确认方法，再设为窗口 DataContext。
+        /// 由 AcquisitionView.OpenPointWindow 创建。
+        /// 把传来的 PointViewModel 设为数据源，并接上删除确认事件。
         /// </summary>
         public PointWindow(PointViewModel viewModel)
         {
             ArgumentNullException.ThrowIfNull(viewModel);
             InitializeComponent();
 
-            // 弹窗不会自动继承父页面的数据源，需要明确设置。
-            // 控件绑定的属性和命令，都从传来的这一个 PointViewModel 中查找。
+            // 弹窗要明确设置数据源，控件和按钮都从这个对象取属性、命令。
             _viewModel = viewModel;
             _viewModel.DeleteConfirmationRequested += ConfirmDeletePoint;
             DataContext = _viewModel;
         }
 
         /// <summary>
-        /// 构造时已订阅到 DeleteConfirmationRequested；PointViewModel.DeletePoint 触发事件时，把删除目标传到这里。
-        /// 显示确认框，把用户选择写回 request.Confirmed；方法返回后，DeletePoint 才决定是否调用数据库删除。
+        /// 由 PointViewModel 的 DeleteConfirmationRequested 事件调用。
+        /// 弹出删除确认框，把选择写回 request.Confirmed，命令再据此决定是否删除。
         /// </summary>
         private void ConfirmDeletePoint(PointDeleteRequest request)
         {
-            // 窗口只负责显示和返回用户选择，不在这里执行 SQL。
-            // 默认选“否”，用户必须明确点“是”才会删除。
+            // 默认选“否”，只有明确点“是”才把 Confirmed 写成 true。
             string message =
                 $"确认删除设备“{request.Device.Name}”的采集点“{request.Point.Name}”吗？\n\n" +
                 $"点位编号：{request.Point.Id}；协议地址：{request.Point.Address}。\n" +
@@ -59,12 +56,10 @@ namespace DeviceMonitor.Views
         }
 
         /// <summary>
-        /// 采集点窗口真正关闭后，由 WPF 自动调用。
-        /// 解除删除确认事件的订阅；主页面点位刷新由外面的 AcquisitionView.OpenPointWindow 在 ShowDialog 返回后处理。
+        /// 关窗后解除订阅；外面的 OpenPointWindow 会继续刷新页面点位表。
         /// </summary>
         protected override void OnClosed(EventArgs e)
         {
-            // 窗口关掉后，解除订阅，不让旧窗口继续响应确认请求。
             _viewModel.DeleteConfirmationRequested -= ConfirmDeletePoint;
             base.OnClosed(e);
         }

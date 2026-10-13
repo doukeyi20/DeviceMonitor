@@ -17,36 +17,34 @@ namespace DeviceMonitor.ViewModels
 {
 
     /// <summary>
-    /// “采集点配置”页的数据源：上表选启用设备，下表显示该设备的 PointInfo 配置。
-    /// 管理按钮开点位表单；“读取一次”只测一个点，不存历史；连续采集在实时监控页。
+    /// 采集点配置页：选设备、显示点位、打开管理窗口、单次测试。
+    /// 单次测试不存历史，连续采集在实时监控页。
     /// </summary>
     public partial class AcquisitionViewModel : PageViewModel
     {
         private readonly UserAccount _currentUser;
         private readonly DeviceStore _deviceStore;
-        // 这里只向共用管理器问“这台设备是否正在采集”，防止单次测试与连续读取冲突。
-        // 本页不创建、不开始、不停止连续采集任务。
+        // 共用管理器用来检查设备是否正在采集，避免单次测试与连续采集冲突。
         private readonly DeviceRuntimeManager _deviceRuntimeManager;
-        // 真正连接设备、读取寄存器的对象。沿用原来的读取器，不另写通信代码。
+        // 真正连接设备、读取一个点的对象。
         private readonly ModbusPointReader _pointReader = new();
-        private bool _isShuttingDown;
+        private bool _isShuttingDown; // 退出后不再查新数据，也不回填旧查询结果。
 
-        // 快速切换设备时，旧查询可能比新查询晚完成。
-        // 只有最后一次查询可以更新表格，避免把 A 的点位显示到 B 下面。
+        // 查询编号：只有最新查询能填表，避免切到 B 后又显示 A 的点位。
         private int _pointLoadVersion;
-        private int _deviceListVersion;
-        private Task _pointLoadTask = Task.CompletedTask;
-        // 快速换设备会有几次查询同时等待。最后一次只负责当前页面，关闭时却要等它们全部结束。
+        private int _deviceListVersion; // 删除设备后递增，让删除前启动的设备查询作废。
+        private Task _pointLoadTask = Task.CompletedTask; // 最近一次点位查询，刷新设备后要等它完成。
+        // 记住所有未结束的点位查询，关窗时一起等完。
         private readonly List<Task> _pointLoadTasks = new();
 
-        // 上方表格绑定这个集合；集合变化时，表格会更新。
+        // 上方设备表绑定这里，每项是一个 DeviceInfo 设备配置。
         public ObservableCollection<DeviceInfo> Devices { get; } = new();
 
-        // 第二张表显示当前选中设备的采集点配置，不是连续采集的读数。
+        // 下方点位表绑定这里，每项是一个 PointInfo 配置，还没有真实读数。
         public ObservableCollection<PointInfo> Points { get; } = new();
 
-        // 上表 SelectedItem → 生成属性 SelectedDevice → 自动调用 OnSelectedDeviceChanged。
-        // 程序恢复选择时也给 SelectedDevice 赋值，不直接改 _selectedDevice，才能触发点位查询和通知。
+        // 表格选择会写入 SelectedDevice，自动调用 OnSelectedDeviceChanged 加载点位。
+        // 程序也要改 SelectedDevice 属性，直接改字段不会触发这些操作。
         [ObservableProperty]
         // 换了选中设备，就让“管理采集点”按钮重新判断能不能点。
         [NotifyCanExecuteChangedFor(nameof(ManagePointsCommand))]
@@ -54,11 +52,12 @@ namespace DeviceMonitor.ViewModels
         [NotifyCanExecuteChangedFor(nameof(ReadOnceCommand))]
         private DeviceInfo? _selectedDevice;
 
+        // 下方表格选中的点，点击“读取一次”就测试它。
         [ObservableProperty]
         [NotifyCanExecuteChangedFor(nameof(ReadOnceCommand))]
         private PointInfo? _selectedPoint;
 
-        private bool _isReading;
+        private bool _isReading; // 单次测试还没结束时，禁止换设备和点位。
         public bool IsReading
         {
             get => _isReading;
@@ -72,14 +71,14 @@ namespace DeviceMonitor.ViewModels
         }
         public string ReadOnceButtonText => IsReading ? "读取中…" : "读取一次";
 
-        // 只显示说明，不启动任何操作；选设备或监控任务启停时会通知界面重新读取。
+        // 只用于显示说明，不启动采集。
         public string ReadGuardText => SelectedDevice is not null && _deviceRuntimeManager.IsDeletingDevice(SelectedDevice.Id)
             ? "这台设备正在删除，暂时不能配置或测试，请选择其他设备。"
             : SelectedDevice is not null && _deviceRuntimeManager.IsRunning(SelectedDevice.Id)
             ? "此设备正在连续采集，请先到实时监控停止，再测试单个点。"
             : "单次测试只读选中点，不启动连续采集，也不保存历史记录。";
 
-        private bool _isLoadingPoints;
+        private bool _isLoadingPoints; // 正在查点位配置，暂时不能测试未加载好的点。
         public bool IsLoadingPoints
         {
             get => _isLoadingPoints;
@@ -90,7 +89,7 @@ namespace DeviceMonitor.ViewModels
             }
         }
 
-        private bool _isRefreshingDevices;
+        private bool _isRefreshingDevices; // 正在更新上方设备表。
         public bool IsRefreshingDevices
         {
             get => _isRefreshingDevices;
@@ -107,6 +106,7 @@ namespace DeviceMonitor.ViewModels
         public bool CanChoosePoint => CanChooseDevice && !IsLoadingPoints
             && (SelectedDevice is null || !_deviceRuntimeManager.IsDeletingDevice(SelectedDevice.Id));
 
+        // 点位表旁的提示，例如正在加载或没有配置。
         private string _pointMessage = "请先在上方选择一台设备。";
         public string PointMessage
         {
@@ -114,6 +114,7 @@ namespace DeviceMonitor.ViewModels
             private set => SetProperty(ref _pointMessage, value);
         }
 
+        // 单次测试区域显示的数值、时间或错误原因。
         private string _readResultText = "尚未读取。选设备和采集点后，点击“读取一次”。";
         public string ReadResultText
         {
@@ -133,8 +134,7 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 由 MainViewModel 创建，并放进管理员的 Pages 中。
-        /// 保存用户、查配置用的 DeviceStore，以及共用 DeviceRuntimeManager；设备列表等页面加载后再查询。
+        /// 接住用户、配置数据库对象和共用管理器，页面加载后再查设备。
         /// </summary>
         public AcquisitionViewModel(
             UserAccount currentUser,
@@ -163,8 +163,8 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 页面 Loaded加载时 或“刷新设备”通过 RefreshDevicesCommand 调用。后台查启用设备，回来更新 Devices 并恢复选择。
-        /// 给 SelectedDevice 赋新对象会自动进入 OnSelectedDeviceChanged；这里等那次点位查询结束。
+        /// 由 RefreshDevicesCommand 调用；AcquisitionView_Loaded 也会执行此命令。
+        /// 查询启用设备并恢复原选择，再等这台设备的点位加载完成。
         /// </summary>
         [RelayCommand(CanExecute = nameof(CanRefreshDevices))]
         private async Task RefreshDevicesAsync()
@@ -177,16 +177,13 @@ namespace DeviceMonitor.ViewModels
             {
                 PageMessage = "正在读取已启用设备配置…";
 
-                // 在 SQL 查询中只取已启用设备，不在界面层过滤。
-                // GetDevices 是同步查询，把它放到后台线程执行。
-                // 后台只查询数据库，不操作界面绑定的 Devices 集合。
+                // 在后台查询启用设备；查询完再回来更新表格。
                 var latestDevices = await Task.Run(
                     () => _deviceStore.GetDevices(_currentUser, enabledOnly: true));
                 if (_isShuttingDown || _deviceRuntimeManager.IsShuttingDown || listVersion != _deviceListVersion)
                     return; // 关窗或删除设备后，旧查询不能把失效配置放回页面。
 
-                // await 后回到界面线程，再更新界面数据。
-                // 记住当前选择的编号，刷新后尽量保持原来的选择。
+                // 记住选中编号，查询成功后再替换设备列表。
                 long? selectedId = SelectedDevice?.Id;
 
                 // 查询成功才清空旧列表；查询失败时保留原来的显示。
@@ -196,8 +193,7 @@ namespace DeviceMonitor.ViewModels
                     Devices.Add(device);
                 }
 
-                // 查询得到的是新对象，因此按编号找到新的对应对象。
-                // 原设备不存在或已经停用时，选择恢复为 null。
+                // 按编号恢复选择；原设备已删除或停用时，就不再选中它。
                 SelectedDevice = selectedId.HasValue
                     ? Devices.FirstOrDefault(
                         device => device.Id == selectedId.Value)
@@ -212,7 +208,7 @@ namespace DeviceMonitor.ViewModels
             }
             catch (Exception ex)
             {
-                // 捕获查询异常，显示提示，避免命令出错导致程序退出。
+                // 查询失败显示原因，原列表不清空。
                 PageMessage = $"刷新设备失败：{ex.Message}";
             }
             finally
@@ -221,12 +217,12 @@ namespace DeviceMonitor.ViewModels
             }
         }
 
-        // RefreshDevicesCommand 用它判断按钮能不能点；RefreshDevicesAsync 也会再检查一次。返回 false 时不允许刷新。
+        // 判断现在能不能刷新设备。
+        // 由 RefreshDevicesCommand 判断按钮能不能点时调用。
         private bool CanRefreshDevices() => CanChooseDevice;
 
         /// <summary>
-        /// 自动入口：当在设备表选择不同设备时，上表 SelectedItem 更新生成属性 SelectedDevice 后，它的 setter 自动调用这里。
-        /// 先清旧点位，再调用 StartPointLoadAsync 查询新设备的配置；不把 DeviceInfo 转成 PointInfo，也不创建采集任务。
+        /// SelectedDevice 属性变化时自动调用：清掉旧点位，再加载新设备的点位。
         /// </summary>
         partial void OnSelectedDeviceChanged(DeviceInfo? value)
         {
@@ -238,41 +234,38 @@ namespace DeviceMonitor.ViewModels
             SelectedPoint = null;
             Points.Clear();
 
-            // 查询这个设备的点位列表，给第二张配置表使用。
-            // 没在关窗或退出收尾，就执行后面的点位查询；正在收尾，就不再启动查询。
+            // 没在关闭就查这台设备的点位；已经开始关闭，就不再发起查询。
             _pointLoadTask = isClosing ? Task.CompletedTask : StartPointLoadAsync(value);
         }
 
         /// <summary>
-        /// 采集点的查询
-        /// 选择设备或刷新点位时调用。启动 LoadPointsForDeviceAsync，并记住 Task，关窗时要连旧查询一起等完。
+        /// 由 OnSelectedDeviceChanged 和 RefreshPointsAsync 调用。
+        /// 启动点位查询，并记住任务，关窗时统一等完。
         /// </summary>
         private Task StartPointLoadAsync(DeviceInfo? device)
         {
-            // 旧查询可能还在等待，关窗时要等它们全部结束。清掉已完成的旧查询，避免列表无限增长。
+            // 已完成的查询不用再登记，只保留还没结束的。
             _pointLoadTasks.RemoveAll(task => task.IsCompleted);
 
             // 查询这个设备的点位列表，给第二张配置表使用。
             Task query = LoadPointsForDeviceAsync(device);
 
-            // 把查询任务记下来，关窗时要等它们全部结束。快速换设备查询时，旧查询可能比新查询晚完成。
-            // 为了让关窗时统一等待执行完，所以要登记
+            // 把这次查询任务记下来，关窗时一起等待结束。
             _pointLoadTasks.Add(query);
 
             return query;
         }
 
         /// <summary>
-        /// 真正调用数据库查询点位的方法
-        /// StartPointLoadAsync 调用：按 device.Id 查 DeviceStore.GetPoints，再把 PointInfo 放入 Points。
-        /// await 期间可能换设备，只有当前这次查询能填表；旧结果不能覆盖后来选中的设备。
+        /// 由 StartPointLoadAsync 调用。
+        /// 从数据库查这台设备的点位，填入 Points；旧查询结果不能覆盖新选择。
         /// </summary>
         private async Task LoadPointsForDeviceAsync(DeviceInfo? device)
         {
             // 给本次查询编号，并设置“加载中”状态
             int loadVersion = ++_pointLoadVersion;
             IsLoadingPoints = true;
-            // 该属性让前端绑定使用
+            // 重置单次测试区域的提示。
             ReadResultText = "尚未读取。请选择一个采集点，再点击“读取一次”。";
             
             try
@@ -287,7 +280,7 @@ namespace DeviceMonitor.ViewModels
 
                 long? selectedId = SelectedPoint?.Id;
 
-                // 数据库中查询设备采集点
+                // 后台按设备编号查点位。
                 var latestPoints = await Task.Run(
                     () => _deviceStore.GetPoints(_currentUser, device.Id));
 
@@ -296,8 +289,8 @@ namespace DeviceMonitor.ViewModels
                     || loadVersion != _pointLoadVersion || !ReferenceEquals(device, SelectedDevice))
                     return;
 
+                // 查询仍有效才替换表格，再按编号恢复原来选中的点。
                 SelectedPoint = null;
-                // 清除表格旧数据
                 Points.Clear();
 
                 foreach (PointInfo point in latestPoints)
@@ -312,19 +305,21 @@ namespace DeviceMonitor.ViewModels
             }
             catch (Exception ex)
             {
-                // 属性改变时启动的查询也在这里处理错误，不让异常导致程序退出。
+                // 只显示最新查询的错误，旧查询的错误不覆盖当前提示。
                 if (loadVersion == _pointLoadVersion)
                     PointMessage = $"加载采集点失败：{ex.Message}";
             }
             finally
             {
+                // 只有最新查询能解除加载标记，不能让旧查询提前恢复按钮。
                 if (loadVersion == _pointLoadVersion)
                     IsLoadingPoints = false;
             }
         }
 
         /// <summary>
-        /// “刷新采集点”或点位弹窗关闭后调用。沿用当前 SelectedDevice，重新查点位配置，不读取寄存器。
+        /// 由 RefreshPointsCommand 调用。
+        /// 重新查询当前设备的点位配置，不读取设备数值。
         /// </summary>
         [RelayCommand(CanExecute = nameof(CanRefreshPoints))]
         private async Task RefreshPointsAsync()
@@ -338,14 +333,15 @@ namespace DeviceMonitor.ViewModels
             await _pointLoadTask;
         }
 
-        // RefreshPointsCommand 用它判断能不能刷新点位：当前可操作，并且已选中一台启用设备。
+        // 选中启用设备且当前允许操作，才可以刷新点位。
+        // 由 RefreshPointsCommand 判断按钮能不能点时调用。
         private bool CanRefreshPoints() => CanChoosePoint && SelectedDevice is { IsEnabled: true };
 
 
 
         /// <summary>
-        /// 管理采集点按钮调用，有开窗。
-        /// 把点击时的 DeviceInfo 通过事件交给 AcquisitionView.OpenPointWindow；这里不直接创建窗口。
+        /// 由 ManagePointsCommand 调用。
+        /// 请求打开选中设备的采集点管理窗口。
         /// </summary>
         [RelayCommand(CanExecute = nameof(CanManagePoints))]
         private void ManagePoints()
@@ -355,15 +351,14 @@ namespace DeviceMonitor.ViewModels
             if (!CanManagePoints() || device is null)
                 return;
 
-            // 调用 AcquisitionView.xaml.cs 的 OpenPointWindow：把选中的 device 传给后台。
-            // 后台调用本类的 CreatePointViewModel 准备数据源，再打开 PointWindow 管理这台设备的点位。
-            // 点位窗口关闭后，后台还会执行 RefreshPointsCommand，让本页显示最新配置。
+            // 让 AcquisitionView.OpenPointWindow 打开这个设备的点位窗口，关闭后刷新点位列表。
             PointManagementRequested?.Invoke(device);
         }
 
 
         /// <summary>
-        /// 管理按钮判断：已启用管理员、已选启用设备、当前允许选点；返回 false 时按钮禁用。
+        /// 由 ManagePointsCommand 判断按钮能不能点时调用。
+        /// 管理员选中启用设备，且当前允许操作，才能管理点位。
         /// </summary>
         private bool CanManagePoints()
         {
@@ -374,8 +369,8 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// AcquisitionView.OpenPointWindow 调用。给弹窗新建 PointViewModel，传同一个用户、DeviceStore 和目标设备。
-        /// 新建的是表单数据源，不是新数据库；设备 Id 决定管理哪台设备的点。
+        /// 由 AcquisitionView.OpenPointWindow 打开点位窗口前调用。
+        /// 为点位窗口创建数据源，继续使用同一个用户和 DeviceStore。
         /// </summary>
         public PointViewModel CreatePointViewModel(DeviceInfo device)
         {
@@ -388,16 +383,14 @@ namespace DeviceMonitor.ViewModels
                 throw new UnauthorizedAccessException("请先启用设备，再配置采集点。");
             }
 
-            // 新建的是窗口自己的 ViewModel，不是新的数据库。
-            // 同一个 DeviceStore 继续传下去；device.Id 决定查哪台设备的点位。
+            // 只新建窗口数据源，不新建数据库；device 决定管理哪台设备的点位。
             return new PointViewModel(_currentUser, _deviceStore, device);
         }
 
 
         /// <summary>
-        /// 点击“读取一次”后，ReadOnceCommand 调用这里；“取消读取”使用工具生成的 ReadOnceCancelCommand。
-        /// 先用 LoadReadConfiguration 查询最新配置，再调用 ModbusPointReader.ReadAsync 读所选点一次，把结果写入页面提示。
-        /// 这是单点测试，不启动连续采集，也不把读数写进历史数据库。
+        /// 由 ReadOnceCommand 调用。
+        /// 按最新配置读取选中的点一次，显示结果，不保存历史。
         /// </summary>
         // 工具同时生成 ReadOnceCommand 和 ReadOnceCancelCommand。
         [RelayCommand(CanExecute = nameof(CanReadOnce), IncludeCancelCommand = true)]
@@ -409,7 +402,7 @@ namespace DeviceMonitor.ViewModels
             if (!CanReadOnce() || device is null || point is null)
                 return;
 
-            // 先记住本次读取的设备和点位编号，后面一直使用这对目标。
+            // 标记测试开始，期间不能更换操作目标。
             IsReading = true;
             ReadResultText = $"正在准备读取“{device.Name} / {point.Name}”…";
             try
@@ -428,13 +421,15 @@ namespace DeviceMonitor.ViewModels
                 PointReadResult result = await _pointReader.ReadAsync(
                     config.Device, config.Point, cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
+
+                // 读取成功，把数值、类型和时间拼成文字显示在测试区域。
                 ReadResultText =
                     $"{config.Device.Name} / {result.Point.Name}（编号 {result.Point.Id}，地址 {result.Point.Address}）：" +
                     $"{result.Value} [{result.Point.DataType}]；原始值 0x{result.RawValue:X4}；" +
                     $"时间 {result.ReadAt.ToLocalTime():HH:mm:ss.fff}。";
                 PageMessage = "单次读取完成，临时连接已关闭；未启动连续采集，也未保存历史记录。";
             }
-            // 取消读取时，ReadOnceCancelCommand 会触发 CancellationToken，抛出 OperationCanceledException。
+            // 收到取消信号后，读取抛出取消异常，走这里显示取消结果。
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 ReadResultText = "本次读取已取消，没有新的读数。";
@@ -458,7 +453,8 @@ namespace DeviceMonitor.ViewModels
             }
         }
 
-        // ReadOnceCommand 和 ReadOnceAsync 用它检查：选中了属于当前设备的点位、当前可操作，而且这台设备没在连续采集。
+        // 必须选中当前设备的点，而且这台设备没有正在连续采集。
+        // 由 ReadOnceCommand 判断按钮能不能点时调用。
         private bool CanReadOnce() => CanChoosePoint
             // 同一台设备正在连续采集时，不再额外插入一次单点读取。
             && SelectedDevice is { IsEnabled: true }
@@ -468,8 +464,8 @@ namespace DeviceMonitor.ViewModels
             && Points.Contains(SelectedPoint);
 
         /// <summary>
-        /// 由 ReadOnceAsync 通过 Task.Run 放到后台调用，传入点击时记住的设备 Id 和点位 Id。
-        /// 从 DeviceStore 重新查最新配置，确认设备仍启用、点位仍存在；只返回配置，真正通信交给 ModbusPointReader。
+        /// 由 ReadOnceAsync 在真正读取之前调用。
+        /// 查回本次测试目标的最新配置，确认设备启用、点位仍存在。
         /// </summary>
         private (DeviceInfo Device, PointInfo Point) LoadReadConfiguration(long deviceId, long pointId)
         {
@@ -485,7 +481,8 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 共用管理器删完设备后通知这里，把本页失效的设备/点位清掉，防止继续测试已删除的配置。
+        /// 由共用管理器的 DeviceDeleted 事件调用。
+        /// 设备被删除后，清掉本页对应的设备和点位。
         /// </summary>
         private void DeviceRuntimeManager_DeviceDeleted(long deviceId)
         {
@@ -502,7 +499,8 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 构造时订阅了管理器的状态通知。任务启停、开始退出或设备删除时，让本页按钮重新检查条件。
+        /// 由共用管理器的 PropertyChanged 事件调用。
+        /// 管理器状态变化后，重新判断本页按钮能不能点。
         /// </summary>
         private void DeviceRuntimeManager_PropertyChanged(object? sender, PropertyChangedEventArgs e)
         {
@@ -512,7 +510,8 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 选设备、查询或测试状态变化后调用：更新能否选择的属性和按钮条件，不执行数据库或读取操作。
+        /// 由 IsReading 等状态属性变化、设备选择变化、管理器通知和退出处理调用。
+        /// 更新能否选择、能否点击按钮，不执行查询或读取。
         /// </summary>
         private void NotifyOperationStateChanged()
         {
@@ -526,9 +525,9 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 主窗口关闭时，MainWindow.OnClosing → MainViewModel.StopBackgroundWorkAsync → 这里。
-        /// 只取消本页的单次测试、等待配置查询，并解除本页订阅。
-        /// 连续采集由 MainViewModel 另行通知共用管理器停止，不再由配置页负责。
+        /// 由 MainViewModel.StopBackgroundWorkAsync 在退出前调用。
+        /// 关闭本页操作：取消单次测试、等查询结束、解除订阅。
+        /// 连续采集由共用管理器另行停止。
         /// </summary>
         public async Task StopOperationsAsync()
         {
@@ -538,8 +537,7 @@ namespace DeviceMonitor.ViewModels
             Task readTask = ReadOnceCommand.ExecutionTask ?? Task.CompletedTask;
             Task refreshDevices = RefreshDevicesCommand.ExecutionTask ?? Task.CompletedTask;
             Task refreshPoints = RefreshPointsCommand.ExecutionTask ?? Task.CompletedTask;
-            // 等取消真正完成，读取器的 using 才能释放尚未关闭的连接。
-            // 快速换过几次设备时，不能只等最后一次查询；旧查询也要在关窗前结束。
+            // 等测试和所有旧查询结束，不只等最后一次；读取结束时会关闭临时连接。
             await Task.WhenAll(_pointLoadTasks.Concat(new[] { readTask, refreshDevices, refreshPoints }).ToArray());
             _pointLoadTasks.Clear();
             _deviceRuntimeManager.PropertyChanged -= DeviceRuntimeManager_PropertyChanged;

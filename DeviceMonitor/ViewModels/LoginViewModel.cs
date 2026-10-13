@@ -9,8 +9,7 @@ namespace DeviceMonitor.ViewModels
 {
 
     /// <summary>
-    /// 登录页的数据源：记用户名，处理登录和首次创建管理员的命令。
-    /// 密码只在点按钮时向 LoginWindow 要；验证由 UserStore 做，登录成功后请窗口后台打开主窗口。
+    /// 登录页数据源：登录、首次创建管理员。密码在点按钮时才向窗口读取。
     /// </summary>
     public partial class LoginViewModel : ObservableObject
     {
@@ -28,7 +27,7 @@ namespace DeviceMonitor.ViewModels
             get => _isAdminSetupVisible;
             private set
             {
-                // 仅由面板切换命令修改；保留 private set，不生成可随意修改的公开 setter。
+                // 只有本类能切换面板，界面只读取状态。
                 if (SetProperty(ref _isAdminSetupVisible, value))
                     OnPropertyChanged(nameof(IsLoginVisible));
             }
@@ -57,7 +56,8 @@ namespace DeviceMonitor.ViewModels
         public event Action<UserAccount>? LoginSucceeded;
 
         /// <summary>
-        /// LoginWindow 构造时创建。保存 App 传来的 UserStore，并检查是否已有账户，决定能否显示首次创建管理员入口。
+        /// 由 LoginWindow 构造方法创建，作为登录窗口的数据源。
+        /// 接住 UserStore，检查是否已有账户，决定能否创建首个管理员。
         /// </summary>
         public LoginViewModel(UserStore userStore)
         {
@@ -66,8 +66,8 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 登录按钮绑定 LoginCommand，所以点击后进入这里。先请求后台读密码，再调用 UserStore.CheckLogin。
-        /// 返回 UserAccount 才触发 LoginSucceeded；订阅者 LoginWindow.OpenMainWindow 负责显示主窗口。
+        /// 由 LoginCommand 调用。
+        /// 读取密码并验证登录，成功后请求打开主窗口。
         /// </summary>
         [RelayCommand]
         private void Login()
@@ -82,8 +82,7 @@ namespace DeviceMonitor.ViewModels
                     return;
                 }
 
-                // 调用 LoginWindow.xaml.cs 的 ReadLoginPassword：
-                // 从登录密码框读取密码，填入 passwords.Password属性，回来后继续验证。
+                // 让 LoginWindow.ReadLoginPassword 读取密码，填回 passwords.Password 再验证。
                 LoginPasswordRequested.Invoke(passwords);
 
                 string userName = UserName.Trim();
@@ -104,8 +103,7 @@ namespace DeviceMonitor.ViewModels
                 }
                 finally
                 {
-                    // 调用 LoginWindow.xaml.cs 的 ClearLoginPassword：清空登录密码框。
-                    // 正式验证后无论成功、失败还是出错，都不保留这次输入。
+                    // 让 LoginWindow.ClearLoginPassword 清空密码框，无论验证结果如何都清空。
                     LoginPasswordClearRequested?.Invoke();
                 }
 
@@ -117,8 +115,7 @@ namespace DeviceMonitor.ViewModels
                     return;
                 }
 
-                // 调用 LoginWindow.xaml.cs 的 OpenMainWindow：
-                // 把验证通过的 account 传给主窗口，显示主窗口，再关闭登录窗口。
+                // 让 LoginWindow.OpenMainWindow 带着 account 打开主窗口，再关闭登录窗口。
                 LoginSucceeded?.Invoke(account);
                 AppLog.Info("登录成功", $"UserId={account.Id}; Role={account.Role}");
             }
@@ -136,7 +133,8 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 首次创建入口的命令调用：再查一次有没有账户，没有才展开创建面板；不是另开窗口。
+        /// 由 ShowAdminSetupCommand 调用。
+        /// 没有任何账户才展开创建管理员面板，不另开窗口。
         /// </summary>
         [RelayCommand(CanExecute = nameof(CanOpenAdminSetup))]
         private void ShowAdminSetup()
@@ -153,8 +151,7 @@ namespace DeviceMonitor.ViewModels
                     return;
                 }
 
-                // 调用 LoginWindow.xaml.cs 的 ClearLoginPassword：
-                // 展开创建管理员面板之前，先清空原来的登录密码框。
+                // 让 LoginWindow.ClearLoginPassword 清空原登录密码，再展开创建面板。
                 LoginPasswordClearRequested?.Invoke();
                 IsAdminSetupVisible = true;
             }
@@ -165,12 +162,13 @@ namespace DeviceMonitor.ViewModels
             }
         }
 
-        // ShowAdminSetupCommand、CreateFirstAdminCommand 和它们对应的方法用它判断：当前是否仍允许创建第一个管理员。
+        // 判断现在是否还允许创建首个管理员。
+        // 由 ShowAdminSetupCommand、CreateFirstAdminCommand 判断按钮能不能点时调用。
         private bool CanOpenAdminSetup() => CanCreateFirstAdministrator;
 
         /// <summary>
-        /// 创建管理员按钮调用：向后台读取两次密码，检查后调用 UserStore.TryCreateFirstAdministrator。
-        /// 成功只返回登录面板，不自动登录。
+        /// 由 CreateFirstAdminCommand 调用。
+        /// 检查用户名和两次密码，创建首个管理员；成功后回登录面板，不自动登录。
         /// </summary>
         [RelayCommand(CanExecute = nameof(CanOpenAdminSetup))]
         private void CreateFirstAdmin()
@@ -181,7 +179,7 @@ namespace DeviceMonitor.ViewModels
             var passwords = new UserPasswordsRequest();
             try
             {
-                // textgbox绑定AdminUserName传回的名字到ViewModel中，trim去掉前后空格
+                // 输入框把用户名传到 AdminUserName，Trim 去掉前后空格。
                 string userName = AdminUserName.Trim();
 
                 if (string.IsNullOrWhiteSpace(userName))
@@ -198,8 +196,7 @@ namespace DeviceMonitor.ViewModels
                     return;
                 }
 
-                // 调用 LoginWindow.xaml.cs 的 ReadAdminPasswords：
-                // 读取创建管理员区域的两个密码框，填回 passwords，再继续检查长度和一致性。
+                // 让 LoginWindow.ReadAdminPasswords 读取两个密码框，填回 passwords 再检查。
                 AdminPasswordsRequested.Invoke(passwords);
                 if (passwords.Password.Length < 6)
                 {
@@ -244,13 +241,13 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 返回按钮或首次创建成功后调用，收起创建面板并清空密码框；不删除刚创建的账户。
+        /// 由 BackToLoginCommand 调用。
+        /// 收起创建面板并清空密码框，不删除已创建的账户。
         /// </summary>
         [RelayCommand]
         private void BackToLogin()
         {
-            // 调用 LoginWindow.xaml.cs 的 ClearAdminPasswords：
-            // 清空创建管理员区域的两个密码框，然后回到登录面板。
+            // 让 LoginWindow.ClearAdminPasswords 清空两个密码框，再回登录面板。
             AdminPasswordsClearRequested?.Invoke();
             IsAdminSetupVisible = false;
         }

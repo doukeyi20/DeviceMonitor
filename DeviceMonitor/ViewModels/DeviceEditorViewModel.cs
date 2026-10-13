@@ -7,14 +7,14 @@ namespace DeviceMonitor.ViewModels
 {
 
     /// <summary>
-    /// 设备表单的数据源：保存输入文字，点保存时检查并组装 DeviceInput。
-    /// 把 DeviceInput 交回设备管理 ViewModel 保存；成功才请求 AddDeviceWindow 关闭。
+    /// 新增和编辑设备共用的表单：接收输入、检查并保存，成功才关闭。
     /// </summary>
     public partial class DeviceEditorViewModel : ObservableObject
     {
-        private readonly DeviceManagementViewModel _deviceManagement;
-        private readonly long? _editingDeviceId;
+        private readonly DeviceManagementViewModel _deviceManagement; // 保存时调用原管理页的方法，成功后能刷新设备表。
+        private readonly long? _editingDeviceId; // 有编号就是编辑该设备，为 null 就是新增。
 
+        // 下面这些属性对应表单输入框，保存命令会取出用户当前填写的值。
         [ObservableProperty]
         private string _deviceName = string.Empty;
 
@@ -54,8 +54,9 @@ namespace DeviceMonitor.ViewModels
         public event Action? SaveSucceeded;
 
         /// <summary>
-        /// 由 AddDeviceWindow 的构造函数创建，再设为这个编辑窗口的 DataContext。
-        /// 接收设备管理界面的 ViewModel 和可选的编辑设备对象；如果是新增则 deviceToEdit 为 null。需要设备管理viewmodel是因为保存时要调用 TryAddDevice 或 TryUpdateDevice。
+        /// 由 AddDeviceWindow 构造方法创建，新增和编辑共用这个数据源。
+        /// deviceToEdit 为 null 表示新增，否则把原配置填进表单。
+        /// 保存时要调用设备管理页的方法，所以接住它的 ViewModel。
         /// </summary>
         public DeviceEditorViewModel(
             DeviceManagementViewModel deviceManagement, DeviceInfo? deviceToEdit = null)
@@ -66,7 +67,7 @@ namespace DeviceMonitor.ViewModels
             if (deviceToEdit is null)
                 return; // 新增时全部留空，不替用户猜测设备参数。
 
-            // 把传入的设备对象的参数赋值给字段或属性
+            // 记住编辑编号，再把原配置填进各输入框。
             _editingDeviceId = deviceToEdit.Id;
             DeviceName = deviceToEdit.Name;
             Host = deviceToEdit.Host;
@@ -79,14 +80,13 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 点击设备表单的保存按钮后，SaveCommand 调用这里。
-        /// 先检查输入，再组装 DeviceInput，按新增或编辑调用 DeviceManagementViewModel.TryAddDevice / TryUpdateDevice。
-        /// 成功后触发 SaveSucceeded，由 AddDeviceWindow.CompleteSave 关闭表单；输入错误则请求后台提示并定位输入框。
+        /// 由 SaveCommand 调用。
+        /// 检查输入并新增或修改设备，成功后请求关闭表单。
         /// </summary>
         [RelayCommand]
         private void Save()
         {
-            // 验证输入，Trim 去掉前后空格。空白或不合法就请求后台提示并定位输入框；不抛异常。
+            // Trim 去掉前后空格；输入不对就提示，不继续保存。
             string name = DeviceName.Trim();
             string host = Host.Trim();
             if (string.IsNullOrWhiteSpace(name))
@@ -117,7 +117,7 @@ namespace DeviceMonitor.ViewModels
                 return;
             }
 
-            // 这里之所以用 TryReadPositiveMilliseconds 方法，是因为采集间隔和三个超时都必须是大于 0 的整数毫秒。反复验证所以单独编写了方法
+            // 采集间隔和三个超时都要检查正整数毫秒，所以共用这个方法。
             if (!TryReadPositiveMilliseconds(SamplingIntervalText, "采集间隔",
                     nameof(SamplingIntervalText), out int samplingInterval) ||
                 !TryReadPositiveMilliseconds(ConnectTimeoutText, "连接超时",
@@ -143,23 +143,21 @@ namespace DeviceMonitor.ViewModels
 
             try
             {
-                // 检查设备编号是否存在，如果存在说明是修改设备调用 TryUpdateDevice 或，如果不存在则是新增设备调用TryAddDevice 保存到数据库。
+                // 有原设备编号就修改，没有编号就新增。
                 bool saved = _editingDeviceId.HasValue
                     ? _deviceManagement.TryUpdateDevice(_editingDeviceId.Value, input)
                     : _deviceManagement.TryAddDevice(input);
 
                 if (!saved)
                 {
-                    // 调用 AddDeviceWindow.xaml.cs 的 ShowInputError：
-                    // 说明为什么没保存，并选中设备名称输入框；表单保持打开。
+                    // 让 AddDeviceWindow.ShowInputError 提示未保存，表单保持打开。
                     InputErrorRequested?.Invoke(_editingDeviceId.HasValue
                         ? "修改未保存：名称可能已被占用，或该设备已不存在。"
                         : "设备名称已存在，请换一个名称。", nameof(DeviceName));
                     return;
                 }
 
-                // 数据库已经保存成功。调用 AddDeviceWindow.xaml.cs 的 CompleteSave：
-                // 把窗口的 DialogResult 设为 true，关闭这次新增/编辑表单；这里不再写数据库。
+                // 保存成功，让 AddDeviceWindow.CompleteSave 设置成功结果并关闭表单。
                 SaveSucceeded?.Invoke();
             }
             catch (Exception ex)
@@ -170,18 +168,17 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// Save 对采集间隔和三个超时的验证。把输入文字转为正整数毫秒；不合格就请求窗口提示并定位输入框。
+        /// 由 Save 检查采集间隔和超时时间时调用。
+        /// 把文字转为大于 0 的整数毫秒，不合格就提示对应输入框。
         /// </summary>
         private bool TryReadPositiveMilliseconds(
             string text, string fieldName, string propertyName, out int value)
         {
-            // 转成整数成功，而且大于 0：检查通过。
-            // 转换出来的数字通过 value 带回调用处。
+            // 转成正整数就通过，数字通过 out value 带回去。
             if (int.TryParse(text, out value) && value > 0)
                 return true;
 
-            // 调用 AddDeviceWindow.xaml.cs 的 ShowInputError：显示下面的提示。
-            // propertyName 告诉后台该选中哪个输入框，例如采集间隔或读取超时。
+            // 让 AddDeviceWindow.ShowInputError 提示，propertyName 指明哪个输入框有问题。
             InputErrorRequested?.Invoke(
                 $"{fieldName}必须是大于 0 的整数（毫秒）。", propertyName);
             return false;

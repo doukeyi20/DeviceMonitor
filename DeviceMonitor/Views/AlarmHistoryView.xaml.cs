@@ -7,15 +7,15 @@ using Microsoft.Win32;
 namespace DeviceMonitor.Views;
 
 /// <summary>
-/// 报警历史页的后台：页面首次显示后查询，离开再回来保留已有结果。
-/// 订阅选择导出路径的方法；日期控件只管输入方式，数据库查询在 ViewModel/Store。
+/// 报警历史页面后台，负责首次查询、选择导出路径和日期控件设置。
+/// 真正查询和导出由 ViewModel 处理。
 /// </summary>
 public partial class AlarmHistoryView : UserControl
 {
-    private AlarmHistoryViewModel? _subscribedViewModel;
+    private AlarmHistoryViewModel? _subscribedViewModel; // 当前已订阅的数据源，离开时解除它的订阅。
 
     /// <summary>
-    /// 主窗口模板创建页面时调用。这里只加载 XAML，使用外面传来的 ViewModel 作为 DataContext。
+    /// 创建页面控件，数据源由主窗口传入。
     /// </summary>
     public AlarmHistoryView() => InitializeComponent();
 
@@ -29,7 +29,7 @@ public partial class AlarmHistoryView : UserControl
     }
 
     /// <summary>
-    /// 页面已显示时换了数据源，重新订阅并让新对象按首次进入规则查询；未加载时等 Loaded。
+    /// 已显示的页面换了数据源，就重新订阅，必要时进行首次查询。
     /// </summary>
     private async void AlarmHistoryView_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
@@ -40,7 +40,7 @@ public partial class AlarmHistoryView : UserControl
             await viewModel.RefreshRecordsCommand.ExecuteAsync(null);
     }
 
-    // 从 DataContext 接住同一个数据源，不重新 new；Loaded 重复发生也不会重复订阅。
+    // 接上当前数据源，同一对象不重复订阅。
     private void SubscribeViewModel()
     {
         if (ReferenceEquals(_subscribedViewModel, DataContext)) return;
@@ -52,7 +52,10 @@ public partial class AlarmHistoryView : UserControl
         }
     }
 
-    /// <summary>导出命令请求保存位置时调用。只显示保存窗口，不在这里查询数据库或写 CSV。</summary>
+    /// <summary>
+    /// 由 AlarmHistoryViewModel 的 ExportPathRequested 事件调用。
+    /// 弹出保存文件窗口，返回路径；取消返回 null，不在这里写 CSV。
+    /// </summary>
     private string? ChooseExportPath()
     {
         var dialog = new SaveFileDialog
@@ -70,15 +73,16 @@ public partial class AlarmHistoryView : UserControl
         return accepted == true ? dialog.FileName : null;
     }
 
+    // 离开标签时解除订阅并取消旧导出。
     private void AlarmHistoryView_Unloaded(object sender, RoutedEventArgs e) => UnsubscribeViewModel();
 
     /// <summary>
-    /// 换数据源或离开时调用。取消尚未结束的导出，解除界面请求；不会停止设备采集，也不清空历史记录。
+    /// 取消旧导出，断开界面请求，不影响采集或历史数据。
     /// </summary>
     private void UnsubscribeViewModel()
     {
         if (_subscribedViewModel is null) return;
-        // 切换标签/页面或换数据源时取消旧导出；导出器会清理自己的临时文件，不删原 CSV。
+        // 导出器收到取消后清理临时文件，不删除原 CSV。
         _subscribedViewModel.ExportRecordsCommand.Cancel();
         _subscribedViewModel.ExportPathRequested -= ChooseExportPath;
         _subscribedViewModel = null;
@@ -88,7 +92,7 @@ public partial class AlarmHistoryView : UserControl
     private void DatePicker_Loaded(object sender, RoutedEventArgs e) => LockDateInput((DatePicker)sender);
 
     /// <summary>
-    /// 查询前后日期控件禁用/启用时调用，再次锁住内部输入框，避免 WPF 恢复控件后又变成可手填。
+    /// 日期控件重新启用后，再把手工输入锁住。
     /// </summary>
     private void DatePicker_IsEnabledChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
@@ -97,10 +101,11 @@ public partial class AlarmHistoryView : UserControl
     }
 
     /// <summary>
-    /// 日期控件加载/重新启用时调用。锁住内部手工输入，只让日历选日期；不处理 SQL 查询条件。
+    /// 找到内部日期输入框设为只读，仍可用日历选日期。
     /// </summary>
     private static void LockDateInput(DatePicker picker)
     {
+        // 先生成内部结构，才能找到 PART_TextBox 输入框。
         picker.ApplyTemplate();
         if (picker.Template.FindName("PART_TextBox", picker) is TextBox textBox)
             textBox.IsReadOnly = true;

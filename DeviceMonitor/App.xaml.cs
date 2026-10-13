@@ -11,31 +11,29 @@ namespace DeviceMonitor
 {
 
     /// <summary>
-    /// 程序从这里开始：准备日志和数据库，把三个 Store 交给登录窗口，再显示窗口。
-    /// 先看 OnStartup；异常记录和 OnExit 是出错、退出时才走的分支。
+    /// 程序入口：准备日志和数据库，再创建并显示登录窗口。
     /// </summary>
     public partial class App : Application
     {
 
         /// <summary>
-        /// WPF 启动时自动调用。按顺序准备日志、数据库、UserStore/DeviceStore/HistoryStore，再创建并显示 LoginWindow。
-        /// 只是初始化和显示登录页，还没有登录，也没有开始采集。
+        /// 程序启动时，由 WPF 自动调用。
+        /// WPF 启动时自动调用；完成初始化后显示登录页，不自动采集。
         /// </summary>
         protected override void OnStartup(StartupEventArgs e)
         {
             base.OnStartup(e);
 
-            // 后面是程序启动时要做的事。
-
             try
             {
-                // 调用Applog的方法给传入路径字符串，得到写日志的对象。
+                // 指定日志目录，AppLog 内部创建真正写文件的 FileLog 对象。
                 AppLog.Initialize(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                     "DeviceMonitor", "Logs"));
 
-                // 内部调用 FileLog.Write 写日志文件，记录程序启动。
+                // 写入一条“程序启动”日志。
                 AppLog.Info("程序启动");
 
+                // 未处理的界面、程序和后台任务异常，都尽量留下日志。
                 DispatcherUnhandledException += RecordDispatcherError;
                 AppDomain.CurrentDomain.UnhandledException += RecordDomainError;
                 TaskScheduler.UnobservedTaskException += RecordTaskError;
@@ -51,7 +49,7 @@ namespace DeviceMonitor
 
                 DeviceStore deviceStore = new DeviceStore(initializer.DatabasePath);
 
-                // 历史也放在同一个库里。这个对象后面会一路传到每台设备的采集任务。
+                // 历史与配置共用一个数据库，这个对象后面会传给采集任务。
                 HistoryStore historyStore = new HistoryStore(initializer.DatabasePath);
 
                 // 创建登录窗口，把数据库操作对象交给它。
@@ -81,25 +79,25 @@ namespace DeviceMonitor
         }
 
         /// <summary>
-        /// 界面线程有未处理异常时，WPF 调用这里记录调用位置；不假装错误已经解决。
+        /// 界面线程出现未处理异常时，记录日志；不吞掉异常。
         /// </summary>
         private void RecordDispatcherError(object sender, DispatcherUnhandledExceptionEventArgs e) =>
             AppLog.Error("界面线程未处理异常", exception: e.Exception);
 
         /// <summary>
-        /// 程序遇到未处理异常时，由 .NET 通知这里记日志，不在这里重新启动采集。
+        /// 程序出现未处理异常时，记录日志。
         /// </summary>
         private void RecordDomainError(object sender, UnhandledExceptionEventArgs e) =>
             AppLog.Error("程序未处理异常", exception: e.ExceptionObject as Exception);
 
         /// <summary>
-        /// 后台 Task 的异常一直没有被观察时，由 .NET 通知这里留下日志。
+        /// 后台 Task 的异常没有被调用方处理时，收到通知并记日志。
         /// </summary>
         private void RecordTaskError(object? sender, UnobservedTaskExceptionEventArgs e) =>
             AppLog.Error("后台任务未观察异常", exception: e.Exception);
 
         /// <summary>
-        /// 程序真正退出时由 WPF 调用：记退出日志，解除启动时登记的异常处理方法。
+        /// 程序退出时自动调用，写退出日志并解除异常事件订阅。
         /// </summary>
         protected override void OnExit(ExitEventArgs e)
         {

@@ -5,8 +5,8 @@ using Microsoft.Data.Sqlite;
 namespace DeviceMonitor.Core.Persistence;
 
 /// <summary>
-/// 报警历史的数据库操作：按 EventId 插入或更新同一事件，再为历史页/导出器查询。
-/// 不判断是否越限；判断在 AlarmTracker。配置删掉后，过去的报警仍能保留和查询。
+/// 保存和查询报警历史。相同 EventId 更新原记录，不重复新增。
+/// 是否报警由 AlarmTracker 判断，这里只操作数据库。
 /// </summary>
 public sealed class AlarmStore
 {
@@ -15,10 +15,10 @@ public sealed class AlarmStore
         Message, Value, LimitValue, StartedAtUtc, LastSeenAtUtc, EndedAtUtc, Occurrences
         """;
     private readonly string _connectionString;
-    // 导出器拿这个路径作比较，防止把数据库误当 CSV 覆盖；它不是一个打开着的连接。
+    // 数据库文件路径；导出时用来防止误覆盖数据库。
     public string DatabasePath { get; }
 
-    /// <summary>MainViewModel 沿用已初始化的数据库路径创建一次；每次查询或保存仍使用自己的连接。</summary>
+    /// <summary>记住数据库路径；每次操作再打开自己的连接。</summary>
     public AlarmStore(string databasePath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
@@ -32,8 +32,9 @@ public sealed class AlarmStore
     }
 
     /// <summary>
-    /// 第一次发生时插入；同一 EventId 再保存时修改原行，持续超限不会每轮新增一条。
-    /// 操作员也能启停采集，所以已启用的两种账户都可以保存采集产生的报警。
+    /// 由 AlarmTracker.FlushAsync 保存待处理报警时调用。
+    /// 保存一条报警：新事件插入，已有事件更新。
+    /// 已启用的管理员和操作员都可以保存采集产生的报警。
     /// </summary>
     public void SaveRecord(UserAccount currentUser, AlarmRecord record)
     {
@@ -42,6 +43,7 @@ public sealed class AlarmStore
         using var connection = new SqliteConnection(_connectionString);
         connection.Open();
         using SqliteCommand command = connection.CreateCommand();
+        // 新 EventId 就插入，已有 EventId 就更新；编号对应的设备和点位不能换。
         command.CommandText = """
             INSERT INTO AlarmRecords (
                 EventId, DeviceId, DeviceName, PointId, PointName, Kind, State,
@@ -62,7 +64,7 @@ public sealed class AlarmStore
                 AND AlarmRecords.Kind = excluded.Kind
                 AND AlarmRecords.StartedAtUtc = excluded.StartedAtUtc;
             """;
-        // 设备和点位名称保存发生时的快照；后来改配置，不重写过去报警的名字。
+        // 记住报警发生时的名称，后来改名也不改旧报警。
         command.Parameters.AddWithValue("$eventId", record.EventId);
         command.Parameters.AddWithValue("$deviceId", record.DeviceId);
         command.Parameters.AddWithValue("$deviceName", record.DeviceName);
@@ -78,13 +80,16 @@ public sealed class AlarmStore
         command.Parameters.AddWithValue("$endedAt", record.EndedAt.HasValue
             ? UtcText(record.EndedAt.Value) : DBNull.Value);
         command.Parameters.AddWithValue("$occurrences", record.Occurrences);
+
+        // 真正执行保存，必须只影响一条对应的报警。
         if (command.ExecuteNonQuery() != 1)
             throw new InvalidOperationException("这个报警编号已经用于另一条报警，不能覆盖。");
     }
 
     /// <summary>
-    /// 报警历史页面查询或翻页时调用；第一次记住最大编号，后面翻页传回同一编号。
-    /// 只固定新报警的范围；同一报警的恢复状态仍允许更新，不把历史当作在线证明。
+    /// 主要由 AlarmHistoryViewModel.LoadPageAsync 调用。
+    /// 按条件查询一页报警。翻页沿用最大编号，排除后来新增的报警。
+    /// 已有报警的恢复状态仍可能变化。
     /// </summary>
     public AlarmPage GetPage(UserAccount currentUser, AlarmFilter filter, int pageNumber = 1,
         int pageSize = 100, long? snapshotId = null)
@@ -96,15 +101,18 @@ public sealed class AlarmStore
         if (snapshotId is < 0) throw new ArgumentOutOfRangeException(nameof(snapshotId));
         using var connection = new SqliteConnection(_connectionString);
         connection.Open();
-        // 总数和当前页在同一个读取事务里查询，避免一半查旧数据、一半查新数据。
+        // 总数和本页一起查，避免两次查询的数据范围对不上。
         using SqliteTransaction transaction = connection.BeginTransaction(deferred: true);
         using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
+        // 首次查询取最大编号，翻页沿用旧编号，排除后来新增的报警。
         command.CommandText = "SELECT COALESCE(MAX(Id), 0) FROM AlarmRecords;";
         long maxId = snapshotId ?? Convert.ToInt64(command.ExecuteScalar());
         string where = AddFilterParameters(command, filter, maxId);
         command.CommandText = $"SELECT COUNT(*) FROM AlarmRecords {where};";
         long count = Convert.ToInt64(command.ExecuteScalar());
+
+        // 算实际页码，limit 限制本页条数，offset 跳过前面的记录。
         long pages = count == 0 ? 1 : (count - 1) / pageSize + 1;
         int actualPage = (int)Math.Min(pageNumber, pages);
         command.Parameters.AddWithValue("$limit", pageSize);
@@ -113,6 +121,7 @@ public sealed class AlarmStore
             SELECT {RecordColumns} FROM AlarmRecords {where}
             ORDER BY StartedAtUtc DESC, Id DESC LIMIT $limit OFFSET $offset;
             """;
+        // 每一行装成 AlarmRecord，连同总数和页码交回页面。
         var records = new List<AlarmRecord>();
         using (SqliteDataReader reader = command.ExecuteReader())
         {
@@ -122,17 +131,21 @@ public sealed class AlarmStore
         return new AlarmPage(records, count, actualPage, maxId);
     }
 
-    /// <summary>需要简单查最近记录时调用；完整报警历史页面用 GetPage 获取总数和页码。</summary>
+    /// <summary>只查最近记录；需要总数和页码时用 GetPage。</summary>
     public IReadOnlyList<AlarmRecord> GetRecentRecords(UserAccount currentUser, int limit = 200) =>
         GetPage(currentUser, new AlarmFilter(), pageSize: limit).Records;
 
-    /// <summary>从报警记录里取得设备选项；设备配置被删除，也还能查到过去的报警。</summary>
+    /// <summary>
+    /// 由 AlarmHistoryViewModel.LoadPageAsync 需要刷新设备选项时调用。
+    /// 从报警记录里取得设备选项；设备配置被删除，也还能查到过去的报警。
+    /// </summary>
     public IReadOnlyList<HistoryDeviceOption> GetDeviceOptions(UserAccount currentUser)
     {
         CheckUser(currentUser);
         using var connection = new SqliteConnection(_connectionString);
         connection.Open();
         using SqliteCommand command = connection.CreateCommand();
+        // 每台设备取最后一条报警中的名称，组成下拉框选项，不依赖设备配置还在不在。
         command.CommandText = """
             SELECT a.DeviceId, a.DeviceName FROM AlarmRecords a
             JOIN (SELECT DeviceId, MAX(Id) AS LatestId FROM AlarmRecords GROUP BY DeviceId) latest
@@ -140,6 +153,7 @@ public sealed class AlarmStore
             ORDER BY a.DeviceName COLLATE NOCASE, a.DeviceId;
             """;
         using SqliteDataReader reader = command.ExecuteReader();
+        // 把查询的每一行装成一个设备选项。
         var devices = new List<HistoryDeviceOption>();
         while (reader.Read())
             devices.Add(new HistoryDeviceOption(reader.GetInt64(0), reader.GetString(1)));
@@ -147,9 +161,9 @@ public sealed class AlarmStore
     }
 
     /// <summary>
-    /// AlarmCsvExporter 每次取一批报警，写完后再回来取下一批，不一次把全部记录放进内存。
-    /// after 是上一批最后一条；按“首次发生时间、编号”接着往后找，同一时间也不会重复。
-    /// 最大编号挡住后来新插入的报警；原报警可能继续恢复，所以整份文件不是同一瞬间的状态快照。
+    /// 由 AlarmCsvExporter.Export 分批导出时调用。
+    /// 为导出取一批记录，不一次加载全部历史。
+    /// after 是上一批最后一条的位置，这一批接着往后取。
     /// </summary>
     internal IReadOnlyList<AlarmRecord> GetExportBatch(UserAccount currentUser, AlarmFilter filter,
         long snapshotId, AlarmRecord? after, int batchSize, CancellationToken token)
@@ -182,11 +196,11 @@ public sealed class AlarmStore
             token.ThrowIfCancellationRequested();
             records.Add(ReadRecord(reader));
         }
-        // 方法返回时 using 会关掉 reader 和连接；写文件时不会继续占着这批查询的连接。
+        // 返回前关闭查询连接，写文件时不继续占着它。
         return records;
     }
 
-    // 下面是上面几个公开方法共用的细节，不直接给界面调用。
+    // 下面是数据库操作共用的小方法。
     private static string AddFilterParameters(SqliteCommand command, AlarmFilter filter, long snapshotId)
     {
         string where = "WHERE Id <= $snapshotId";
@@ -215,7 +229,8 @@ public sealed class AlarmStore
     }
 
     /// <summary>
-    /// 本类查询共用：按 RecordColumns 顺序组装 AlarmRecord；可空列先检查 NULL，不把未知值当 0。
+    /// 由 GetPage 和 GetExportBatch 读取数据库结果时调用。
+    /// 把数据库的一行装成报警对象，空值不能当作 0。
     /// </summary>
     private static AlarmRecord ReadRecord(SqliteDataReader reader) => new()
     {
@@ -237,10 +252,11 @@ public sealed class AlarmStore
     };
 
     /// <summary>
-    /// 保存前检查记录完整性和取值范围；这不是数值越限判断。
+    /// 检查报警记录是否完整、取值是否有效，不负责判断越限。
     /// </summary>
     private static void ValidateRecord(AlarmRecord record)
     {
+        // 先检查编号、名称、类型和次数等基本信息。
         ArgumentNullException.ThrowIfNull(record);
         ArgumentOutOfRangeException.ThrowIfNegative(record.Id);
         ArgumentException.ThrowIfNullOrWhiteSpace(record.EventId);
@@ -254,6 +270,8 @@ public sealed class AlarmStore
         if (!Enum.IsDefined(record.Kind)) throw new ArgumentOutOfRangeException(nameof(record.Kind));
         if (!Enum.IsDefined(record.State)) throw new ArgumentOutOfRangeException(nameof(record.State));
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(record.Occurrences);
+
+        // 时间和状态必须对应：活动报警不能有结束时间，已结束报警必须有。
         if (record.LastSeenAt < record.StartedAt)
             throw new ArgumentException("最后发生时间不能早于首次发生时间。", nameof(record));
         if (record.State == AlarmState.Active && record.EndedAt.HasValue)
@@ -261,6 +279,8 @@ public sealed class AlarmStore
         if (record.State != AlarmState.Active &&
             (!record.EndedAt.HasValue || record.EndedAt.Value < record.LastSeenAt))
             throw new ArgumentException("结束时间不能早于最后发生时间。", nameof(record));
+
+        // 数值报警必须说明哪个点、读到多少、超过哪条限值；读取异常可以没有数值。
         if (record.Kind != AlarmKind.AcquisitionFailure &&
             (!record.PointId.HasValue || string.IsNullOrWhiteSpace(record.PointName)
                 || !record.Value.HasValue || !record.Limit.HasValue))
@@ -268,7 +288,7 @@ public sealed class AlarmStore
     }
 
     /// <summary>
-    /// 本类操作前检查账户；启用操作员也能保存采集产生的报警，历史页面和导出器另有角色限制。
+    /// 检查账户是否启用；管理员和操作员都可以保存采集报警。
     /// </summary>
     private static void CheckUser(UserAccount user)
     {
@@ -277,7 +297,7 @@ public sealed class AlarmStore
     }
 
     /// <summary>
-    /// 分页/导出分批查询前检查容量，不允许无效或过大的单次请求。
+    /// 检查每批条数，避免一次查太多。
     /// </summary>
     private static void CheckPageSize(int size)
     {
@@ -286,13 +306,13 @@ public sealed class AlarmStore
     }
 
     /// <summary>
-    /// 保存时间或添加查询参数时调用，统一成 UTC 文本再交给 SQLite。
+    /// 把时间转成数据库使用的 UTC 文字。
     /// </summary>
     private static string UtcText(DateTimeOffset time) =>
         time.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
 
     /// <summary>
-    /// 读回报警时间文本时调用，还原成 UTC 时间对象；界面显示本机时间由模型属性处理。
+    /// 把数据库时间文字还原成 UTC 时间对象。
     /// </summary>
     private static DateTimeOffset ParseUtc(string text) =>
         DateTimeOffset.ParseExact(text, "O", CultureInfo.InvariantCulture);

@@ -1,7 +1,5 @@
 <!--
-    阅读入口：主窗口的模板明确把 HistoryViewModel.Alarms 设为本页 DataContext。
-    Records 每行是数据库查出的 AlarmRecord；查询/翻页/导出在 AlarmHistoryViewModel，不是采集循环。
-    Loaded 首次查询并订阅选路径事件；离开标签取消导出并解除订阅。
+    数据源是 HistoryViewModel.Alarms，也就是 AlarmHistoryViewModel，负责查询和导出报警历史。
 -->
 <UserControl x:Class="DeviceMonitor.Views.AlarmHistoryView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -9,7 +7,7 @@
              Loaded="AlarmHistoryView_Loaded" Unloaded="AlarmHistoryView_Unloaded"
              DataContextChanged="AlarmHistoryView_DataContextChanged"
              Language="zh-CN" FontFamily="Microsoft YaHei UI" Foreground="{StaticResource PrimaryTextBrush}">
-    <!-- 表格自己滚动；按钮、页码不再跟着整页滚出屏幕。 -->
+    <!-- 表格自己滚动，按钮和页码固定显示。 -->
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
@@ -29,14 +27,14 @@
         <Border Grid.Row="1" Margin="0,6,0,0" Padding="6"
                 Style="{StaticResource ToolbarCardStyle}">
             <Grid>
-                <!-- 收起只节省地方，不清空条件；查询和重置仍常驻在右侧。 -->
+                <!-- 收起筛选区不清空条件，查询和重置按钮仍可见。 -->
                 <Expander x:Name="FilterExpander" IsExpanded="False" IsEnabled="{Binding CanEditFilters}">
                     <Expander.Header>
                         <TextBlock Text="筛选条件（展开/收起）" Margin="0,3,205,3"
                                    Style="{StaticResource SectionHeadingStyle}"
                                    ToolTip="按设备、报警类别和发生时间筛选。折叠不会重置条件。" />
                     </Expander.Header>
-                    <!-- 条件区单独滚动；最小窗口也给结果表留出表头和数据行的地方。 -->
+                    <!-- 筛选区单独滚动，给下面的结果表留出空间。 -->
                     <ScrollViewer MaxHeight="70" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                         <StackPanel Margin="0,6,4,0">
                             <WrapPanel>
@@ -104,7 +102,7 @@
                 <TextBlock Grid.Column="1" Text="{Binding RecordSummary}" Style="{StaticResource SubtleTextStyle}"
                            TextTrimming="CharacterEllipsis" ToolTip="{Binding RecordSummary}" VerticalAlignment="Center" />
             </Grid>
-            <!-- 这组按钮操作已查询的结果；改条件后先重新查询，才允许导出和看趋势。 -->
+            <!-- 导出使用已查询的结果，改条件后要先重新查询。 -->
             <StackPanel Grid.Column="1" Orientation="Horizontal">
                 <Button Content="导出全部结果" Command="{Binding ExportRecordsCommand}"
                         ToolTip="导出本次查询匹配的全部页；查询后的新增记录需重新查询后才纳入。"
@@ -126,7 +124,7 @@
 
         <Border Grid.Row="3" Padding="0" Style="{StaticResource SectionCardStyle}">
             <Grid MinHeight="70">
-            <!-- 状态和目标放在最前面；长说明等详情向右滚动查看，原有列全部保留。 -->
+            <!-- Records 每项是一条 AlarmRecord，列显示该报警的状态、设备、原因和时间等属性。 -->
             <DataGrid BorderThickness="0" RowHeight="32" ColumnHeaderHeight="32" ItemsSource="{Binding Records}" AutoGenerateColumns="False" IsReadOnly="True"
                           CanUserAddRows="False" CanUserDeleteRows="False" CanUserReorderColumns="False"
                           CanUserResizeColumns="False" HeadersVisibility="Column"
@@ -214,7 +212,7 @@
             <Button Content="下一页" Command="{Binding NextPageCommand}" Height="28" Padding="10,3" Style="{StaticResource SecondaryActionButtonStyle}" />
             </StackPanel>
         </Border>
-        <!-- 状态一直显示；文字过长可悬停看全，不向下挤占结果表格。 -->
+        <!-- 过长的状态文字省略显示，鼠标悬停可看全。 -->
         <Grid Grid.Row="5" Margin="0,4,0,0">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
             <TextBlock Text="{Binding FilterStatusText}" ToolTip="{Binding FilterStatusText}" TextTrimming="CharacterEllipsis"

@@ -1,7 +1,5 @@
 ﻿<!--
-    阅读入口：后台创建 MainViewModel 并设为 DataContext。
-    导航 Pages → CurrentPage → ContentControl → 对应 DataTemplate/页面；页面沿用这个页面对象作数据源。
-    历史页的报警标签例外：明确把 Alarms 子对象交给 AlarmHistoryView。
+    数据源是后台创建的 MainViewModel；左侧选择页面，右侧显示对应界面。
 -->
 <Window x:Class="DeviceMonitor.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -20,12 +18,12 @@
         Foreground="{StaticResource PrimaryTextBrush}">
 
     <Window.Resources>
-        <!-- 监控页面的数据对象，用监控界面来显示，跟ContentControl控件搭配，当选择数据对象，就会映射对应的界面文件到右侧 -->
+        <!-- CurrentPage 是 MonitoringViewModel 时，右侧用 MonitoringView 显示它。 -->
         <DataTemplate DataType="{x:Type vm:MonitoringViewModel}">
             <views:MonitoringView />
         </DataTemplate>
 
-        <!-- 设备管理的数据对象，用设备管理界面来显示 -->
+        <!-- 设备管理数据用 DeviceManagementView 显示。 -->
         <DataTemplate DataType="{x:Type vm:DeviceManagementViewModel}">
             <views:DeviceManagementView />
         </DataTemplate>
@@ -34,14 +32,14 @@
             <views:UserManagementView />
         </DataTemplate>
 
-        <!-- 采集管理的数据对象，使用 AcquisitionView 展示。 -->
+        <!-- 采集点配置数据用 AcquisitionView 显示。 -->
         <DataTemplate DataType="{x:Type vm:AcquisitionViewModel}">
             <views:AcquisitionView />
         </DataTemplate>
 
-        <!-- 导航选中 HistoryViewModel 后，用历史页面展示它，并把这个对象交给页面作为 DataContext。 -->
+        <!-- 历史数据用下面的两个标签显示，各自有自己的数据源。 -->
         <DataTemplate DataType="{x:Type vm:HistoryViewModel}">
-            <!-- 共用一个历史入口，两个标签各用自己的数据源，不增加新的左侧导航。 -->
+            <!-- 读数标签用 HistoryViewModel；报警标签用它的 Alarms 属性。 -->
             <TabControl>
                 <TabItem Header="采集数据">
                     <views:HistoryView />
@@ -77,7 +75,7 @@
                 </Grid.ColumnDefinitions>
 
                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                    <!-- 用简单线条画标记，不加载图片或引入图标库。 -->
+                    <!-- 用线条画应用标记。 -->
                     <Border Width="36" Height="36" CornerRadius="9" Margin="0,0,12,0"
                             Background="{StaticResource AccentBrush}">
                         <Path Data="M 0,10 L 5,10 8,2 13,18 17,8 23,8" Stroke="White"
@@ -103,7 +101,7 @@
                             BorderThickness="1"
                             VerticalAlignment="Center">
                         <Button.ContextMenu>
-                            <!-- 菜单不在页面的数据源继承链中，明确取打开它的按钮的数据源。 -->
+                            <!-- 菜单不会自动拿到页面的数据源，这里明确从所属按钮取。 -->
                             <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
                                 <MenuItem Header="修改密码" Command="{Binding ChangePasswordCommand}" />
                                 <MenuItem Header="打开日志文件夹" Command="{Binding OpenLogsCommand}" />
@@ -121,7 +119,7 @@
                             <TextBlock Text="  ▾" Foreground="{StaticResource SecondaryTextBrush}" />
                         </StackPanel>
                     </Button>
-                    <!-- 命令通知 ViewModel；窗口后台收到事件后才弹确认框、停止任务、切回登录。 -->
+                    <!-- 命令发出退出请求，后台确认后停止任务、返回登录窗口。 -->
                     <Button Content="退出登录"
                             Command="{Binding LogoutCommand}"
                             Margin="12,0,0,0"
@@ -144,7 +142,7 @@
                 </Grid.RowDefinitions>
                 <TextBlock Text="工作空间" Margin="22,22,0,8" FontSize="11"
                            Foreground="{StaticResource SecondaryTextBrush}" />
-            <!--列表中的数据来源于Pages属性，存的是各页面的viewmodel对象，选中就会把对象传到CurrentPage，跟下面的ContentControl控件联系-->
+            <!-- Pages 存各页面的 ViewModel；选中的对象写入 CurrentPage，供右侧显示。 -->
             <ListBox Grid.Row="1" Margin="10,0,10,14"
                      BorderThickness="0"
                      Background="Transparent"
@@ -153,7 +151,7 @@
                      SelectionMode="Single"
                      HorizontalContentAlignment="Stretch">
 
-                <!-- 小标记只帮助分辨页面。数据源仍然是原来的各个 ViewModel。 -->
+                <!-- 每个页面的导航小标记。 -->
                 <ListBox.ItemTemplate>
                     <DataTemplate>
                         <StackPanel Orientation="Horizontal">
@@ -232,7 +230,7 @@
                 BorderBrush="{StaticResource BorderBrushNeutral}"
                 BorderThickness="1"
                 CornerRadius="12">
-            <!-- Content就是当前选择页面的ViewModel对象，由顶端的DataTemplate控件决定用CurrentPage指定的对象的对应界面展示，并且每个界面绑定的数据源就是对应的CurrentPage存的对象 -->
+            <!-- Content 取 CurrentPage；上面的 DataTemplate 决定用哪个界面，并把该对象交给它作数据源。 -->
             <ContentControl Content="{Binding CurrentPage}" 
                 HorizontalContentAlignment="Stretch"
                             VerticalContentAlignment="Stretch" />

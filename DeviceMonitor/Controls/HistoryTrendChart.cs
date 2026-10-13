@@ -7,13 +7,13 @@ namespace DeviceMonitor.Controls
 {
 
     /// <summary>
-    /// 只负责把已保存的 HistoryRecord 画成曲线的 WPF 控件，不连接设备也不查库。
-    /// Records 由窗口绑定；数据改变或控件大小改变时 WPF 重画。第一遍只需看 Records 和 OnRender 入口。
+    /// 把 HistoryRecord 历史读数画成曲线的控件，不查数据库、不读取设备。
+    /// Records 换了数据或窗口大小改变时，WPF 会重画。
     /// </summary>
     public sealed class HistoryTrendChart : FrameworkElement
     {
-        private const int MaximumRecords = 1000;
-        private const int VerticalTickCount = 5;
+        private const int MaximumRecords = 1000; // 最多画 1000 个点，避免界面卡顿。
+        private const int VerticalTickCount = 5; // 纵轴显示 5 个刻度。
         private static readonly Brush BackgroundBrush = Brushes.White;
         private static readonly Brush TextBrush = CreateBrush(95, 105, 117);
         private static readonly Brush LineBrush = CreateBrush(68, 101, 126);
@@ -30,12 +30,14 @@ namespace DeviceMonitor.Controls
             typeof(HistoryTrendChart),
             new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
 
+        // 图表绑定的历史记录，每条的读取时间作横坐标、数值作纵坐标。
         public IReadOnlyList<HistoryRecord>? Records
         {
             get => (IReadOnlyList<HistoryRecord>?)GetValue(RecordsProperty);
             set => SetValue(RecordsProperty, value);
         }
 
+        // 让图形尽量对齐屏幕像素，减少线条模糊。
         public HistoryTrendChart()
         {
             SnapsToDevicePixels = true;
@@ -43,8 +45,8 @@ namespace DeviceMonitor.Controls
         }
 
         /// <summary>
-        /// WPF 要重画控件时自动调用。读取 Records，按时间排好并计算坐标，再画坐标轴、连线和圆点。
-        /// 没有数据就画提示，不补假读数；这些连线也不证明相邻记录之间一直通信正常。
+        /// 自动重画图表：按时间排列记录，计算坐标，再画轴、连线和圆点。
+        /// 连线只连接已保存的读数，不代表两点之间通信一直正常。
         /// </summary>
         protected override void OnRender(DrawingContext drawingContext)
         {
@@ -54,6 +56,7 @@ namespace DeviceMonitor.Controls
             if (width <= 0 || height <= 0)
                 return;
 
+            // 限制绘制范围并画背景；太小或没数据时只画提示。
             drawingContext.PushClip(new RectangleGeometry(new Rect(0, 0, width, height)));
             drawingContext.DrawRoundedRectangle(BackgroundBrush, BorderPen,
                 new Rect(0.5, 0.5, Math.Max(0, width - 1), Math.Max(0, height - 1)), 6, 6);
@@ -72,20 +75,20 @@ namespace DeviceMonitor.Controls
                 return;
             }
 
-            // 查询结果可能是倒序。画图时按读取时间从左到右排列，不修改原来的记录列表。
-            // 页面本来就只查询最多 1000 条；这里再限制一次，避免误传太多数据拖慢界面。
+            // 限制数量，再按时间从左到右排列，不修改原列表。
             HistoryRecord[] ordered = records.Take(MaximumRecords)
                 .OrderBy(record => record.ReadAt)
                 .ThenBy(record => record.Id)
                 .ToArray();
 
+            // 根据读数范围算纵轴上下界，留一点空隙；全是同一值也要有高度。
             double minimum = ordered.Min(record => record.Value);
             double maximum = ordered.Max(record => record.Value);
             double padding = minimum == maximum ? 1 : (maximum - minimum) * 0.08;
             double lowerBound = minimum - padding;
             double upperBound = maximum + padding;
 
-            // 所有读数相同也需要留一点上下空间，否则纵轴范围为 0，算不出点的位置。
+            // 根据刻度文字宽度留出左边空白，剩下的矩形 plot 才是真正画曲线的区域。
             string[] tickLabels = Enumerable.Range(0, VerticalTickCount)
                 .Select(index => FormatValue(lowerBound +
                     (upperBound - lowerBound) * index / (VerticalTickCount - 1)))
@@ -101,24 +104,26 @@ namespace DeviceMonitor.Controls
                 return;
             }
 
+            // 先画轴，再画数据，最后解除绘制范围限制。
             DrawAxes(drawingContext, plot, tickLabels, ordered[0].ReadAt, ordered[^1].ReadAt);
             DrawReadings(drawingContext, plot, ordered, lowerBound, upperBound);
             drawingContext.Pop();
         }
 
+        // 窗口尺寸变了，要求 WPF 按新尺寸重画。
         protected override void OnRenderSizeChanged(SizeChangedInfo sizeInfo)
         {
             base.OnRenderSizeChanged(sizeInfo);
-            // 窗口拉大、缩小时，按新的可用宽高重新计算坐标，不拉伸旧图片。
             InvalidateVisual();
         }
 
         /// <summary>
-        /// OnRender 调用，画纵轴刻度、网格和本机时间横轴；不计算或读取新的设备值。
+        /// 画纵轴刻度、网格线和本机时间横轴。
         /// </summary>
         private void DrawAxes(DrawingContext drawingContext, Rect plot, string[] tickLabels,
             DateTimeOffset firstTime, DateTimeOffset lastTime)
         {
+            // 纵轴按数值等分，逐行画网格和刻度文字。
             drawingContext.DrawText(CreateText("读数"), new Point(12, 8));
             for (int index = 0; index < VerticalTickCount; index++)
             {
@@ -131,13 +136,14 @@ namespace DeviceMonitor.Controls
             drawingContext.DrawLine(AxisPen, plot.BottomLeft, plot.TopLeft);
             drawingContext.DrawLine(AxisPen, plot.BottomLeft, plot.BottomRight);
 
+            // 按时间跨度选择显示到日期、秒还是毫秒。
             long elapsedTicks = lastTime.UtcTicks - firstTime.UtcTicks;
             string timeFormat = elapsedTicks >= TimeSpan.TicksPerDay ? "MM-dd HH:mm"
                 : elapsedTicks < TimeSpan.TicksPerSecond ? "HH:mm:ss.fff" : "HH:mm:ss";
 
             if (elapsedTicks == 0)
             {
-                // 时间完全相同的点画在同一个位置，只标出这个真实时间，不虚构前后时间。
+                // 时间全相同时，只在中间标这个时间。
                 DrawTimeLabel(drawingContext, firstTime, timeFormat, plot.Left + plot.Width / 2,
                     plot.Bottom + 9, plot, centered: true);
             }
@@ -157,7 +163,7 @@ namespace DeviceMonitor.Controls
         }
 
         /// <summary>
-        /// OnRender 调用。把记录时间/数值换算为控件内的坐标，再连接真实记录的点；不修改 Records。
+        /// 把每条记录的时间和数值换成屏幕坐标，再画连线和圆点。
         /// </summary>
         private void DrawReadings(DrawingContext drawingContext, Rect plot,
             HistoryRecord[] ordered, double lowerBound, double upperBound)
@@ -166,8 +172,7 @@ namespace DeviceMonitor.Controls
             long elapsedTicks = ordered[^1].ReadAt.UtcTicks - firstTicks;
             Point[] points = ordered.Select(record =>
             {
-                // 横轴按真实经过的时间算：隔十秒的点比隔一秒的点离得更远。
-                // 相同时间的读数使用相同横坐标；只有一个时间时放在图中央。
+                // 时间、数值先换成 0～1 的比例，再换成屏幕坐标；时间全相同就放中间。
                 double timeRatio = elapsedTicks == 0 ? 0.5
                     : (double)(record.ReadAt.UtcTicks - firstTicks) / elapsedTicks;
                 double valueRatio = (record.Value - lowerBound) / (upperBound - lowerBound);
@@ -175,6 +180,7 @@ namespace DeviceMonitor.Controls
                     plot.Bottom - plot.Height * valueRatio);
             }).ToArray();
 
+            // 两个点以上才画连线，按记录顺序依次连接。
             if (points.Length > 1)
             {
                 StreamGeometry curve = new StreamGeometry();
@@ -188,14 +194,14 @@ namespace DeviceMonitor.Controls
                 drawingContext.DrawGeometry(null, CurvePen, curve);
             }
 
-            // 单条记录也画一个清楚的圆点，不需要凑出第二条假数据才能看到图。
+            // 每条记录再画一个圆点，只有一条时把圆点画大些。
             double radius = points.Length == 1 ? 3.5 : 1.8;
             foreach (Point point in points)
                 drawingContext.DrawEllipse(LineBrush, null, point, radius, radius);
         }
 
         /// <summary>
-        /// DrawAxes 调用，把一个时间标签限制在绘图区宽度内，避免文字跑出边界。
+        /// 画一个时间标签，把文字限制在绘图区宽度内。
         /// </summary>
         private void DrawTimeLabel(DrawingContext drawingContext, DateTimeOffset time, string format,
             double x, double y, Rect plot, bool centered)
@@ -207,7 +213,7 @@ namespace DeviceMonitor.Controls
         }
 
         /// <summary>
-        /// OnRender 在窗口太小或没有数据时调用，只画提示文字。
+        /// 在控件中间画提示文字。
         /// </summary>
         private void DrawCenteredMessage(DrawingContext drawingContext, string message, double width, double height)
         {
@@ -218,7 +224,7 @@ namespace DeviceMonitor.Controls
         }
 
         /// <summary>
-        /// 绘制刻度和提示时共用，生成带当前屏幕 DPI 的文字，避免缩放后模糊。
+        /// 按当前屏幕缩放准备绘图文字，避免高分屏上模糊。
         /// </summary>
         private FormattedText CreateText(string text, double fontSize = 12)
         {
@@ -227,7 +233,7 @@ namespace DeviceMonitor.Controls
         }
 
         /// <summary>
-        /// 生成纵轴刻度时调用，把数字显示成较短的刻度文字；不改变原始读数。
+        /// 把数值换成简短的刻度文字，不改原始读数。
         /// </summary>
         private static string FormatValue(double value)
         {
@@ -235,7 +241,7 @@ namespace DeviceMonitor.Controls
         }
 
         /// <summary>
-        /// 创建画图颜色时调用，固定画刷后供多次绘制复用。
+        /// 按 RGB 创建画刷，Freeze 后不再修改，可反复使用。
         /// </summary>
         private static Brush CreateBrush(byte red, byte green, byte blue)
         {
@@ -245,7 +251,7 @@ namespace DeviceMonitor.Controls
         }
 
         /// <summary>
-        /// 创建坐标轴/网格/曲线的画笔时调用，复用颜色和线宽。
+        /// 按颜色和线宽创建可重复使用的画笔。
         /// </summary>
         private static Pen CreatePen(byte red, byte green, byte blue, double thickness)
         {

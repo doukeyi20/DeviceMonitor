@@ -11,12 +11,12 @@ using DeviceMonitor.Core.Persistence;
 
 namespace DeviceMonitor.ViewModels;
 
-// 类别下拉框的一项；null 表示“全部”，不是一种新的报警类型。
+// 类别下拉框的一项，Category 为 null 表示“全部类别”。
 public sealed record AlarmCategoryOption(AlarmCategory? Category, string DisplayName);
 
 /// <summary>
-/// 报警历史的数据源：先保存筛选输入，点查询才生成固定条件；翻页和导出沿用查过的范围。
-/// 页面首次 Loaded 查询，不在构造函数中查库；选择文件交给页面后台，本类不启动采集。
+/// 报警历史标签的数据和命令，负责查询、翻页和导出。
+/// 改条件后要点查询才生效，翻页和导出沿用已查范围。
 /// </summary>
 public sealed partial class AlarmHistoryViewModel : ObservableObject
 {
@@ -27,20 +27,20 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
     private readonly HistoryDeviceOption _allDevices = new(null, "全部设备");
     private AlarmFilter? _appliedFilter; // 上次已查询的条件，不是尚未提交的输入框内容。
     private long _snapshotId; // 本次查询的最大报警编号；不含后来新增的报警，旧报警状态仍可能更新。
-    private long _totalRecords;
-    private int _currentPage;
-    private int _filterVersion;
-    private int _exportVersion;
-    private bool _updatingDeviceOptions;
-    private bool _hasLoadedRecords;
-    private bool _lastQueryFailed;
-    private bool _isShuttingDown;
+    private long _totalRecords; // 当前查询匹配的总条数。
+    private int _currentPage; // 当前页码，无记录时为 0。
+    private int _filterVersion; // 判断等待期间筛选输入是否又改了。
+    private int _exportVersion; // 让旧导出的进度通知作废。
+    private bool _updatingDeviceOptions; // 程序更新下拉框不算用户修改条件。
+    private bool _hasLoadedRecords; // 查过一次后，切回标签保留结果。
+    private bool _lastQueryFailed; // 失败后保留旧表格，但限制翻页、导出。
+    private bool _isShuttingDown; // 退出后不再发新操作或回填数据。
 
     public event Func<string?>? ExportPathRequested;
 
-    // 设备选项来自报警历史；设备后来被删除，也能用原编号查到以前的报警。
+    // 从报警历史提取的设备下拉选项，已删除的设备也能查旧记录。
     public ObservableCollection<HistoryDeviceOption> DeviceOptions { get; } = new();
-    public ObservableCollection<AlarmRecord> Records { get; } = new();
+    public ObservableCollection<AlarmRecord> Records { get; } = new(); // 报警历史表当前页，每项是一条 AlarmRecord。
     public AlarmCategoryOption[] CategoryOptions { get; } =
     {
         new(null, "全部类别"),
@@ -48,6 +48,7 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
         new(AlarmCategory.Acquisition, "采集异常")
     };
 
+    // 筛选控件绑定这些属性，修改后点查询才生效。
     [ObservableProperty] private HistoryDeviceOption? _selectedDevice;
     [ObservableProperty] private AlarmCategoryOption? _selectedCategory;
     [ObservableProperty] private bool _useTimeFilter;
@@ -55,13 +56,13 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
     [ObservableProperty] private DateTime? _endDate = DateTime.Today;
     [ObservableProperty] private string _startTimeText = "00:00:00";
     [ObservableProperty] private string _endTimeText = "23:59:59";
-    [ObservableProperty] private bool _filtersChanged;
-    [ObservableProperty] private bool _isLoading;
-    [ObservableProperty] private bool _isExporting;
+    [ObservableProperty] private bool _filtersChanged; // 条件已改但尚未重新查询。
+    [ObservableProperty] private bool _isLoading; // 正在查询。
+    [ObservableProperty] private bool _isExporting; // 正在导出。
 
-    // 这些值由查询结果计算，不让输入框写入，所以保留普通的只读属性。
+    // 查询结果对应的页码、条数和界面提示。
     public int CurrentPage => _currentPage;
-    // 切回标签时保留已经查过的结果；更新数据由“查询 / 刷新”明确发起。
+    // 页面 Loaded 用它判断是否需要首次查询。
     public bool HasLoadedRecords => _hasLoadedRecords;
     public long TotalRecords => _totalRecords;
     public long TotalPages => _totalRecords == 0 ? 0 : (_totalRecords - 1) / PageSize + 1;
@@ -85,8 +86,7 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 主界面创建后，交给报警历史标签作为 DataContext。
-    /// 这里先准备筛选选项；真正的第一次查询由 AlarmHistoryView.Loaded 调用命令。
+    /// 准备报警历史的数据源和筛选选项，页面加载后再进行首次查询。
     /// </summary>
     public AlarmHistoryViewModel(UserAccount currentUser, AlarmStore alarmStore)
     {
@@ -100,13 +100,17 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
         _selectedCategory = CategoryOptions[0];
     }
 
-    /// <summary>标签加载或点击查询后调用。先固定输入条件，再到后台查第一页。</summary>
+    /// <summary>
+    /// 由 RefreshRecordsCommand 或 ResetFiltersAsync 调用；首次显示报警历史也会执行此命令。
+    /// 按当前筛选输入查询第一页。
+    /// </summary>
     [RelayCommand(CanExecute = nameof(CanRefreshRecords))]
     private async Task RefreshRecordsAsync()
     {
         if (!CanRefreshRecords()) return;
         try
         {
+            // 先检查并固定输入条件，再查询第一页。
             AlarmFilter filter = BuildFilter();
             await LoadPageAsync(filter, 1, null, refreshDeviceOptions: true);
         }
@@ -118,13 +122,14 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 查询/重置命令判断按钮能不能点时调用。没有查询、导出或退出工作正在进行才允许。
+    /// 由 RefreshRecordsCommand、ResetFiltersCommand 判断按钮能不能点时调用。
+    /// 当前不忙时，查询和重置按钮才可点。
     /// </summary>
     private bool CanRefreshRecords() => !IsBusy;
 
     /// <summary>
-    /// 刷新命令调用：把输入整理成固定的查询条件；需要时将本机日期时间转成 UTC。
-    /// 条件对象交给 LoadPageAsync；改输入不会直接修改已经应用的旧条件。
+    /// 由 RefreshRecordsAsync 调用。
+    /// 把输入装成报警查询条件，需要时把本机时间转成 UTC。
     /// </summary>
     private AlarmFilter BuildFilter()
     {
@@ -136,29 +141,31 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 查询、上一页、下一页共用这里。后台只返回普通数据；await 回到界面线程再更新表格。
-    /// 查失败不清空表格，保留原结果并说明原因。
+    /// 由 RefreshRecordsAsync、PreviousPageAsync 和 NextPageAsync 调用。
+    /// 后台查询一页报警，成功后更新表格和页码；失败时保留原结果。
     /// </summary>
     private async Task LoadPageAsync(AlarmFilter filter, int page, long? snapshotId, bool refreshDeviceOptions = false)
     {
+        // 标记正在查询，并记住当前输入版本。
         IsLoading = true;
         _lastQueryFailed = false;
         int filterVersion = _filterVersion;
         PageMessage = "正在查询报警历史…";
         try
         {
+            // 后台只查数据，回来后再修改界面集合。
             var result = await Task.Run(() =>
             {
                 var options = refreshDeviceOptions ? _alarmStore.GetDeviceOptions(_currentUser) : null;
                 var data = _alarmStore.GetPage(_currentUser, filter, page, PageSize, snapshotId);
                 return (Options: options, Data: data);
             });
-            // 关窗后等查询结束即可，不再把结果写回已经退出的页面。
+            // 已退出就不再回填结果。
             if (_isShuttingDown) return;
 
             if (result.Options is not null)
             {
-                // 刷新下拉框会换成新对象，按编号找回原来的选择，不把它误当成用户改条件。
+                // 更新选项后按设备编号恢复选择，不当成用户修改条件。
                 long? selectedId = SelectedDevice?.DeviceId;
                 _updatingDeviceOptions = true;
                 try
@@ -177,8 +184,11 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
                 finally { _updatingDeviceOptions = false; }
             }
 
+            // 查询成功才替换表格，每个 AlarmRecord 对应一行。
             Records.Clear();
             foreach (AlarmRecord record in result.Data.Records) Records.Add(record);
+
+            // 保存本次查询范围，翻页和导出继续用它。
             _appliedFilter = filter;
             _snapshotId = result.Data.SnapshotId;
             _totalRecords = result.Data.TotalRecords;
@@ -202,7 +212,10 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
         }
     }
 
-    /// <summary>重置按钮调用：恢复全部设备、全部类别、全部时间，然后查询第一页。</summary>
+    /// <summary>
+    /// 由 ResetFiltersCommand 调用。
+    /// 恢复默认筛选条件，再查询第一页。
+    /// </summary>
     [RelayCommand(CanExecute = nameof(CanRefreshRecords))]
     private async Task ResetFiltersAsync()
     {
@@ -216,34 +229,40 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
         await RefreshRecordsAsync();
     }
 
-    // 翻页只使用已经查过的条件和最大记录编号；不会把查询后新增的记录突然插进中间。
+    // 按已查询的范围加载上一页，不混入后来新增的报警。
     [RelayCommand(CanExecute = nameof(CanPreviousPage))]
+    // 由 PreviousPageCommand 调用。
     private Task PreviousPageAsync() => CanPreviousPage()
         ? LoadPageAsync(_appliedFilter!, _currentPage - 1, _snapshotId) : Task.CompletedTask;
 
     /// <summary>
-    /// 上一页按钮条件：有已查结果、条件未改、上次查询没失败，而且当前不是第一页。
+    /// 由 PreviousPageCommand 判断按钮能不能点时调用。
+    /// 结果有效、条件未改且当前不是第一页，才允许上一页。
     /// </summary>
     private bool CanPreviousPage() => !IsBusy && !FiltersChanged && !_lastQueryFailed && _hasLoadedRecords && _currentPage > 1;
 
+    // 按同一查询范围加载下一页。
     [RelayCommand(CanExecute = nameof(CanNextPage))]
+    // 由 NextPageCommand 调用。
     private Task NextPageAsync() => CanNextPage()
         ? LoadPageAsync(_appliedFilter!, _currentPage + 1, _snapshotId) : Task.CompletedTask;
 
     /// <summary>
-    /// 下一页按钮条件：有已查结果、条件未改、上次查询没失败，而且后面还有页。
+    /// 由 NextPageCommand 判断按钮能不能点时调用。
+    /// 结果有效、条件未改且后面还有页，才允许下一页。
     /// </summary>
     private bool CanNextPage() => !IsBusy && !FiltersChanged && !_lastQueryFailed && _hasLoadedRecords && _currentPage < TotalPages;
 
     /// <summary>
-    /// “导出全部结果”按钮调用。先请 View 后台选择文件，再到后台线程分批查库、写 CSV。
-    /// IncludeCancelCommand 会生成 ExportRecordsCancelCommand，把取消请求传给下面的 token。
+    /// 由 ExportRecordsCommand 调用。
+    /// 选择文件后，后台导出本次查询的全部报警，不只当前页。
+    /// 工具包生成 ExportRecordsCancelCommand，让取消按钮发出停止信号。
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanExportRecords), IncludeCancelCommand = true)]
     private async Task ExportRecordsAsync(CancellationToken cancellationToken)
     {
         if (!CanExportRecords()) return;
-        // 记住的是上次查询的条件和最大编号，不能重新读取尚未点击查询的输入框。
+        // 固定已查询的条件和最大编号，不采用尚未查询的新输入。
         AlarmFilter filter = _appliedFilter!;
         long snapshot = _snapshotId;
         long total = _totalRecords;
@@ -253,8 +272,7 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
         {
             if (ExportPathRequested is null)
                 throw new InvalidOperationException("页面尚未准备好，无法选择导出文件。");
-            // 调用 AlarmHistoryView.xaml.cs 的 ChooseExportPath：弹出保存文件窗口。
-            // 选好后把完整路径返回给 path；点取消则返回 null，真正写 CSV 在后面的导出器里。
+            // AlarmHistoryView.xaml.cs 的 ChooseExportPath 弹出保存窗口，返回路径；取消返回 null。
             string? path = ExportPathRequested.Invoke();
             cancellationToken.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(path))
@@ -263,12 +281,14 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
                 return;
             }
 
-            // Progress 把数量送回界面线程；过期的通知不能盖住下一次导出的提示。
+            // 后台进度送回界面，旧导出的过期通知不采用。
             var progress = new Progress<long>(count =>
             {
                 if (!_isShuttingDown && IsExporting && exportVersion == _exportVersion)
                     PageMessage = $"正在导出报警：已写入 {count} / {total} 条，可取消。";
             });
+
+            // 真正的查库和写文件在后台执行，结束后显示写入条数。
             long written = await Task.Run(() => _csvExporter.Export(_currentUser, filter, snapshot,
                 path, cancellationToken, progress), cancellationToken);
             if (!_isShuttingDown)
@@ -287,15 +307,17 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 导出按钮条件：有非空的已查结果，条件未改且没有忙碌或查询失败；不导出尚未查询的新输入。
+    /// 由 ExportRecordsCommand 判断按钮能不能点时调用。
+    /// 有有效结果、条件未改且当前不忙，才允许导出。
     /// </summary>
     private bool CanExportRecords() => !IsBusy && !FiltersChanged && _hasLoadedRecords
         && !_lastQueryFailed && _totalRecords > 0;
 
     /// <summary>
-    /// 自动入口：生成属性 SelectedDevice 的 setter 调用。用户改设备则标记条件已改；程序刷新下拉选项时暂不标记。
+    /// SelectedDevice 改变后自动调用；用户换设备就标记条件已改，程序更新选项时跳过。
     /// </summary>
     partial void OnSelectedDeviceChanged(HistoryDeviceOption? value) { if (!_updatingDeviceOptions) MarkFiltersChanged(); }
+    // 下面这些输入属性变化后也会自动调用对应方法，只标记待查询，不立即查库。
     partial void OnSelectedCategoryChanged(AlarmCategoryOption? value) => MarkFiltersChanged();
     partial void OnUseTimeFilterChanged(bool value) => MarkFiltersChanged();
     partial void OnStartDateChanged(DateTime? value) => MarkFiltersChanged();
@@ -304,18 +326,21 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
     partial void OnEndTimeTextChanged(string value) => MarkFiltersChanged();
 
     /// <summary>
-    /// 筛选输入的自动 On...Changed 回调调用。增加输入版本号，标记待重新查询，不在这里查数据库。
+    /// 输入改了就递增版本并提醒重新查询，不立即查库。
     /// </summary>
     private void MarkFiltersChanged() { _filterVersion++; FiltersChanged = true; }
+    // 条件或忙碌状态变化后，自动刷新界面提示和按钮状态。
     partial void OnFiltersChangedChanged(bool value) => NotifyStateChanged();
     partial void OnIsLoadingChanged(bool value) => NotifyStateChanged();
     partial void OnIsExportingChanged(bool value) => NotifyStateChanged();
 
     /// <summary>
-    /// 输入/查询/导出状态变化后调用，通知页码、总数、空结果提示和按钮条件更新；不会替用户执行查询。
+    /// 由查询、导出或筛选状态变化，以及退出处理调用。
+    /// 统一刷新数量、页码、提示和按钮能否点击，不执行查询。
     /// </summary>
     private void NotifyStateChanged()
     {
+        // 先刷新显示，再让按钮重新检查能否点击。
         OnPropertyChanged(nameof(IsBusy));
         OnPropertyChanged(nameof(HasLoadedRecords));
         OnPropertyChanged(nameof(CanEditFilters));
@@ -327,6 +352,7 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
         OnPropertyChanged(nameof(RecordSummary));
         OnPropertyChanged(nameof(PageDescription));
         OnPropertyChanged(nameof(FilterStatusText));
+
         RefreshRecordsCommand.NotifyCanExecuteChanged();
         ResetFiltersCommand.NotifyCanExecuteChanged();
         PreviousPageCommand.NotifyCanExecuteChanged();
@@ -334,9 +360,13 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
         ExportRecordsCommand.NotifyCanExecuteChanged();
     }
 
-    /// <summary>关闭程序或退出登录时调用：取消导出，等查询、翻页和文件清理都结束后再退出。</summary>
+    /// <summary>
+    /// 由 HistoryViewModel.StopOperationsAsync 在退出前调用。
+    /// 退出时禁止新操作、取消导出，并等已发起的查询和导出收尾。
+    /// </summary>
     public async Task StopOperationsAsync()
     {
+        // 发出取消后仍要等待任务结束，不能立即关闭数据库和窗口。
         _isShuttingDown = true;
         NotifyStateChanged();
         ExportRecordsCommand.Cancel();

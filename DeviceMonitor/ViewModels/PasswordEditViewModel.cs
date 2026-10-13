@@ -9,20 +9,19 @@ using DeviceMonitor.Core.Persistence;
 namespace DeviceMonitor.ViewModels;
 
 /// <summary>
-/// 密码表单共用的数据源：不传操作员是改自己密码，传操作员就是管理员重置。
-/// SaveAsync 请求窗口读密码，检查后在后台调用 UserStore；成功再请求窗口关闭。
+/// 密码表单：不传操作员是修改自己的密码，传操作员则是管理员重置密码。
 /// </summary>
 public partial class PasswordEditViewModel : ObservableObject
 {
     private readonly UserAccount _currentUser;
     private readonly UserStore _userStore;
-    private readonly UserAccount? _operatorToReset;
-    private bool _isClosing;
+    private readonly UserAccount? _operatorToReset; // 有值就重置这个操作员的密码，为 null 就修改自己的密码。
+    private bool _isClosing; // 退出后不再接受保存，也不向旧窗口发消息。
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanEditInputs))]
     [NotifyCanExecuteChangedFor(nameof(SaveCommand))]
-    private bool _isSaving;
+    private bool _isSaving; // 正在写入密码时，输入框禁用，窗口暂时不能关闭。
 
     [ObservableProperty]
     private string _pageMessage = string.Empty;
@@ -30,7 +29,7 @@ public partial class PasswordEditViewModel : ObservableObject
     public bool IsReset => _operatorToReset is not null;
     public bool ShowCurrentPassword => !IsReset;
     public bool CanEditInputs => !IsSaving && !_isClosing;
-    public bool IsSaved { get; private set; }
+    public bool IsSaved { get; private set; } // 已经保存成功，不再重复保存。
     public string TargetUserName => (_operatorToReset ?? _currentUser).UserName;
     public string WindowTitle => IsReset ? "重置操作员密码" : "修改我的密码";
     public string Description => IsReset
@@ -42,6 +41,7 @@ public partial class PasswordEditViewModel : ObservableObject
     public event Action? PasswordsClearRequested;
     public event Action? SaveSucceeded;
 
+    // 检查权限并记住修改目标，密码等点保存时再从窗口读取。
     public PasswordEditViewModel(UserAccount currentUser, UserStore userStore, UserAccount? operatorToReset = null)
     {
         _currentUser = currentUser ?? throw new ArgumentNullException(nameof(currentUser));
@@ -55,8 +55,8 @@ public partial class PasswordEditViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 保存按钮 → SaveCommand → 这里。先让窗口读密码，再检查，最后交给 UserStore 改数据库。
-    /// 哈希计算和数据库写入放后台；保存期间不允许关这个窗口，避免“取消”后其实已写入。
+    /// 由 SaveCommand 调用。
+    /// 读取并检查密码，在后台保存；保存期间不能关闭表单。
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanSave))]
     private async Task SaveAsync()
@@ -72,8 +72,7 @@ public partial class PasswordEditViewModel : ObservableObject
                 PageMessage = "密码窗口尚未准备好。";
                 return;
             }
-            // 调用 PasswordWindow.xaml.cs 的 ReadPasswords：
-            // 从三个密码框读取原密码、新密码、确认密码，填回 input，再继续下面的检查和保存。
+            // 让 PasswordWindow.ReadPasswords 读取旧密码、新密码和确认密码，填回 input。
             PasswordsRequested.Invoke(input);
             if (!IsReset && string.IsNullOrWhiteSpace(input.OldPassword))
             {
@@ -96,6 +95,7 @@ public partial class PasswordEditViewModel : ObservableObject
                 return;
             }
 
+            // 检查通过，后台写数据库；重置和修改自己的密码走不同方法。
             IsSaving = true;
             PageMessage = "正在保存，请稍候…";
             bool changed = await Task.Run(() => IsReset
@@ -116,8 +116,7 @@ public partial class PasswordEditViewModel : ObservableObject
             // 调用 PasswordWindow.xaml.cs 的 ClearPasswords：清空窗口里的三个密码框。
             PasswordsClearRequested?.Invoke();
             IsSaving = false; // 先允许关闭，再发成功事件，否则窗口会拦住自己的关闭。
-            // 调用 PasswordWindow.xaml.cs 的 CompleteSave：设置 DialogResult = true，关闭密码窗口。
-            // 密码已经在上面通过 UserStore 保存，这里只负责关窗口。
+            // 让 PasswordWindow.CompleteSave 设置成功结果并关闭窗口，密码已在上面保存。
             SaveSucceeded?.Invoke();
         }
         catch (Exception ex)
@@ -135,12 +134,14 @@ public partial class PasswordEditViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 保存按钮的条件：窗口没退出、没在保存、也没成功提交过；避免重复写入。
+    /// 由 SaveCommand 判断按钮能不能点时调用。
+    /// 没关闭、没在保存、没保存成功过，才允许提交。
     /// </summary>
     private bool CanSave() => !_isClosing && !IsSaving && !IsSaved;
 
     /// <summary>
-    /// 主窗口收尾时调用。已经开始写数据库就等它完成，不做会导致结果不明确的中途取消。
+    /// 由 MainViewModel.StopBackgroundWorkAsync 或 UserManagementViewModel.StopOperationsAsync 调用。
+    /// 退出时等待已开始的密码保存完成，不中途取消写入。
     /// </summary>
     public async Task StopOperationsAsync()
     {
@@ -152,7 +153,8 @@ public partial class PasswordEditViewModel : ObservableObject
     }
 
     /// <summary>
-    /// PasswordWindow.OnClosed 调用。标记表单已关闭，旧命令不能再被执行；不取消已完成的保存。
+    /// 由 PasswordWindow.OnClosed 在窗口关闭后调用。
+    /// 标记表单已关闭，禁止再执行旧命令。
     /// </summary>
     public void MarkClosed()
     {

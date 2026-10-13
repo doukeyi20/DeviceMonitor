@@ -6,15 +6,15 @@ using DeviceMonitor.ViewModels;
 namespace DeviceMonitor.Views;
 
 /// <summary>
-/// 修改/重置密码的同一个窗口：沿用传来的 PasswordEditViewModel，不再创建第二份。
-/// 这里按事件读/清密码框，保存后关闭；不验证旧密码，也不直接改数据库。
+/// 修改和重置密码共用的窗口，沿用传来的 PasswordEditViewModel。
+/// 后台只取密码、清空控件和关窗，检查与保存由命令处理。
 /// </summary>
 public partial class PasswordWindow : Window
 {
-    private readonly PasswordEditViewModel _viewModel;
+    private readonly PasswordEditViewModel _viewModel; // 表单绑定的数据源，同时决定当前是修改还是重置密码。
 
     /// <summary>
-    /// MainWindow 或 UserManagementView 开窗时传入数据源。订阅读密码、清密码、保存成功事件，再设置 DataContext。
+    /// 接住数据源，订阅界面请求，再设置 DataContext。
     /// </summary>
     public PasswordWindow(PasswordEditViewModel viewModel)
     {
@@ -27,7 +27,8 @@ public partial class PasswordWindow : Window
     }
 
     /// <summary>
-    /// SaveAsync 触发 PasswordsRequested 后调用，把当前三个密码框填入同一个临时对象，返回后继续验证。
+    /// 由 PasswordEditViewModel 的 PasswordsRequested 事件调用。
+    /// 把三个密码框的值写回 request，SaveAsync 返回后继续验证。
     /// </summary>
     private void ReadPasswords(PasswordInputRequest request)
     {
@@ -37,6 +38,7 @@ public partial class PasswordWindow : Window
     }
 
     /// <summary>
+    /// 由 PasswordEditViewModel 的 PasswordsClearRequested 事件或本窗口 OnClosed 调用。
     /// 保存成功或关窗时调用，只清控件，不修改数据库密码。
     /// </summary>
     private void ClearPasswords()
@@ -47,22 +49,23 @@ public partial class PasswordWindow : Window
     }
 
     /// <summary>
-    /// SaveSucceeded 事件调用，DialogResult=true 让 ShowDialog 结束；不在这里重复保存。
+    /// 由 PasswordEditViewModel 的 SaveSucceeded 事件调用。
+    /// 保存成功后设结果为 true，WPF 会关闭弹窗。
     /// </summary>
     private void CompleteSave() => DialogResult = true; // ShowDialog 随后返回 true。
 
     /// <summary>
-    /// 点取消/×或保存成功要关窗时，WPF 调用这里。仍在写入则暂时拦住关闭，避免误以为取消了保存。
+    /// 保存还没结束时先不让关窗，避免误以为点关闭就取消了写入。
     /// </summary>
     protected override void OnClosing(CancelEventArgs e)
     {
         base.OnClosing(e);
         if (_viewModel.IsSaving)
-            e.Cancel = true; // 保存只需短暂等待，不允许点 × 后误以为这次没保存。
+            e.Cancel = true;
     }
 
     /// <summary>
-    /// 真正关闭后清空密码框、解除订阅，再让这个旧表单的数据源不再接受保存。
+    /// 关窗后清密码、解除订阅，并让旧数据源不再接受保存。
     /// </summary>
     protected override void OnClosed(EventArgs e)
     {

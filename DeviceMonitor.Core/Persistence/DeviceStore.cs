@@ -9,8 +9,7 @@ namespace DeviceMonitor.Core.Persistence
 {
 
     /// <summary>
-    /// 设备和点位配置的数据库操作：Devices 存设备，DevicePoints 用 DeviceId 关联设备。
-    /// Get 返回配置对象，TryAdd/Update/Delete 改记录；这里不连接 Modbus，也不直接刷新界面表格。
+    /// 保存和查询设备、采集点配置，不负责通信或刷新界面。
     /// </summary>
     public class DeviceStore
     {
@@ -19,11 +18,10 @@ namespace DeviceMonitor.Core.Persistence
             Id, Name, Host, Port, UnitId, SamplingIntervalMilliseconds,
             ConnectTimeoutMilliseconds, ReadTimeoutMilliseconds, WriteTimeoutMilliseconds, IsEnabled
             """;
-        private readonly string _connectionString;
+        private readonly string _connectionString; // 记录数据库在哪、用什么方式打开，不是已打开的连接。
 
         /// <summary>
-        /// 由 App.OnStartup 创建，传入 DatabaseInitializer.DatabasePath，之后同一个对象一路传到各页面。
-        /// 这里只保存 SQLite 连接配置；每个操作方法执行时才创建并打开自己的连接。
+        /// 记住数据库连接设置，每次操作再打开自己的连接。
         /// </summary>
         public DeviceStore(string databasePath)
         {
@@ -40,8 +38,8 @@ namespace DeviceMonitor.Core.Persistence
 
 
         /// <summary>
-        /// 设备管理、采集点配置和实时监控的“刷新设备”会调用这里，准备各自的设备列表。
-        /// 查询 Devices 表，把每一行组装成 DeviceInfo 返回；默认查全部，enabledOnly 为 true 时只查启用设备，不连接设备。
+        /// 由设备管理、采集点配置和监控页面的设备刷新方法调用。
+        /// 查询设备列表，默认包含停用设备；enabledOnly 为 true 时只查启用设备。
         /// </summary>
         public IReadOnlyList<DeviceInfo> GetDevices(
             UserAccount currentUser, bool enabledOnly = false)
@@ -78,8 +76,9 @@ namespace DeviceMonitor.Core.Persistence
         }
 
         /// <summary>
-        /// 采集任务和单次测试已经知道设备编号时调用，只查询这一台，不把全表读回来再找。
-        /// 找不到返回 null；enabledOnly 为 true 时，停用设备也返回 null。
+        /// 由 DeviceSamplingViewModel.LoadConfiguration 和 AcquisitionViewModel.LoadReadConfiguration 调用。
+        /// 按编号查一台设备，查不到返回 null。
+        /// enabledOnly 为 true 时，停用设备也算查不到。
         /// </summary>
         public DeviceInfo? GetDevice(UserAccount currentUser, long deviceId, bool enabledOnly = false)
         {
@@ -92,6 +91,7 @@ namespace DeviceMonitor.Core.Persistence
                 SELECT {DeviceColumns} FROM Devices
                 WHERE Id = $deviceId AND ($enabledOnly = 0 OR IsEnabled = 1);
                 """;
+            // 填入设备编号和是否只查启用设备；查到就装成 DeviceInfo，没查到返回 null。
             command.Parameters.AddWithValue("$deviceId", deviceId);
             command.Parameters.AddWithValue("$enabledOnly", enabledOnly ? 1 : 0);
             using SqliteDataReader reader = command.ExecuteReader();
@@ -100,8 +100,8 @@ namespace DeviceMonitor.Core.Persistence
 
 
         /// <summary>
-        /// 由 DeviceManagementViewModel.TryAddDevice 调用，输入来自设备表单的 Save。
-        /// 检查权限和配置后向 Devices 表插入一行；成功返回 true，同名不插入并返回 false。表格刷新由 ViewModel 负责。
+        /// 由 DeviceManagementViewModel.TryAddDevice 调用。
+        /// 新增设备配置，成功返回 true；同名时不新增，返回 false。
         /// </summary>
         public bool TryAddDevice(UserAccount currentUser, DeviceInput input)
         {
@@ -176,8 +176,8 @@ namespace DeviceMonitor.Core.Persistence
         }
 
         /// <summary>
-        /// 由 DeviceManagementViewModel.TryUpdateDevice 调用，传入原设备 Id 和表单的新配置。
-        /// 修改 Devices 表中原来的那条记录，Id 不变；不新增记录，也不直接更新界面集合。
+        /// 由 DeviceManagementViewModel.TryUpdateDevice 调用。
+        /// 按原设备 Id 修改配置，编号不变，不新增记录。
         /// </summary>
         public bool TryUpdateDevice(
             UserAccount currentUser,
@@ -264,7 +264,7 @@ namespace DeviceMonitor.Core.Persistence
 
         /// <summary>
         /// 由 DeviceManagementViewModel.TrySetDeviceEnabled 调用。
-        /// 把指定设备的 IsEnabled 保存成 1 或 0；这是允许采集的配置，不是在线状态。这里不会直接调用采集任务的 Start 或 StopAsync。
+        /// 保存设备是否允许采集的设置，不代表在线状态，也不会自动开始采集。
         /// </summary>
         public bool TrySetDeviceEnabled(
             UserAccount currentUser,
@@ -305,8 +305,8 @@ namespace DeviceMonitor.Core.Persistence
         }
 
         /// <summary>
-        /// 设备管理删除命令通过 DeviceRuntimeManager 调用。先删所属点位，再删设备，这两步一起成功才保存。
-        /// 历史读数和报警表不参与删除，过去的数据仍可以查询。
+        /// 由 DeviceRuntimeManager.DeleteDeviceAsync 停完采集后调用。
+        /// 删除设备及其点位配置，全部成功才保存；历史读数和报警保留。
         /// </summary>
         public bool TryDeleteDevice(UserAccount currentUser, long deviceId)
         {
@@ -317,6 +317,7 @@ namespace DeviceMonitor.Core.Persistence
 
             using var connection = new SqliteConnection(_connectionString);
             connection.Open();
+            // 设备和点位要一起删成功；中途失败就都不保存。
             using var transaction = connection.BeginTransaction();
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
@@ -332,8 +333,8 @@ namespace DeviceMonitor.Core.Persistence
         }
 
         /// <summary>
-        /// PointViewModel.LoadPoints、AcquisitionViewModel 的点位加载 / 单次读取配置查询，以及 DeviceSamplingViewModel.LoadConfiguration 会调用这里。
-        /// 按设备 Id 查询 DevicePoints，把每一行组装成 PointInfo 列表返回；它们是配置，不是真实读数。
+        /// 由 PointViewModel.LoadPoints、采集点配置页的查询和设备采集任务查配置时调用。
+        /// 查询指定设备的全部点位配置，返回 PointInfo 列表，不读取设备数值。
         /// </summary>
         public IReadOnlyList<PointInfo> GetPoints(UserAccount currentUser, long deviceId)
         {
@@ -373,8 +374,8 @@ namespace DeviceMonitor.Core.Persistence
         }
 
         /// <summary>
-        /// 由 PointViewModel.SavePoint 在新增模式下调用。
-        /// 向 DevicePoints 表插入一条属于指定设备的配置；同名或设备停用 / 不存在时返回 false，不改设备寄存器。
+        /// 由 PointViewModel.SavePoint 在新增点位时调用。
+        /// 给指定设备新增一个点位配置；同名、设备停用或不存在时返回 false。
         /// </summary>
         public bool TryAddPoint(UserAccount currentUser, long deviceId, PointInput input)
         {
@@ -410,9 +411,8 @@ namespace DeviceMonitor.Core.Persistence
                 ON CONFLICT(DeviceId, Name) DO NOTHING;
                 """;
             // 当前设备的编号与输入一起保存，重开窗口后仍能找回这台设备的点位。
-            // 新编号要越过历史里的旧编号，也要越过“已经删掉但还没保存读数”的旧点编号。
-            // sqlite_sequence 由数据库记住曾分配的最大值；插入成功后也会自动更新，不随删点归零。
-            // SQL 还会检查数据库中的最新启用状态，不只相信窗口打开时的设备对象。
+            // 新编号不能复用旧点位编号，避免还没返回的旧读数认错点。
+            // sqlite_sequence 记住曾用过的最大编号；保存时也再次检查设备是否启用。
             command.Parameters.AddWithValue("$deviceId", deviceId);
             command.Parameters.AddWithValue("$name", input.Name.Trim());
             command.Parameters.AddWithValue("$registerType", (int)input.RegisterType);
@@ -426,8 +426,8 @@ namespace DeviceMonitor.Core.Persistence
         }
 
         /// <summary>
-        /// 由 PointViewModel.SavePoint 在编辑模式下调用。
-        /// 同时按设备 Id 和点位 Id 修改原配置，点位 Id 不变；名称冲突、记录不存在或设备停用时返回 false。
+        /// 由 PointViewModel.SavePoint 在修改点位时调用。
+        /// 按设备 Id 和点位 Id 修改原配置，点位编号不变；无法修改时返回 false。
         /// </summary>
         public bool TryUpdatePoint(
             UserAccount currentUser, long deviceId, long pointId, PointInput input)
@@ -452,9 +452,7 @@ namespace DeviceMonitor.Core.Persistence
             connection.Open();
             using SqliteCommand command = connection.CreateCommand();
 
-            // UPDATE 修改原记录，不是 INSERT 新增记录，所以点位 Id 不会改变。
-            // 同时检查 DeviceId，防止把别台设备的点位当成当前设备的点位修改。
-            // 保存时还要确认设备仍然启用；名称重复则不更新，返回 false。
+            // 只修改这台设备的这个点，编号不变；设备停用或名称重复则不更新。
             command.CommandText = """
                 UPDATE OR IGNORE DevicePoints
                 SET Name = $name,
@@ -481,8 +479,8 @@ namespace DeviceMonitor.Core.Persistence
         }
 
         /// <summary>
-        /// 由 PointViewModel.DeletePoint 在用户确认后调用。
-        /// 同时按设备 Id 和点位 Id 删除一条配置；目标不属于该设备、不存在或设备停用时返回 false，不删除设备寄存器中的数据。
+        /// 由 PointViewModel.DeletePoint 调用。
+        /// 删除指定设备的一个点位配置，不清除设备寄存器里的数值。
         /// </summary>
         public bool TryDeletePoint(UserAccount currentUser, long deviceId, long pointId)
         {
@@ -509,14 +507,15 @@ namespace DeviceMonitor.Core.Persistence
             return command.ExecuteNonQuery() == 1;
         }
 
-        // GetDevices 和 GetDevice 共用：读同样的十列，避免两个查询组装出不同属性。
+        // 把数据库的一行装成设备配置对象。
+        // 由 GetDevices 和 GetDevice 读取数据库结果时调用。
         private static DeviceInfo ReadDevice(SqliteDataReader reader) => new(
             reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetInt32(3),
             checked((byte)reader.GetInt32(4)), reader.GetInt32(5), reader.GetInt32(6),
             reader.GetInt32(7), reader.GetInt32(8), reader.GetBoolean(9));
 
         /// <summary>
-        /// GetDevices/GetDevice 共用的检查，未启用用户不能查配置；两个已启用角色都可以查。
+        /// 管理员和操作员都可以查询配置，但账户必须启用。
         /// </summary>
         private static void CheckDeviceReadPermission(UserAccount currentUser)
         {

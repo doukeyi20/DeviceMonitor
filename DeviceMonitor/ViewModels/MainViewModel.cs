@@ -11,16 +11,15 @@ using DeviceMonitor.Sampling;
 namespace DeviceMonitor.ViewModels;
 
 /// <summary>
-/// 主窗口的数据源：保存当前用户，准备左侧 Pages，CurrentPage 决定右侧显示哪个页面。
-/// 同一次登录只建一份 DeviceRuntimeManager，各页面沿用它；构造完成不等于启动采集。
+/// 主窗口数据源：保存用户、页面列表和共用管理器，CurrentPage 决定显示哪页。
 /// </summary>
 public partial class MainViewModel : ObservableObject
 {
     private PageViewModel _currentPage;
-    private Task? _stopBackgroundWorkTask;
-    private bool _isStoppingBackgroundWork;
+    private Task? _stopBackgroundWorkTask; // 退出时的共用等待任务，避免重复停止全部工作。
+    private bool _isStoppingBackgroundWork; // 开始退出后，禁止再打开账户菜单中的操作。
     private readonly UserStore _userStore;
-    private PasswordEditViewModel? _passwordEditor;
+    private PasswordEditViewModel? _passwordEditor; // 当前修改密码窗口的数据源，没打开时为 null。
 
     public event Action? LogoutRequested;
     public event Action<PasswordEditViewModel>? PasswordEditorRequested;
@@ -30,9 +29,9 @@ public partial class MainViewModel : ObservableObject
     public UserAccount CurrentUser { get; }
     public string CurrentUserRoleName => CurrentUser.Role == UserRole.Administrator ? "管理员" : "操作员";
 
-    // 这个主窗口只创建一份。监控页用它启停；配置页只问运行状态，避免单次测试冲突。
+    // 各页面共用这一份管理器，避免同一设备出现两套采集任务。
     public DeviceRuntimeManager DeviceRuntime { get; }
-    public IReadOnlyList<PageViewModel> Pages { get; }
+    public IReadOnlyList<PageViewModel> Pages { get; } // 左侧导航列表，每项是一个页面的 ViewModel。
 
     // 左侧导航把选中页面写到这里；通知发出后，右侧 ContentControl 切换显示。
     public PageViewModel CurrentPage
@@ -46,8 +45,8 @@ public partial class MainViewModel : ObservableObject
     }
 
     /// <summary>
-    /// MainWindow 构造时创建这里。接住用户和 Store，先创建共用设备运行管理器，再创建各页的数据源。
-    /// 管理员有配置/用户/历史页；操作员只有监控页。默认进入监控，但不自动勾选或采集。
+    /// 由 MainWindow 构造方法创建，作为主窗口的数据源。
+    /// 准备管理器和各页面。管理员有全部页面，操作员只有监控页，不自动采集。
     /// </summary>
     public MainViewModel(UserAccount currentUser, UserStore userStore, DeviceStore deviceStore,
         HistoryStore historyStore)
@@ -59,13 +58,13 @@ public partial class MainViewModel : ObservableObject
 
         // 先准备共用对象，再创建页面。不要分别在两个页面里各 new 一个管理器。
         
-        // 创建报警管理器，传入历史数据库路径
+        // 报警数据库操作对象，与读数历史使用同一个数据库文件。
         var alarmStore = new AlarmStore(historyStore.DatabasePath);
 
         // 创建设备运行管理器，传入当前用户、设备数据库和历史数据库
         DeviceRuntime = new DeviceRuntimeManager(CurrentUser, deviceStore, historyStore, alarmStore);
 
-        // 创建监控页的viewmodel，传入当前用户、设备数据库和设备运行管理器
+        // 创建监控页的数据源，传入同一个运行管理器。
         var monitoringPage = new MonitoringViewModel(CurrentUser, deviceStore, DeviceRuntime);
 
         if (CurrentUser.Role == UserRole.Administrator)
@@ -92,24 +91,26 @@ public partial class MainViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 右上角“退出登录”按钮调用。这里只通知窗口，不直接关闭窗口或操作密码框。
+    /// 由 LogoutCommand 调用。
+    /// 请求窗口处理退出登录，不直接关窗口。
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanLogout))]
     private void Logout()
     {
         if (CanLogout())
-            // 调用 MainWindow.xaml.cs 的 HandleLogoutRequested：弹出退出确认框。
-            // 确认后由后台等待采集等任务结束，再显示登录窗口、关闭主窗口；这个事件不会等待异步收尾完成。
+            // MainWindow.HandleLogoutRequested 会确认、收尾并返回登录窗口；这里只发请求。
             LogoutRequested?.Invoke();
     }
 
     /// <summary>
-    /// 账户菜单和退出命令共用这个条件：没在退出，也没打开自己的密码表单，才允许新操作。
+    /// 由 LogoutCommand、ChangePasswordCommand、OpenLogsCommand 判断按钮能不能点时调用。
+    /// 没在退出或修改密码，才允许操作账户菜单。
     /// </summary>
     private bool CanLogout() => !_isStoppingBackgroundWork && _passwordEditor is null;
 
     /// <summary>
-    /// 右上角账户菜单调用。先为这次弹窗准备数据源，再通知 MainWindow 真正显示窗口。
+    /// 由 ChangePasswordCommand 调用。
+    /// 准备修改密码的数据源，再请求窗口显示表单。
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanLogout))]
     private void ChangePassword()
@@ -118,8 +119,7 @@ public partial class MainViewModel : ObservableObject
             return;
         _passwordEditor = new PasswordEditViewModel(CurrentUser, _userStore);
         NotifyAccountCommands();
-        // 调用 MainWindow.xaml.cs 的 OpenPasswordEditor：用 _passwordEditor 作为数据源打开 PasswordWindow。
-        // 密码窗口关闭后才回来执行 finally，恢复账户菜单和退出按钮。
+        // MainWindow.OpenPasswordEditor 打开密码窗口，关闭后再恢复账户菜单。
         try { PasswordEditorRequested.Invoke(_passwordEditor); }
         finally
         {
@@ -128,16 +128,19 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
+    // 请求主窗口打开日志文件夹。
     [RelayCommand(CanExecute = nameof(CanLogout))]
+    // 由 OpenLogsCommand 调用。
     private void OpenLogs()
     {
         if (CanLogout())
-            // 调用 MainWindow.xaml.cs 的 OpenLogsFolder：让资源管理器打开日志文件夹，失败则弹出提示。
+            // MainWindow.xaml.cs 的 OpenLogsFolder 用资源管理器打开目录，失败就弹窗说明。
             LogsFolderRequested?.Invoke();
     }
 
     /// <summary>
-    /// 密码表单打开/关闭、主窗口开始收尾时调用，让账户菜单和退出按钮重新判断能不能点。
+    /// 由 ChangePassword 和 StopBackgroundWorkAsync 调用。
+    /// 让账户菜单和退出按钮重新判断能不能点。
     /// </summary>
     private void NotifyAccountCommands()
     {
@@ -147,9 +150,8 @@ public partial class MainViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 关闭程序或退出登录时，MainWindow 都调用这里：等采集、保存和查询真正结束。
-    /// 共用管理器统一停止连续采集；采集管理页只取消单次测试、等待自己的配置查询。
-    /// 历史页也要取消/等待导出，监控页要等设备查询并解除订阅，不能关窗后还回填页面。
+    /// 由 MainWindow.StopBackgroundWorkAndHandleAlarmsAsync 在退出前调用。
+    /// 退出前等采集、保存、查询和导出收尾，并解除页面订阅。
     /// </summary>
     public Task StopBackgroundWorkAsync()
     {
@@ -159,9 +161,10 @@ public partial class MainViewModel : ObservableObject
         _isStoppingBackgroundWork = true;
         NotifyAccountCommands();
 
-        // 不依赖有没有采集管理页：管理员和操作员关窗都由这里通知管理器停止。
+        // 无论什么角色，都通过共用管理器停止连续采集。
         Task stopSampling = DeviceRuntime.StopAllAsync();
 
+        // 各页面也停掉自己的测试、查询、导出；WhenAll 等它们和采集任务全部收尾。
         _stopBackgroundWorkTask = Task.WhenAll(Pages.OfType<HistoryViewModel>()
             .Select(page => page.StopOperationsAsync())
             .Concat(Pages.OfType<MonitoringViewModel>().Select(page => page.StopOperationsAsync()))

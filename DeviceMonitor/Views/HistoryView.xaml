@@ -1,7 +1,5 @@
 <!--
-    阅读入口：DataContext 是已有 HistoryViewModel。Loaded 首次查询；切回标签保留原结果和页码。
-    筛选输入只改条件，RefreshRecordsCommand 才查询；Records 每行是已保存的 HistoryRecord。
-    翻页沿用上次查询；导出/趋势先到 ViewModel，再通过事件请后台选路径或开窗口。
+    数据源是 HistoryViewModel；首次进入查询，切回标签保留原结果。
 -->
 <UserControl x:Class="DeviceMonitor.Views.HistoryView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -9,7 +7,7 @@
              Loaded="HistoryView_Loaded" Unloaded="HistoryView_Unloaded"
              DataContextChanged="HistoryView_DataContextChanged"
              Language="zh-CN" FontFamily="Microsoft YaHei UI" Foreground="{StaticResource PrimaryTextBrush}">
-    <!-- 表格自己滚动；按钮、页码不再跟着整页滚出屏幕。 -->
+    <!-- 表格自己滚动，按钮和页码固定显示。 -->
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
@@ -28,14 +26,14 @@
         <Border Grid.Row="1" Margin="0,6,0,0" Padding="6"
                 Style="{StaticResource ToolbarCardStyle}">
             <Grid>
-                <!-- 收起只节省地方，不清空条件；查询和重置仍常驻在右侧。 -->
+                <!-- 收起筛选区不清空条件，查询和重置按钮仍可见。 -->
                 <Expander x:Name="FilterExpander" IsExpanded="False" IsEnabled="{Binding CanEditFilters}">
                     <Expander.Header>
                         <TextBlock Text="筛选条件（展开/收起）" Margin="0,3,205,3"
                                    Style="{StaticResource SectionHeadingStyle}"
                                    ToolTip="按设备、点位名称和时间筛选。折叠不会重置条件。" />
                     </Expander.Header>
-                    <!-- 条件区单独滚动；最小窗口也给结果表留出表头和数据行的地方。 -->
+                    <!-- 筛选区单独滚动，给下面的结果表留出空间。 -->
                     <ScrollViewer MaxHeight="70" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                         <StackPanel Margin="0,6,4,0">
                             <WrapPanel>
@@ -103,7 +101,7 @@
                 <TextBlock Grid.Column="1" Text="{Binding RecordSummary}" Style="{StaticResource SubtleTextStyle}"
                            TextTrimming="CharacterEllipsis" ToolTip="{Binding RecordSummary}" VerticalAlignment="Center" />
             </Grid>
-            <!-- 这组按钮操作已查询的结果；改条件后先重新查询，才允许导出和看趋势。 -->
+            <!-- 导出和趋势使用已查询的结果，改条件后要先重新查询。 -->
             <StackPanel Grid.Column="1" Orientation="Horizontal">
                 <Button Content="点位趋势" Command="{Binding ShowTrendCommand}"
                         ToolTip="先选中一条记录；查看该点位在本次查询范围中的最近 1000 条读数，不限当前页。"
@@ -128,7 +126,7 @@
 
         <Border Grid.Row="3" Padding="0" Style="{StaticResource SectionCardStyle}">
             <Grid MinHeight="70">
-            <!-- 每一行是 HistoryRecord；列绑定读取这一行的属性。 -->
+            <!-- Records 每项是一条 HistoryRecord，列读取该记录的属性，选中写入 SelectedRecord。 -->
             <DataGrid BorderThickness="0" RowHeight="32" ColumnHeaderHeight="32" ItemsSource="{Binding Records}" SelectedItem="{Binding SelectedRecord, Mode=TwoWay}"
                           SelectionMode="Single" SelectionUnit="FullRow"
                           AutoGenerateColumns="False" IsReadOnly="True"
@@ -174,7 +172,7 @@
             <Button Content="下一页" Command="{Binding NextPageCommand}" Height="28" Padding="10,3" Style="{StaticResource SecondaryActionButtonStyle}" />
             </StackPanel>
         </Border>
-        <!-- 状态一直显示；文字过长可悬停看全，不向下挤占结果表格。 -->
+        <!-- 过长的状态文字省略显示，鼠标悬停可看全。 -->
         <Grid Grid.Row="5" Margin="0,4,0,0">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
             <TextBlock Text="{Binding FilterStatusText}" ToolTip="{Binding FilterStatusText}" TextTrimming="CharacterEllipsis"

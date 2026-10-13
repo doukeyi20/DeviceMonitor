@@ -8,28 +8,30 @@ using DeviceMonitor.Core.Models;
 namespace DeviceMonitor.Core.Persistence;
 
 /// <summary>
-/// 采集历史的 CSV 导出：按表格查过的条件分批取记录，写临时文件，全部成功才替换目标文件。
-/// 不修改数据库；取消或失败保留原目标文件。文字转义和防公式处理放在最后的辅助方法。
+/// 按上次查询条件分批导出读数历史，不修改数据库。
+/// 先写临时文件，全部成功才替换目标 CSV。
 /// </summary>
 public sealed class HistoryCsvExporter
 {
     private readonly HistoryStore _store;
 
     /// <summary>
-    /// HistoryViewModel 创建这里，传已有 HistoryStore；不另找数据库文件。
+    /// 记住已有的历史数据库对象，此时不导出。
     /// </summary>
     public HistoryCsvExporter(HistoryStore store) => _store = store ?? throw new ArgumentNullException(nameof(store));
 
     /// <summary>
-    /// 先写同目录临时文件，全部成功后才替换目标。取消或失败不覆盖用户原来的 CSV。
-    /// snapshotId 与表格一致，新采集的记录不混进这次导出。
+    /// 由 HistoryViewModel.ExportRecordsAsync 选好导出路径后调用。
+    /// 导出本次查询范围的记录，取消或失败时保留原文件。
+    /// snapshotId 用来排除查询后新保存的读数。
     /// </summary>
     public long Export(UserAccount user, HistoryFilter filter, long snapshotId, string filePath,
         CancellationToken token = default, IProgress<long>? progress = null)
     {
+        // 先检查账户、查询条件和文件路径，不能把数据库当作导出文件覆盖。
         ArgumentNullException.ThrowIfNull(user);
         ArgumentNullException.ThrowIfNull(filter);
-        // 页面隐藏入口还不够，直接调用导出器也要遵守与报警历史相同的管理员权限。
+        // 真正导出前再检查管理员权限。
         if (!user.IsEnabled || user.Role != UserRole.Administrator)
             throw new UnauthorizedAccessException("只有已启用的管理员才能导出历史记录。");
         ArgumentOutOfRangeException.ThrowIfNegative(snapshotId);
@@ -42,6 +44,7 @@ public sealed class HistoryCsvExporter
             throw new ArgumentException("不能覆盖正在使用的数据库文件。", nameof(filePath));
         string directory = Path.GetDirectoryName(path)!;
         if (!Directory.Exists(directory)) throw new DirectoryNotFoundException("导出文件夹不存在。");
+        // 先写同目录下的临时文件，全部成功后才替换用户选的 CSV。
         string temporary = Path.Combine(directory, $".history-export-{Guid.NewGuid():N}.tmp");
         long written = 0;
         try
@@ -52,6 +55,7 @@ public sealed class HistoryCsvExporter
             using (var writer = new StreamWriter(stream, new UTF8Encoding(true)) { NewLine = "\r\n" })
             {
                 writer.WriteLine("记录编号,设备编号,设备名称,点位编号,采集点名称,读取值,读取时间(本机含时区),读取时间(UTC)");
+                // after 记住上一批最后一条，每批最多查 1000 条，避免一次占用太多内存。
                 HistoryRecord? after = null;
                 while (true)
                 {
@@ -61,6 +65,7 @@ public sealed class HistoryCsvExporter
                     foreach (HistoryRecord record in batch)
                     {
                         token.ThrowIfCancellationRequested();
+                        // 一条 HistoryRecord 写成 CSV 的一行，名称特殊字符要处理后再写。
                         writer.WriteLine(string.Join(",",
                             Field(record.Id.ToString(CultureInfo.InvariantCulture)),
                             Field(record.DeviceId.ToString(CultureInfo.InvariantCulture)), Field(SafeName(record.DeviceName)),
@@ -70,11 +75,13 @@ public sealed class HistoryCsvExporter
                             Field(record.ReadAt.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture))));
                         written++;
                     }
+                    // 记住本批末尾，并把已写条数报告给界面。
                     after = batch[^1];
                     progress?.Report(written);
                 }
             }
             token.ThrowIfCancellationRequested();
+            // 文件已写完且没有取消，现在才替换目标文件。
             File.Move(temporary, path, overwrite: true);
             return written;
         }
@@ -86,12 +93,12 @@ public sealed class HistoryCsvExporter
     }
 
     /// <summary>
-    /// Export 写名称时调用。含逗号、引号、换行时加 CSV 引号保护，内部引号写两遍。
+    /// 给文本加 CSV 引号，避免逗号、引号或换行造成错列。
     /// </summary>
     private static string Field(string value) => "\"" + value.Replace("\"", "\"\"") + "\"";
 
     /// <summary>
-    /// Export 写自由输入的名称时调用，避免 Excel 当公式执行；负数读数仍按数字写。
+    /// 防止名称被 Excel 当公式执行，不改变真正的负数读数。
     /// </summary>
     private static string SafeName(string value)
     {

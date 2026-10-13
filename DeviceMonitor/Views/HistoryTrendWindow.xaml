@@ -1,6 +1,5 @@
 <!--
-    阅读入口：HistoryViewModel 为选中历史记录创建 HistoryTrendViewModel，后台交给本窗口作数据源。
-    Loaded 查询同一设备、同一点位的历史；HistoryTrendChart 只把 Records 画出来，不查询数据库。
+    数据源是历史页准备的 HistoryTrendViewModel；显示后查询这个点的历史，再交给控件画图。
 -->
 <Window x:Class="DeviceMonitor.Views.HistoryTrendWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -27,12 +26,12 @@
                 <TextBlock Text="{Binding IdentityText}" Margin="0,4,0,0" FontSize="12" TextWrapping="Wrap"
                            Foreground="{StaticResource SecondaryTextBrush}" />
             </StackPanel>
-            <!-- 关闭只是窗口操作，留在界面后台；它不操作数据库或启动采集。 -->
+            <!-- 关闭按钮调用后台的 CloseButton_Click。 -->
             <Button Grid.Column="1" Content="关闭" Click="CloseButton_Click" Width="74" Height="36"
                     VerticalAlignment="Top" Style="{StaticResource SecondaryActionButtonStyle}" />
         </Grid>
 
-        <!-- 明确写“图中”：超过 1000 条时，这三个统计不能代表整个查询范围。 -->
+        <!-- 只统计图中显示的记录，最多 1000 条，不是全部历史的统计。 -->
         <UniformGrid Grid.Row="1" Columns="3" Margin="0,14,0,12">
             <Border Padding="12,8" Margin="0,0,8,0" Style="{StaticResource SectionCardStyle}">
                 <StackPanel><TextBlock Text="图中最低值" FontSize="12" Foreground="{StaticResource SecondaryTextBrush}" />
@@ -50,7 +49,7 @@
 
         <Border Grid.Row="2" Padding="10" Style="{StaticResource SectionCardStyle}">
             <Grid>
-                <!-- 图表只拿 Records 画线，不认识 Store，也不会连接设备。 -->
+                <!-- Records 每项是一条历史读数，图表按读取时间和数值画点、连线。 -->
                 <controls:HistoryTrendChart x:Name="TrendChart" Records="{Binding Records}" />
                 <TextBlock Text="正在查询历史…" HorizontalAlignment="Center" VerticalAlignment="Center"
                            Background="{StaticResource SurfaceBrush}" Padding="12" IsHitTestVisible="False">

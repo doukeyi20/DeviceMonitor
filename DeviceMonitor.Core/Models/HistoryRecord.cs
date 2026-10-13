@@ -3,8 +3,7 @@ using System;
 namespace DeviceMonitor.Core.Models
 {
     /// <summary>
-    /// 历史记录表格中的一行：记住哪台设备、哪个点、读到了什么，以及读取时间。
-    /// 这里只定义数据的样子，不查询数据库，也不启动采集。
+    /// 一条历史读数：哪台设备、哪个点、什么值、什么时间。
     /// </summary>
     public sealed class HistoryRecord
     {
@@ -20,12 +19,11 @@ namespace DeviceMonitor.Core.Models
         public int Value { get; }
         public DateTimeOffset ReadAt { get; }
 
-        // 保存原来的时间点，表格显示时再转成本机时间，避免把 UTC 直接当北京时间看。
+        // 保留真实时间，表格显示时再转成本机时间。
         public DateTime ReadAtLocal => ReadAt.LocalDateTime;
 
         /// <summary>
-        /// 把设备、采集点、读数和时间放进同一个对象，交给 HistoryStore 保存。
-        /// HistoryStore 查询时也会创建这种对象，供表格显示和 CSV 导出。
+        /// 把一条读数的数据装进对象，保存和查询历史时都用这种对象。
         /// </summary>
         public HistoryRecord(long deviceId, string deviceName, long pointId,
             string pointName, int value, DateTimeOffset readAt, long id = 0)

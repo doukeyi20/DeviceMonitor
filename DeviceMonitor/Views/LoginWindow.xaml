@@ -1,7 +1,5 @@
 ﻿<!--
-    阅读入口：LoginWindow 后台创建 LoginViewModel，并设为本窗口的 DataContext。
-    登录按钮 → LoginCommand → Login；用户名来自绑定，密码通过事件请后台从 PasswordInput 读取。
-    登录成功再由后台打开主窗口。x:Name 是后台找控件的名字，不是另一个数据源。
+    数据源是后台创建的 LoginViewModel；用户名通过绑定传入，密码由后台按 x:Name 取控件的值。
 -->
 <Window x:Class="DeviceMonitor.Views.LoginWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -17,7 +15,7 @@
         Foreground="{StaticResource PrimaryTextBrush}">
 
     <Window.Resources>
-        <!-- bool 为 true 时显示，false 时折叠；转换只用于界面显示。 -->
+        <!-- bool 为 true 就显示，为 false 就隐藏且不占位置。 -->
         <BooleanToVisibilityConverter x:Key="BooleanToVisibility" />
     </Window.Resources>
 
@@ -34,7 +32,7 @@
             <StackPanel x:Name="LoginPanel"
                         Visibility="{Binding IsLoginVisible, Converter={StaticResource BooleanToVisibility}}"
                         VerticalAlignment="Center">
-                <!-- 标题外观调整，下面的输入框和命令仍保持原样。 -->
+                <!-- 登录区标题和标记。 -->
                 <Grid Margin="0,0,0,28">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="58" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                     <Border Width="44" Height="44" HorizontalAlignment="Left" VerticalAlignment="Center"
@@ -77,7 +75,7 @@
             <StackPanel x:Name="AdminSetupPanel"
                         Visibility="{Binding IsAdminSetupVisible, Converter={StaticResource BooleanToVisibility}}"
                         VerticalAlignment="Center">
-                <!-- 标题外观调整，下面的输入框和命令仍保持原样。 -->
+                <!-- 创建管理员区标题和标记。 -->
                 <Grid Margin="0,0,0,22">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="58" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                     <Border Width="44" Height="44" HorizontalAlignment="Left" VerticalAlignment="Center"

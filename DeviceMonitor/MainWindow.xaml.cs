@@ -14,8 +14,8 @@ using DeviceMonitor.Views;
 namespace DeviceMonitor;
 
 /// <summary>
-/// 主窗口后台只做窗口和提示：打开密码表单、打开日志目录、退出登录和关窗等待。
-/// 页面、权限和采集对象由 MainViewModel 准备；本文件不写 SQL，也不读取设备。
+/// 主窗口的界面操作：弹窗、打开日志目录、退出登录和关窗收尾。
+/// 页面和采集管理器由 MainViewModel 准备。
 /// </summary>
 public partial class MainWindow : Window
 {
@@ -23,13 +23,13 @@ public partial class MainWindow : Window
     private readonly UserStore _userStore;
     private readonly DeviceStore _deviceStore;
     private readonly HistoryStore _historyStore;
-    private readonly MainViewModel _viewModel;
-    private bool _isLeavingWindow;
-    private bool _canClose;
+    private readonly MainViewModel _viewModel; // 主窗口绑定的数据源。
+    private bool _isLeavingWindow; // 正在退出或关窗，防止重复发起收尾。
+    private bool _canClose; // 收尾结束后改为 true，下一次 Close 才真正关闭。
 
     /// <summary>
-    /// LoginWindow.OpenMainWindow 登录成功后创建这里。用传入的用户和同一份 Store 创建 MainViewModel。
-    /// 订阅它的开窗/退出请求，再设 DataContext；右侧页面之后按 CurrentPage 显示。
+    /// 由 LoginWindow.OpenMainWindow 在登录成功后创建。
+    /// 登录成功后创建主窗口，创建数据源、订阅界面请求，并设置 DataContext。
     /// </summary>
     public MainWindow(UserAccount currentUser, UserStore userStore, DeviceStore deviceStore,
         HistoryStore historyStore)
@@ -39,6 +39,7 @@ public partial class MainWindow : Window
         _historyStore = historyStore ?? throw new ArgumentNullException(nameof(historyStore));
         InitializeComponent();
 
+        // 创建页面数据和管理器，再把 ViewModel 的界面请求接到下面的方法。
         _viewModel = new MainViewModel(currentUser, userStore, deviceStore, historyStore);
         _viewModel.LogoutRequested += HandleLogoutRequested;
         _viewModel.PasswordEditorRequested += OpenPasswordEditor;
@@ -46,7 +47,7 @@ public partial class MainWindow : Window
         DataContext = _viewModel;
     }
 
-    // 左键点账户区域也能展开菜单。这只是控件显示，不代替任何业务命令。
+    // 点账户按钮时，展开它的菜单。
     private void AccountMenuButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is Button { ContextMenu: { } menu } button)
@@ -57,8 +58,8 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// MainViewModel.ChangePassword 触发 PasswordEditorRequested 后调用这里；显示传来的密码表单数据源。
-    /// Owner 指向当前主窗口；ShowDialog 返回前，主窗口不能继续点其他业务按钮。
+    /// 由 MainViewModel 的 PasswordEditorRequested 事件调用。
+    /// 用传来的数据源打开密码窗口，关掉弹窗后再返回。
     /// </summary>
     private void OpenPasswordEditor(PasswordEditViewModel viewModel)
     {
@@ -67,7 +68,8 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// OpenLogsCommand 触发 LogsFolderRequested 后调用：让资源管理器打开日志目录；失败则显示原因。
+    /// 由 MainViewModel 的 LogsFolderRequested 事件调用。
+    /// 用资源管理器打开日志目录，失败就弹窗说明。
     /// </summary>
     private void OpenLogsFolder()
     {
@@ -76,6 +78,7 @@ public partial class MainWindow : Window
             string? directory = AppLog.DirectoryPath;
             if (directory is null)
                 throw new InvalidOperationException("运行日志尚未初始化。");
+            // 确保目录存在，再让系统打开它。
             Directory.CreateDirectory(directory);
             Process.Start(new ProcessStartInfo(directory) { UseShellExecute = true });
             if (AppLog.LastWriteError is { } error)
@@ -89,12 +92,13 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// LogoutCommand 触发事件后执行这里：先询问，确认后收尾，再显示一个全新的登录窗口。
-    /// 这是界面事件的处理方法，所以用 async void；普通异步方法仍返回 Task。
+    /// 由 MainViewModel 的 LogoutRequested 事件调用。
+    /// 确认退出登录后，等后台工作停止，再显示新登录窗口并关闭主窗口。
+    /// 事件处理方法用 async void，内部负责捕获异常。
     /// </summary>
     private async void HandleLogoutRequested()
     {
-        // 确认框出现时也算“正在处理”，防止连续点击或点标题栏关闭造成重复切换。
+        // 从确认弹窗开始就标记正在退出，防止重复操作。
         if (_isLeavingWindow || _canClose)
             return;
         _isLeavingWindow = true;
@@ -108,7 +112,7 @@ public partial class MainWindow : Window
             if (answer != MessageBoxResult.Yes)
                 return; // 取消时还没有停止任何任务，原来的采集可以继续。
 
-            // 先创建、暂不显示。万一数据库打不开，这里失败时原来的采集还没被停掉。
+            // 先准备登录窗口，创建失败时不影响原来的采集。
             preparedLogin = new LoginWindow(_userStore, _deviceStore, _historyStore);
             IsEnabled = false;
             await StopBackgroundWorkAndHandleAlarmsAsync("退出登录");
@@ -122,7 +126,7 @@ public partial class MainWindow : Window
         {
             AppLog.Error("退出登录失败", $"UserId={_viewModel.CurrentUser.Id}", ex);
             preparedLogin?.Close();
-            // 没有完成收尾时，不直接切到另一个账户，避免旧账户的任务还在后台运行。
+            // 收尾失败就保留当前窗口，不带着旧任务切换账户。
             MessageBox.Show(this,
                 $"未能完成退出登录：{ex.Message}\n\n" +
                 "当前窗口已保留。如果采集已经开始停止，不会自动恢复；请关闭程序后重新登录。",
@@ -139,7 +143,8 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 上面收尾结束后调用。必须先显示登录窗口，再关旧主窗口，否则应用可能直接退出。
+    /// 由 HandleLogoutRequested 完成退出收尾后调用。
+    /// 先显示登录窗口，再允许旧主窗口关闭，避免程序提前退出。
     /// </summary>
     private void ShowLoginWindowOrExit(LoginWindow preparedLogin)
     {
@@ -149,7 +154,7 @@ public partial class MainWindow : Window
             try
             {
                 candidate ??= new LoginWindow(_userStore, _deviceStore, _historyStore);
-                // 不设置 Owner 为旧主窗口：否则旧窗口关闭时，登录窗口也可能跟着被关闭。
+                // 新登录窗口不属于旧主窗口，避免跟着旧窗口一起关闭。
                 Application.Current.MainWindow = candidate;
                 candidate.Show();
                 return;
@@ -160,7 +165,7 @@ public partial class MainWindow : Window
                 candidate?.Close();
                 candidate = null;
 
-                // 此时采集已永久停止。不能假装回到原来的工作状态，明确选择重试或退出。
+                // 采集已停止，打开登录窗口失败后，只能重试或退出。
                 MessageBoxResult retry = MessageBox.Show(this,
                     $"登录窗口未能打开：{ex.Message}\n\n" +
                     "采集已经停止。选择“是”重试打开登录窗口；选择“否”退出程序。",
@@ -172,10 +177,12 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 退出登录和关闭程序共用。数据库写入失败时，仍保留原来的“重试 / 明确放弃”提示。
+    /// 由 HandleLogoutRequested 或 OnClosing 在退出前调用。
+    /// 等后台工作停止；还有未保存报警时，询问重试还是放弃。
     /// </summary>
     private async Task StopBackgroundWorkAndHandleAlarmsAsync(string actionText)
     {
+        // 先等所有任务收尾，再检查报警是否全部保存。
         await _viewModel.StopBackgroundWorkAsync();
         var alarms = _viewModel.DeviceRuntime.Alarms;
         while (alarms.PendingSaveCount > 0)
@@ -187,10 +194,11 @@ public partial class MainWindow : Window
                 "报警记录尚未保存", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.Yes);
             if (answer != MessageBoxResult.Yes)
                 break;
-            // 只重试保存，不重新启动采集，也不再调用一次全部停止。
+            // 只重试保存，不重新采集。
             await alarms.FlushAsync();
         }
 
+        // 超过待保存上限而丢掉的更新无法补回，要明确提醒。
         if (alarms.DroppedUpdateCount > 0)
             MessageBox.Show(this,
                 $"数据库长时间无法保存，曾超过待保存上限，有 {alarms.DroppedUpdateCount} 次报警更新未能保留。\n" +
@@ -199,14 +207,14 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 点标题栏关闭时由 WPF 调用。先拦住关闭，等上面的共用收尾方法结束，再真正关闭。
+    /// 点关闭时先拦住窗口，等后台工作收尾，再真正关闭。
     /// </summary>
     protected override async void OnClosing(CancelEventArgs e)
     {
         base.OnClosing(e);
         if (e.Cancel || _canClose)
             return;
-        e.Cancel = true;
+        e.Cancel = true; // 这次先不关，收尾后再调用 Close。
         if (_isLeavingWindow)
             return;
 
@@ -219,7 +227,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            // 意外错误也要说明白，不让 async void 的异常直接把程序打崩。
+            // 收尾出错就询问是否仍要退出，不让异常直接导致崩溃。
             _canClose = MessageBox.Show(this,
                 $"等待后台操作结束时出错：{ex.Message}\n\n" +
                 "无法确认全部操作已结束。仍要退出程序吗？",
@@ -229,7 +237,7 @@ public partial class MainWindow : Window
         finally
         {
             if (_canClose)
-                // 排到本次关闭事件之后，避免在同一次关闭里再次调用 Close。
+                // 等本次关闭事件返回后，再发起真正关闭。
                 _ = Dispatcher.BeginInvoke(new Action(Close));
             else
             {
@@ -240,7 +248,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// WPF 在主窗口真正关闭后调用，解除本窗口订阅，记录关窗日志；不是在这里再次停止采集。
+    /// 真正关闭后解除事件订阅，再写一条关窗日志。
     /// </summary>
     protected override void OnClosed(EventArgs e)
     {

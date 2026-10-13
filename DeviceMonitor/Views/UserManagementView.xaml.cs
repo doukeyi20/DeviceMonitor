@@ -6,16 +6,15 @@ namespace DeviceMonitor.Views
 {
 
     /// <summary>
-    /// 用户管理页的后台：从 DataContext 接住已有 UserManagementViewModel，订阅读/清密码、确认和开密码表单。
-    /// 用户名走绑定；PasswordBox 只按请求读取；账户验证和数据库修改都在 ViewModel/Store。
+    /// 用户管理页面后台，处理取密码、清空密码、确认弹窗和打开重置密码窗口。
+    /// 数据和命令来自 DataContext 中的 UserManagementViewModel。
     /// </summary>
     public partial class UserManagementView : UserControl
     {
-        private UserManagementViewModel? _subscribedViewModel;
+        private UserManagementViewModel? _subscribedViewModel; // 记住已订阅的对象，离开时解除它的订阅。
 
         /// <summary>
-        /// WPF 根据 DataTemplate 创建用户管理页面时调用这里，只加载 XAML。
-        /// 界面继续使用 Pages 中已有的 UserManagementViewModel 作为 DataContext，不在这里重新创建。
+        /// 创建页面控件，数据源由主窗口的 DataTemplate 传入。
         /// </summary>
         public UserManagementView()
         {
@@ -23,8 +22,7 @@ namespace DeviceMonitor.Views
         }
 
         /// <summary>
-        /// 页面显示出来时，由 XAML 的 Loaded 事件调用。
-        /// 调用 SubscribeViewModel，把读密码、清密码和弹框方法登记到已有 ViewModel 上。
+        /// 页面显示时，接上数据源的界面请求。
         /// </summary>
         private void UserManagementView_Loaded(object sender, RoutedEventArgs e)
         {
@@ -32,8 +30,7 @@ namespace DeviceMonitor.Views
         }
 
         /// <summary>
-        /// 页面数据源更换时，由 XAML 的 DataContextChanged 事件调用。
-        /// 先清掉旧密码；如果页面已加载，再重新订阅新 ViewModel 的请求事件。
+        /// 数据源换了，先清密码，再接上新对象的事件。
         /// </summary>
         private void UserManagementView_DataContextChanged(
             object sender, DependencyPropertyChangedEventArgs e)
@@ -44,7 +41,7 @@ namespace DeviceMonitor.Views
         }
 
         /// <summary>
-        /// Loaded 或换数据源时调用。先解除旧订阅，再把读密码、提示、确认、清空和开重置窗口的方法登记上。
+        /// 先断开旧订阅，再订阅当前数据源的取密码和弹窗等请求。
         /// </summary>
         private void SubscribeViewModel()
         {
@@ -61,35 +58,35 @@ namespace DeviceMonitor.Views
         }
 
         /// <summary>
-        /// 已订阅到 PasswordsRequested；UserManagementViewModel.CreateOperator 需要输入的密码时触发事件。
-        /// 读两个 PasswordBox，填回临时 request；长度、两次是否一致等检查仍交给 ViewModel。
+        /// 由 UserManagementViewModel 的 PasswordsRequested 事件调用。
+        /// 从两个密码框取值，写回 request，让创建账户命令继续检查。
         /// </summary>
         private void ReadPasswords(UserPasswordsRequest request)
         {
-            // 只提供控件当前值，校验和数据库操作都由 ViewModel 负责。
+            // 只取控件的值，检查和保存由命令处理。
             request.Password = NewPasswordInput.Password;
             request.Confirmation = ConfirmPasswordInput.Password;
         }
 
         /// <summary>
-        /// 由 FormResetRequested 事件在创建成功后调用；页面换数据源或离开时也直接调用。
-        /// 只清空两个密码框；控件还没创建时用空值保护，不改数据库。
+        /// 由 UserManagementViewModel 的 FormResetRequested 事件或本页 UserManagementView_Unloaded 调用。
+        /// 清空两个密码框，不改数据库密码。
         /// </summary>
         private void ClearPasswords()
         {
-            // 初始化期间 DataContextChanged 可能早于子控件创建，所以使用空值保护。
+            // 初始化时控件可能尚未创建，?. 避免空对象报错。
             NewPasswordInput?.Clear();
             ConfirmPasswordInput?.Clear();
         }
 
         /// <summary>
-        /// 已订阅到 ConfirmationRequested；ViewModel.ChangeSelectedOperatorStatus 修改账户状态前触发事件。
-        /// 显示确认框，把是否点了“是”写回 request.Confirmed；ViewModel 收到确认才会修改数据库。
+        /// 由 UserManagementViewModel 的 ConfirmationRequested 事件调用。
+        /// 弹出确认框，把是否点了“是”写回 request.Confirmed，供命令判断。
         /// </summary>
         private void ConfirmAction(UserConfirmationRequest request)
         {
             Window? owner = Window.GetWindow(this);
-            // 回车默认选“否”，避免只是想关提示，却误改了账户状态。
+            // 默认选“否”，必须明确确认才继续修改。
             MessageBoxResult answer = owner is not null
                 ? MessageBox.Show(owner, request.Message, request.Title,
                     MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No)
@@ -99,8 +96,8 @@ namespace DeviceMonitor.Views
         }
 
         /// <summary>
-        /// 已订阅到 ViewModel.MessageRequested；创建账户、启停账户成功或失败时通过事件调用这里。
-        /// 以页面所在的主窗口为所属窗口显示提示，不在这里执行业务操作。
+        /// 由 UserManagementViewModel 的 MessageRequested 事件调用。
+        /// 在页面所属窗口上弹出提示消息。
         /// </summary>
         private void ShowMessage(string message, string title)
         {
@@ -111,7 +108,8 @@ namespace DeviceMonitor.Views
                 MessageBox.Show(message, title);
         }
 
-        // 重置命令触发事件后到这里。沿用传进来的数据源，窗口只管显示和读密码框。
+        // 用传来的数据源打开密码表单，关闭后再返回。
+        // 由 UserManagementViewModel 的 PasswordEditorRequested 事件调用。
         private void OpenPasswordEditor(PasswordEditViewModel viewModel)
         {
             var dialog = new PasswordWindow(viewModel) { Owner = Window.GetWindow(this) };
@@ -119,8 +117,7 @@ namespace DeviceMonitor.Views
         }
 
         /// <summary>
-        /// 切换到别的页面、用户管理页面从显示区域移除时，由 XAML 的 Unloaded 事件调用。
-        /// 解除后台方法订阅，并清空密码输入；Users 列表仍保留在已有 ViewModel 中。
+        /// 离开页面时解除订阅并清空密码，用户列表仍保留。
         /// </summary>
         private void UserManagementView_Unloaded(object sender, RoutedEventArgs e)
         {
@@ -129,7 +126,7 @@ namespace DeviceMonitor.Views
         }
 
         /// <summary>
-        /// 离开页面或换数据源前调用，解除本页全部请求订阅；不删除用户，不改变用户启停状态。
+        /// 解除旧数据源的事件订阅，不再响应它的界面请求。
         /// </summary>
         private void UnsubscribeViewModel()
         {

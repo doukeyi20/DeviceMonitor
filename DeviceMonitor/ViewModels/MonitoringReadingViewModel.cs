@@ -6,8 +6,8 @@ using DeviceMonitor.Core.Models;
 namespace DeviceMonitor.ViewModels;
 
 /// <summary>
-/// 监控右侧读数表的一行：补上设备名称，Reading 指向采集任务里的原 PointReadingViewModel。
-/// 原读数改变就转发通知；不复制另一份采集数据，不再次连接设备。
+/// 监控右侧的一行读数：在原读数行上补上设备名称。
+/// Reading 指向任务里的原 PointReadingViewModel，数值改变就通知这张表更新。
 /// </summary>
 public sealed class MonitoringReadingViewModel : ObservableObject, IDisposable
 {
@@ -20,30 +20,37 @@ public sealed class MonitoringReadingViewModel : ObservableObject, IDisposable
     public string QualityText => Reading.QualityText;
     public string ReadTimeText => Reading.ReadTimeText;
 
-    // MonitoringViewModel 汇总勾选设备的读数时创建。Reading 就是任务表里原来的行。
+    // 汇总时创建显示行，并接上原读数的变化通知。
     public MonitoringReadingViewModel(DeviceInfo device, PointReadingViewModel reading)
     {
         ArgumentNullException.ThrowIfNull(device);
+        // 保留原读数行；上面的 ValueText 等属性直接从它取值。
         Reading = reading ?? throw new ArgumentNullException(nameof(reading));
+        // 汇总表有多台设备，所以要带上设备编号和名称。
         DeviceId = device.Id;
         DeviceName = device.Name;
+        // 原行变化时，也要通知汇总表重新显示。
         Reading.PropertyChanged += Reading_PropertyChanged;
     }
 
-    // 原读数被采集任务改了，就通知本表更新相应列，不在这里重新读取设备。
+    // 把原读数的变化通知转给汇总表，不重新读取设备。
+    // 由原读数行 PointReadingViewModel 的 PropertyChanged 事件调用。
     private void Reading_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (string.IsNullOrEmpty(e.PropertyName))
         {
+            // 没指定属性名，就刷新三个显示列。
             OnPropertyChanged(nameof(ValueText));
             OnPropertyChanged(nameof(QualityText));
             OnPropertyChanged(nameof(ReadTimeText));
         }
         else if (e.PropertyName is nameof(PointReadingViewModel.ValueText)
             or nameof(PointReadingViewModel.QualityText) or nameof(PointReadingViewModel.ReadTimeText))
+            // 两边属性同名，直接转发这个属性的通知。
             OnPropertyChanged(e.PropertyName);
     }
 
-    // 取消勾选、刷新列表或关窗后不再展示这行，解除订阅，别让旧行一直收到更新。
+    // 不再显示这行时，解除它对原读数的订阅。
+    // 由 MonitoringViewModel 移除或清空读数显示行时调用。
     public void Dispose() => Reading.PropertyChanged -= Reading_PropertyChanged;
 }

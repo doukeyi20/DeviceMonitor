@@ -1,7 +1,5 @@
 <!--
-    阅读入口：后台创建 DeviceEditorViewModel 作表单数据源；新增和编辑共用这个窗口。
-    输入框绑定表单属性；SaveCommand 检查输入，再通过原设备管理 ViewModel 保存。
-    SaveSucceeded 事件请后台关闭窗口；没有在这里另外创建 DeviceStore 或数据库。
+    新增和编辑共用这个表单，数据源是后台创建的 DeviceEditorViewModel。
 -->
 <Window x:Class="DeviceMonitor.Views.AddDeviceWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -26,7 +24,7 @@
                        Margin="0,6,0,0" TextWrapping="Wrap" Style="{StaticResource SubtleTextStyle}" />
         </StackPanel>
 
-        <!-- 窗口变矮只滚动输入区；保存、取消仍固定在底部。所有字段仍绑定原来的属性。 -->
+        <!-- 输入区可以滚动，保存和取消按钮固定在底部。 -->
         <ScrollViewer Grid.Row="1" Margin="0,16,0,14"
                       VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
             <StackPanel>

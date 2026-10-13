@@ -2,8 +2,8 @@ namespace DeviceMonitor.Core.Models
 {
 
     /// <summary>
-    /// 采集点表单检查后的输入包，PointViewModel 组装后交给 DeviceStore。
-    /// 设备 Id 和编辑点 Id 单独传，防止输入框改到别的目标；空报警限值用 null，不是 0。
+    /// 采集点表单检查后的数据。设备编号和编辑点编号另外传。
+    /// 报警限值留空用 null 表示，不是 0。
     /// </summary>
     public sealed class PointInput
     {

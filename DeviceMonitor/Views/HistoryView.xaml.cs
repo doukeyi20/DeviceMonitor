@@ -7,19 +7,19 @@ using Microsoft.Win32;
 namespace DeviceMonitor.Views;
 
 /// <summary>
-/// 采集读数历史页的后台：页面首次显示后查询，离开再回来保留已有结果。
-/// 订阅选择导出路径和打开趋势窗口的方法；日期控件只管输入方式，数据库查询在 ViewModel/Store。
+/// 读数历史页面后台，负责首次查询、选择导出路径和打开趋势窗口。
+/// 查询数据在 ViewModel 中，后台只处理界面操作。
 /// </summary>
 public partial class HistoryView : UserControl
 {
-    private HistoryViewModel? _subscribedViewModel;
+    private HistoryViewModel? _subscribedViewModel; // 当前已订阅的数据源，离开时用它解除订阅。
 
     /// <summary>
-    /// 主窗口模板创建页面时调用。这里只加载 XAML，使用外面传来的 ViewModel 作为 DataContext。
+    /// 创建页面控件，数据源由主窗口传入。
     /// </summary>
     public HistoryView() => InitializeComponent();
 
-    /// <summary>Loaded 先订阅界面方法；只在首次进入时查询，切回来保留原来的结果和页码。</summary>
+    /// <summary>显示页面时接上事件；首次进入才自动查询，返回页面保留原结果。</summary>
     private async void HistoryView_Loaded(object sender, RoutedEventArgs e)
     {
         SubscribeViewModel();
@@ -29,7 +29,7 @@ public partial class HistoryView : UserControl
     }
 
     /// <summary>
-    /// 页面已显示时换了数据源，重新订阅并让新对象按首次进入规则查询；未加载时等 Loaded。
+    /// 已显示的页面换了数据源，就重新订阅，必要时进行首次查询。
     /// </summary>
     private async void HistoryView_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
@@ -40,7 +40,7 @@ public partial class HistoryView : UserControl
             await viewModel.RefreshRecordsCommand.ExecuteAsync(null);
     }
 
-    // 数据源未变就不重复登记；变了先解除旧事件，再把后台方法登记到新对象。
+    // 同一数据源不重复订阅，换对象时先断开旧事件。
     private void SubscribeViewModel()
     {
         if (ReferenceEquals(_subscribedViewModel, DataContext)) return;
@@ -53,7 +53,10 @@ public partial class HistoryView : UserControl
         }
     }
 
-    /// <summary>ExportRecords 命令触发 ExportPathRequested 后调用；选择成功返回完整路径，取消返回 null。</summary>
+    /// <summary>
+    /// 由 HistoryViewModel 的 ExportPathRequested 事件调用。
+    /// 弹出保存文件窗口，选好返回路径，取消返回 null；这里还不写文件。
+    /// </summary>
     private string? ChooseExportPath()
     {
         var dialog = new SaveFileDialog
@@ -67,24 +70,28 @@ public partial class HistoryView : UserControl
             FileName = $"历史记录-{DateTime.Now:yyyyMMdd-HHmmss}.csv"
         };
         Window? owner = Window.GetWindow(this);
+        // 只把用户选的路径交回导出命令。
         bool? accepted = owner is null ? dialog.ShowDialog() : dialog.ShowDialog(owner);
         return accepted == true ? dialog.FileName : null;
     }
 
-    /// <summary>ShowTrend 命令触发事件后调用。ViewModel 已准备好数据源，这里只打开窗口。</summary>
+    /// <summary>
+    /// 由 HistoryViewModel 的 TrendRequested 事件调用。
+    /// 用准备好的趋势数据源打开窗口。
+    /// </summary>
     private void OpenTrendWindow(HistoryTrendViewModel viewModel)
     {
         var dialog = new HistoryTrendWindow(viewModel);
         Window? owner = Window.GetWindow(this);
         if (owner is not null) dialog.Owner = owner;
-        dialog.ShowDialog(); // 模态窗口关闭后再回到原历史列表，不启动新的采集任务。
+        dialog.ShowDialog(); // 关掉后才返回原历史列表。
     }
 
-    /// <summary>离开历史页面时移除选择文件的订阅，并取消正在导出的任务；不停止设备采集。</summary>
+    /// <summary>离开页面时解除订阅并取消导出，不停止设备采集。</summary>
     private void HistoryView_Unloaded(object sender, RoutedEventArgs e) => UnsubscribeViewModel();
 
     /// <summary>
-    /// 换数据源或离开时调用。取消尚未结束的导出，解除界面请求；不会停止设备采集，也不清空历史记录。
+    /// 取消旧导出并断开界面请求，不清空历史记录。
     /// </summary>
     private void UnsubscribeViewModel()
     {
@@ -95,12 +102,11 @@ public partial class HistoryView : UserControl
         _subscribedViewModel = null;
     }
 
-    // 日期控件加载后调用。只能用右侧日历选日期，避免输入错误时仍查询上一次日期。
-    // 这是控件外观/输入方式的设置，不查询数据库，也不创建新的 ViewModel。
+    // 日期只从日历选择，避免手填无效日期时仍使用上次日期。
     private void DatePicker_Loaded(object sender, RoutedEventArgs e) => LockDateInput((DatePicker)sender);
 
     /// <summary>
-    /// 查询前后日期控件禁用/启用时调用，再次锁住内部输入框，避免 WPF 恢复控件后又变成可手填。
+    /// 日期控件重新启用后，再把手工输入锁住。
     /// </summary>
     private void DatePicker_IsEnabledChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
@@ -109,11 +115,11 @@ public partial class HistoryView : UserControl
     }
 
     /// <summary>
-    /// 日期控件加载/重新启用时调用。锁住内部手工输入，只让日历选日期；不处理 SQL 查询条件。
+    /// 找到日期控件内部的输入框，设为只读，仍可用日历选日期。
     /// </summary>
     private static void LockDateInput(DatePicker picker)
     {
-        // 时间筛选最初是隐藏的；先准备控件内部结构，才能找到真正的日期输入框。
+        // 先生成控件内部结构，才能找到 PART_TextBox 输入框。
         picker.ApplyTemplate();
         if (picker.Template.FindName("PART_TextBox", picker) is TextBox textBox)
             textBox.IsReadOnly = true;

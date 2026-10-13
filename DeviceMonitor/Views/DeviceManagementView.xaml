@@ -1,7 +1,5 @@
 <!--
-    阅读入口：DataContext 是 MainViewModel 已创建的 DeviceManagementViewModel；后台不再 new 一份。
-    Devices 提供行，SelectedDevice 保存选择；列 Binding 读取当前行 DeviceInfo 的属性。
-    按钮走命令；开表单/确认/提示通过事件回到后台。Loaded 订阅，Unloaded 解除订阅。
+    数据源是主窗口创建的 DeviceManagementViewModel；弹窗请求由页面后台处理。
 -->
 <UserControl x:Class="DeviceMonitor.Views.DeviceManagementView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -12,7 +10,7 @@
              FontFamily="Microsoft YaHei UI"
              Foreground="{StaticResource PrimaryTextBrush}">
 
-    <!-- 只调整摆放：小窗口可以滚动整页，设备表仍保留自己的横向滚动条。 -->
+    <!-- 小窗口可以滚动整页，设备表也能单独左右滚动。 -->
     <ScrollViewer x:Name="DevicePageScroll" VerticalScrollBarVisibility="Auto"
                   HorizontalScrollBarVisibility="Disabled">
         <Grid Height="{Binding ViewportHeight, ElementName=DevicePageScroll}" MinHeight="470">
@@ -44,7 +42,7 @@
                        Text="管理设备连接参数和采集许可；启用不会自动开始采集。"
                        Style="{StaticResource SubtleTextStyle}" />
 
-            <!-- 配置、许可、测试、删除分开看；窄窗口按组换行，不把按钮挤到一起。 -->
+            <!-- 按功能分组放按钮，窗口窄时自动换行。 -->
             <Border Grid.Row="2" Style="{StaticResource ToolbarCardStyle}" Margin="0,0,0,10">
                 <WrapPanel>
                     <StackPanel Margin="0,0,18,6">
@@ -108,7 +106,7 @@
                 </WrapPanel>
             </Border>
 
-            <!-- 原有两种结果都保留：配置操作看第一行，TCP 测试看第二行。 -->
+            <!-- 第一行显示配置操作结果，第二行显示 TCP 测试结果。 -->
             <StackPanel Grid.Row="3" Margin="0,0,0,10">
                 <TextBlock Text="{Binding PageMessage}" TextWrapping="Wrap"
                            Style="{StaticResource SubtleTextStyle}" />
@@ -116,7 +114,7 @@
                            Style="{StaticResource SubtleTextStyle}" />
             </StackPanel>
 
-            <!-- 表格每行仍是 DeviceInfo；配置编辑继续使用原来的独立窗口。 -->
+            <!-- Devices 每项是 DeviceInfo；列绑定这一行的属性，选中项写入 SelectedDevice。 -->
             <Border Grid.Row="4" Style="{StaticResource SectionCardStyle}" Padding="0">
                 <DataGrid x:Name="DevicesGrid" ItemsSource="{Binding Devices}"
                           SelectedItem="{Binding SelectedDevice, Mode=TwoWay}"

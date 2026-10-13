@@ -13,27 +13,27 @@ using DeviceMonitor.Core.Persistence;
 namespace DeviceMonitor.Sampling;
 
 /// <summary>
-/// 所有设备共用的报警判断与待保存列表：成功读数检查上下限，读取失败另记采集异常。
-/// 同一设备/点/类别的持续异常更新原事件；显示集合和待保存集合不同，写库失败仍可重试。
+/// 所有设备共用的报警对象：检查数值越限、记录读取失败，并保存报警。
+/// 同一种持续异常更新原记录，不会每轮新增一条；保存失败的记录留着重试。
 /// </summary>
 public sealed class AlarmTracker : ObservableObject
 {
-    public const int DisplayLimit = 500;
-    private const int PendingLimit = 5000;
+    public const int DisplayLimit = 500; // 监控报警表最多显示 500 条。
+    private const int PendingLimit = 5000; // 待保存事件最多留 5000 个，防止一直失败时无限增长。
     private readonly UserAccount _currentUser;
     private readonly AlarmStore _store;
     private readonly Dispatcher _dispatcher = Dispatcher.CurrentDispatcher;
-    // 多台设备都可能要求保存报警；一次只让一个 FlushAsync 整理、写入共用的待保存列表。
+    // 多台设备共用保存列表，一次只允许一份保存流程执行。
     private readonly SemaphoreSlim _saveGate = new(1, 1);
-    // 同一设备、同一点、同一种异常，只保留一个尚未结束的记录。
+    // 设备编号 + 点位编号 + 异常类型 → 尚未结束的报警。
     private readonly Dictionary<(long DeviceId, long? PointId, AlarmKind Kind), AlarmRecord> _active = new();
-    private readonly ObservableCollection<AlarmRecord> _records = new();
-    // 保存失败后保留最新版本；按 EventId 重试覆盖，不会反复 INSERT 出重复报警。
+    private readonly ObservableCollection<AlarmRecord> _records = new(); // 监控报警表显示的记录。
+    // EventId → 待保存的最新报警版本；按同一编号更新，重试不会重复新增。
     private readonly Dictionary<string, AlarmRecord> _pending = new();
-    private int _droppedUpdates;
+    private int _droppedUpdates; // 保存列表满了以后，没能保留的更新次数。
     private string _persistenceStatusText = "本次运行尚无报警；过去的记录请到历史记录 → 报警历史查询。";
 
-    public ReadOnlyObservableCollection<AlarmRecord> Records { get; }
+    public ReadOnlyObservableCollection<AlarmRecord> Records { get; } // 每项是一条 AlarmRecord，页面只能查看。
     public string PersistenceStatusText
     {
         get => _persistenceStatusText;
@@ -42,32 +42,33 @@ public sealed class AlarmTracker : ObservableObject
     public int PendingSaveCount => _pending.Count;
     // 数据库长时间不可写且超过待保存上限时，用它提醒用户已有更新丢失。
     public int DroppedUpdateCount => _droppedUpdates;
-    public int ActiveCount => _active.Count;
+    public int ActiveCount => _active.Count; // 还没恢复、也没停止监测的报警数。
 
     /// <summary>
-    /// DeviceRuntimeManager 创建这里，传当前用户和 AlarmStore。准备只读显示列表；此时不生成报警，也不启动采集。
+    /// 保存账户和报警数据库对象，准备显示集合；此时不生成报警。
     /// </summary>
     public AlarmTracker(UserAccount currentUser, AlarmStore store)
     {
         _currentUser = currentUser ?? throw new ArgumentNullException(nameof(currentUser));
         _store = store ?? throw new ArgumentNullException(nameof(store));
         Records = new ReadOnlyObservableCollection<AlarmRecord>(_records);
-        // 创建对象只准备容器，不查历史、不伪造当前设备的报警状态。
     }
 
     /// <summary>
-    /// DeviceSamplingViewModel 每轮查到最新配置后调用。
-    /// 点被删除、限值关闭或改动时，结束旧规则的监测，不能把它当作“数值恢复正常”。
+    /// 由 DeviceSamplingViewModel.RunAsync 每轮查完配置后调用。
+    /// 根据最新点位配置结束已失效的旧报警规则；停止监测不等于恢复正常。
     /// </summary>
     public async Task ReconcileConfigurationAsync(DeviceInfo device, IReadOnlyList<PointInfo> points)
     {
         _dispatcher.VerifyAccess();
         DateTimeOffset now = DateTimeOffset.UtcNow;
+        // 只检查这台设备的活动报警；ToArray 避免遍历时修改原字典。
         foreach (AlarmRecord alarm in _active.Values.Where(item => item.DeviceId == device.Id).ToArray())
         {
             if (!alarm.PointId.HasValue) continue;
             PointInfo? point = points.FirstOrDefault(item => item.Id == alarm.PointId.Value);
             bool removed = point is null;
+            // 点位没了，或产生报警的那条限值改了，旧报警就不再继续监测。
             bool ruleChanged = alarm.Kind switch
             {
                 AlarmKind.HighLimit => point?.UpperLimit != alarm.Limit,
@@ -81,13 +82,14 @@ public sealed class AlarmTracker : ObservableObject
     }
 
     /// <summary>
-    /// 读取成功后由采集任务调用。只有这条路会比较上下限。
-    /// 先恢复该点的采集异常，再检查数值；等于限值不算越限。
+    /// 由 DeviceSamplingViewModel.RunAsync 在点位读取成功后调用。
+    /// 用新读数恢复这个点的读取异常，再检查上下限；等于限值不算越限。
     /// </summary>
     public async Task ReportReadingAsync(DeviceInfo device, PointReadResult result)
     {
         _dispatcher.VerifyAccess();
         PointInfo point = result.Point;
+        // 读成功了，之前的读取异常就恢复；数值报警仍需单独比较。
         Recover(device.Id, point.Id, AlarmKind.AcquisitionFailure, result.ReadAt, "此点已重新读取成功。");
         EvaluateLimit(device, result, AlarmKind.HighLimit, point.UpperLimit,
             point.UpperLimit.HasValue && result.Value > point.UpperLimit.Value);
@@ -96,7 +98,8 @@ public sealed class AlarmTracker : ObservableObject
         await FlushAsync();
     }
 
-    // ReportReadingAsync 调用；上下限共用这段，不需要写两套重复的记录逻辑。
+    // 没越限就恢复同类报警，越限就创建或更新它；上下限共用这里。
+    // 由 ReportReadingAsync 分别检查上限、下限时调用。
     private void EvaluateLimit(DeviceInfo device, PointReadResult result, AlarmKind kind, int? limit, bool outside)
     {
         if (!outside)
@@ -110,8 +113,8 @@ public sealed class AlarmTracker : ObservableObject
     }
 
     /// <summary>
-    /// 某点读取失败时调用。只记采集异常，不使用旧值判断上下限，也不恢复原来的数值报警。
-    /// 取消读取不走这里，用户主动停止不产生失败报警。
+    /// 由 DeviceSamplingViewModel.RunAsync 在点位读取失败后调用。
+    /// 记录这个点的读取异常，不拿旧值判断上下限；主动取消不调用这里。
     /// </summary>
     public async Task ReportPointFailureAsync(DeviceInfo device, PointInfo point, string message)
     {
@@ -121,7 +124,8 @@ public sealed class AlarmTracker : ObservableObject
         await FlushAsync();
     }
 
-    // 查配置失败等整台任务无法继续的情况，由 RunAsync 的最外层 catch 调用。
+    // 记录整台设备无法继续采集的原因，PointId 为 null 表示不是某个点的问题。
+    // 由 DeviceSamplingViewModel.RunAsync 在整台设备无法继续采集时调用。
     public async Task ReportDeviceFailureAsync(long deviceId, string deviceName, string message)
     {
         _dispatcher.VerifyAccess();
@@ -131,19 +135,20 @@ public sealed class AlarmTracker : ObservableObject
     }
 
     /// <summary>
-    /// 越限或采集失败时由本类调用。按设备 Id/点 Id/报警类型查活动字典，已有就更新次数，没有才创建新事件。
-    /// 随后 Publish 更新显示并加入待保存列表，不在这里直接写数据库。
+    /// 由 EvaluateLimit、ReportPointFailureAsync 和 ReportDeviceFailureAsync 调用。
+    /// 同类异常已存在就更新次数和数值，否则新建报警；再更新显示和待保存列表。
     /// </summary>
     private void Observe(long deviceId, string deviceName, long? pointId, string pointName,
         AlarmKind kind, string message, int? value, int? limit, DateTimeOffset time)
     {
+        // 用这三个值判断是不是同一类持续异常。
         var key = (deviceId, pointId, kind);
         AlarmRecord record;
         if (_active.TryGetValue(key, out AlarmRecord? existing))
         {
-            // 电脑时钟回拨时，记录的最后时间不能跑到首次发生时间前面。
+            // 电脑时间回拨时，最后发生时间也不能倒退。
             if (time < existing.LastSeenAt) time = existing.LastSeenAt;
-            // with 复制记录并更新少数字段；EventId、首次发生时间不变，所以仍是同一条报警。
+            // with 生成更新后的记录，但保留 EventId，仍算同一条报警。
             record = existing with
             {
                 LastSeenAt = time,
@@ -155,6 +160,7 @@ public sealed class AlarmTracker : ObservableObject
         }
         else
         {
+            // 首次出现，分配新 EventId 并记下首次时间、数值和限值。
             record = new AlarmRecord
             {
                 EventId = Guid.NewGuid().ToString("N"),
@@ -172,13 +178,16 @@ public sealed class AlarmTracker : ObservableObject
                 Occurrences = 1
             };
         }
+
+        // 活动字典、界面显示和待保存列表都改成最新记录。
         _active[key] = record;
         Publish(record);
         OnPropertyChanged(nameof(ActiveCount));
     }
 
     /// <summary>
-    /// 成功读取或数值回到范围时调用。活动字典里有同类异常才结束它，没有则什么都不新增。
+    /// 由 ReportReadingAsync 和 EvaluateLimit 调用。
+    /// 找到同类活动报警就标记恢复；没有旧报警就不做处理。
     /// </summary>
     private void Recover(long deviceId, long? pointId, AlarmKind kind, DateTimeOffset time, string reason)
     {
@@ -187,7 +196,8 @@ public sealed class AlarmTracker : ObservableObject
     }
 
     /// <summary>
-    /// 恢复或停止监测时调用。移出活动字典，带上结束状态/时间，再通过 Publish 更新同一 EventId 的记录。
+    /// 由 Recover、ReconcileConfigurationAsync 和 EndDeviceMonitoringAsync 调用。
+    /// 结束一条活动报警：移出活动字典，再更新结束状态、时间和显示。
     /// </summary>
     private void End(AlarmRecord record, AlarmState state, DateTimeOffset time, string reason)
     {
@@ -198,8 +208,8 @@ public sealed class AlarmTracker : ObservableObject
     }
 
     /// <summary>
-    /// 采集任务 finally 调用。仍未恢复的报警标记为停止监测，而不是恢复正常。
-    /// 已经恢复的记录不再改变；不清空屏幕记录，也不删除数据库历史。
+    /// 由 DeviceSamplingViewModel.RunAsync 在采集结束时调用。
+    /// 设备停止采集后，把未恢复的报警标记为“不再监测”，不是“已恢复”。
     /// </summary>
     public async Task EndDeviceMonitoringAsync(long deviceId)
     {
@@ -211,24 +221,26 @@ public sealed class AlarmTracker : ObservableObject
     }
 
     /// <summary>
-    /// 新报警、重复、恢复和停止监测共用这里。更新本次运行的显示列表，并把最新版本放入待保存字典。
-    /// 显示最多 500 条，待保存最多 5000 个事件；不是每轮都 INSERT 一条新报警。
+    /// 由 Observe 和 End 更新报警后调用。
+    /// 更新报警表，并把这条报警的最新版本放入待保存字典。
     /// </summary>
     private void Publish(AlarmRecord record)
     {
+        // 表里已有同一 EventId 就替换，否则按首次发生时间插入。
         int index = -1;
         for (int i = 0; i < _records.Count; i++)
             if (_records[i].EventId == record.EventId) { index = i; break; }
         if (index >= 0) _records[index] = record;
         else
         {
-            // 已被最近 500 条挤出去的旧报警又更新时，也按首次发生时间插回，不能冒充新报警。
+            // 旧报警重新出现也按首次发生时间排序，不当成新报警。
             int insertAt = 0;
             while (insertAt < _records.Count && _records[insertAt].StartedAt >= record.StartedAt) insertAt++;
             _records.Insert(insertAt, record);
         }
         while (_records.Count > DisplayLimit) _records.RemoveAt(_records.Count - 1);
-        // 极端情况下数据库一直不可写，待保存集合也不能无限长；有丢失会明确报数，不假装保存成功。
+
+        // 待保存列表满了就丢掉其中一条，并明确记录丢失次数。
         if (!_pending.ContainsKey(record.EventId) && _pending.Count >= PendingLimit)
         {
             _pending.Remove(_pending.Keys.First());
@@ -241,17 +253,19 @@ public sealed class AlarmTracker : ObservableObject
     }
 
     /// <summary>
-    /// 每次发生/更新/结束报警后调用，关窗也会最后重试一次。
-    /// 多台设备共用一个保存队列：后台只写数据库，界面集合始终在界面线程修改。
+    /// 由本类处理报警的方法调用；退出时管理器和主窗口也会调用它补存。
+    /// 把待保存的报警写入数据库；失败时保留，下次调用再试，退出时也会补试一次。
     /// </summary>
     public async Task FlushAsync()
     {
         _dispatcher.VerifyAccess();
+        // 其他设备正在保存时先等它完成，避免同时处理同一列表。
         await _saveGate.WaitAsync();
         try
         {
             while (_pending.Count > 0)
             {
+                // 固定本批名单，后台写数据库；期间还允许收到新的报警更新。
                 AlarmRecord[] batch = _pending.Values.ToArray();
                 try
                 {
@@ -264,8 +278,10 @@ public sealed class AlarmTracker : ObservableObject
                 {
                     AppLog.Error("报警历史保存失败", $"Pending={_pending.Count}", ex, "alarm-save");
                     PersistenceStatusText = $"报警保存失败：{ex.Message}。待保存 {_pending.Count} 条；后续会重试。" + DroppedText();
-                    return; // 保存失败不改读数、不结束采集，也不把这次错误再递归记成设备报警。
+                    return; // 先保留待保存记录，不影响采集和读数。
                 }
+
+                // 只移除刚存成功的版本；等待期间产生的新版本还要继续保存。
                 foreach (AlarmRecord record in batch)
                     if (_pending.TryGetValue(record.EventId, out AlarmRecord? latest) && ReferenceEquals(latest, record))
                         _pending.Remove(record.EventId);
@@ -278,7 +294,7 @@ public sealed class AlarmTracker : ObservableObject
     }
 
     /// <summary>
-    /// 生成保存提示时调用。曾超过待保存上限才追加丢失更新数；它只是说明，不执行重试。
+    /// 有报警更新丢失时，在保存提示后补上丢失次数。
     /// </summary>
     private string DroppedText() => _droppedUpdates == 0 ? string.Empty
         : $" 数据库长时间不可写，待保存上限已超出，有 {_droppedUpdates} 次记录更新未能保留。";

@@ -3,11 +3,11 @@ using System.Globalization;
 namespace DeviceMonitor.ViewModels;
 
 /// <summary>
-/// 采集历史和报警历史共用的时间输入检查：本机日期/时间转成 UTC 查询范围。
-/// SQL 用左闭右开范围，输入的结束秒也要完整包含；这里不查数据库。
+/// 历史查询共用的时间工具：检查输入，再把本机时间转成数据库用的 UTC 时间。
 /// </summary>
 internal static class HistoryQueryTime
 {
+    // 组合起止日期和时间，检查先后顺序，返回查询范围。
     public static (DateTimeOffset StartUtc, DateTimeOffset EndUtcExclusive) ReadRange(
         DateTime? startDate, string startText, DateTime? endDate, string endText)
     {
@@ -20,6 +20,7 @@ internal static class HistoryQueryTime
         return (ToUtc(start), ToUtc(end.AddSeconds(1)));
     }
 
+    // 检查日期和时间格式，再拼成一个本机日期时间。
     private static DateTime ReadLocalTime(DateTime? date, string text, string label)
     {
         if (!date.HasValue)
@@ -30,6 +31,7 @@ internal static class HistoryQueryTime
         return DateTime.SpecifyKind(date.Value.Date + time, DateTimeKind.Unspecified);
     }
 
+    // 按本机时区转换为 UTC，方便和数据库时间比较。
     private static DateTimeOffset ToUtc(DateTime local)
     {
         // 夏令时切换可能让一个时间不存在或重复；这时请用户换时间，不擅自猜。

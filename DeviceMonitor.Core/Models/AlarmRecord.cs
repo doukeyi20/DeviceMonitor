@@ -1,7 +1,7 @@
 namespace DeviceMonitor.Core.Models;
 
 /// <summary>
-/// 一次报警从发生到结束只用一条记录；再次遇到同一异常时更新它，不每秒新增一行。
+/// 一条报警记录。相同异常持续发生时更新原记录，不每轮新增。
 /// </summary>
 public sealed record AlarmRecord
 {

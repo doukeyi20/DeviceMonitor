@@ -5,8 +5,7 @@ namespace DeviceMonitor.Core.Security
 {
 
     /// <summary>
-    /// 保存密码前生成随机盐和 PBKDF2 哈希；验证时用同样的盐、次数重新计算，再安全比较。
-    /// 这里只处理密码，不连数据库。第一遍只需知道 Hash 生成保存信息，Verify 返回是否匹配。
+    /// Hash 生成密码的保存信息，Verify 检查输入密码是否正确，不保存明文密码。
     /// </summary>
     public static class PasswordHasher
     {
@@ -16,7 +15,8 @@ namespace DeviceMonitor.Core.Security
         private const int MaxVerificationIterations = 2_000_000;
 
         /// <summary>
-        /// UserStore 创建账户、修改密码、重置密码时调用。返回盐、哈希和迭代次数，保存这些而不是明文。
+        /// 由 UserStore 创建账户或修改密码的方法调用。
+        /// 生成随机盐、密码哈希和计算次数，供数据库保存。
         /// </summary>
         public static (byte[] Salt, byte[] Hash, int Iterations)
             Hash(string password)
@@ -34,12 +34,13 @@ namespace DeviceMonitor.Core.Security
                 HashAlgorithmName.SHA256,
                 HashSize);
 
-            // 一次返回建表时预留的三个密码字段。
+            // 把这三样一起返回，不返回明文密码。
             return (salt, hash, Iterations);
         }
 
         /// <summary>
-        /// UserStore 登录或修改自己的密码时调用。根据原来保存的盐和次数计算输入密码的哈希，再比较是否相同。
+        /// 由 UserStore.CheckLogin 和 TryChangePassword 检查密码时调用。
+        /// 用原来的盐和次数计算输入密码，再比较哈希是否一致。
         /// </summary>
         public static bool Verify(
             string password,

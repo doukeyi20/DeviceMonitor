@@ -1,7 +1,5 @@
 <!--
-    阅读入口：DataContext 是已有 MonitoringViewModel；Loaded 刷新设备，但不启动采集。
-    左侧每行是 MonitoringDeviceViewModel，勾选 IsChecked 决定批量启停；SelectedDevice 只是高亮行。
-    右上 Readings 汇总原任务的最新读数，右下 AlarmRecords 显示报警。循环读取不写在这个界面里。
+    数据源是 MonitoringViewModel；左侧勾选设备，右上看最新读数，右下看报警。
 -->
 <UserControl x:Class="DeviceMonitor.Views.MonitoringView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -12,7 +10,7 @@
              Foreground="{StaticResource PrimaryTextBrush}">
 
     <UserControl.Resources>
-        <!-- 只缩小本页表格的表头和行高，不影响其他功能页。 -->
+        <!-- 监控页面专用的表格样式。 -->
         <Style x:Key="MonitorTableStyle" TargetType="DataGrid"
                BasedOn="{StaticResource {x:Type DataGrid}}">
             <Setter Property="RowHeight" Value="34" />
@@ -45,7 +43,7 @@
             <Setter Property="TextTrimming" Value="CharacterEllipsis" />
             <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
         </Style>
-        <!-- 颜色只提示现有状态，不在界面里重新判断设备有没有故障。 -->
+        <!-- 根据已有状态显示颜色，不在 XAML 中判断设备故障。 -->
         <Style x:Key="MonitorQualityTextStyle" TargetType="TextBlock" BasedOn="{StaticResource MonitorCellTextStyle}">
             <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}" />
             <Style.Triggers>
@@ -68,8 +66,7 @@
         </Style>
     </UserControl.Resources>
 
-    <!-- 正常窗口填满可用高度；很矮时允许少量整页滚动，防止报警区域被挤没。
-         不再撑到原来的 1120 高度，三个表的内容仍各自滚动。 -->
+    <!-- 填满窗口高度；窗口太矮时整页可滚动，各表格也能单独滚动。 -->
     <ScrollViewer x:Name="PageScrollViewer" VerticalScrollBarVisibility="Auto"
                   HorizontalScrollBarVisibility="Disabled">
         <Grid Height="{Binding ViewportHeight, ElementName=PageScrollViewer}" MinHeight="540">
@@ -105,7 +102,7 @@
                 </Border>
             </Grid>
 
-            <!-- 顶部命令仍绑定原来的方法；窗口窄时按钮会换行，不往右挤出屏幕。 -->
+            <!-- 窗口窄时按钮自动换行。 -->
             <Border Grid.Row="1" Margin="0,12,0,10" Style="{StaticResource ToolbarCardStyle}" Padding="10,8,10,0">
             <WrapPanel>
                 <StackPanel Orientation="Horizontal" Margin="0,0,12,0">
@@ -121,7 +118,7 @@
                         Width="86" Height="38" Margin="0,0,0,8" />
                 </StackPanel>
                 <StackPanel Orientation="Horizontal">
-                <!-- 行高亮只方便查看，真正批量操作的是左侧打勾的设备。 -->
+                <!-- 批量启停看 IsChecked 勾选，不看鼠标高亮的行。 -->
                 <Button Content="开始采集" Command="{Binding StartSamplingCommand}"
                         Style="{StaticResource PrimaryActionButtonStyle}" Padding="12,8"
                         Width="100" Height="38" Margin="0,0,8,8" />
@@ -135,14 +132,14 @@
             <Border Grid.Row="2" Margin="0,0,0,12" Padding="10,8"
                     BorderBrush="{StaticResource BorderBrushNeutral}" BorderThickness="3,0,0,0"
                     Background="{StaticResource SoftSurfaceBrush}" CornerRadius="0,6,6,0">
-                <!-- 设备很多时，这条说明自己滚动，不能把下面三个表挤没。 -->
+                <!-- 勾选设备说明太长时单独滚动。 -->
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" MaxHeight="40">
                     <TextBlock Text="{Binding SelectionDescription}" FontSize="12" FontWeight="SemiBold"
                                TextWrapping="Wrap" />
                 </ScrollViewer>
             </Border>
 
-            <!-- 真正的两列：左边设备，右边上下两块。比例随窗口变，不再上下堆三张大表。 -->
+            <!-- 左侧设备表，右侧上面是读数、下面是报警。 -->
             <Grid x:Name="MonitoringWorkspace" Grid.Row="3">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="0.85*" MinWidth="200" MaxWidth="320" />
@@ -159,7 +156,7 @@
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
                         <TextBlock Text="设备选择" Style="{StaticResource SectionHeadingStyle}" Margin="0,0,0,10" />
-                        <!-- 勾选决定批量对象；点击一行只高亮，不再出现独立“详情”面板。 -->
+                        <!-- Devices 每项是 MonitoringDeviceViewModel；IsChecked 存勾选，Device 存配置，Sampling 接采集任务。 -->
                         <DataGrid x:Name="MonitoringDevicesGrid" Grid.Row="1"
                                   ItemsSource="{Binding Devices}"
                                   SelectedItem="{Binding SelectedDevice, Mode=TwoWay}"
@@ -180,7 +177,7 @@
                                     <DataGridTemplateColumn.CellTemplate>
                                         <DataTemplate>
                                             <StackPanel Margin="6,7">
-                                                <!-- 原详情的任务提示和保存统计改放悬停提示，不再单占一大块。 -->
+                                                <!-- 悬停查看这台设备的任务提示和历史保存统计。 -->
                                                 <StackPanel.ToolTip>
                                                     <ToolTip DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
                                                         <StackPanel MaxWidth="380">
@@ -255,7 +252,7 @@
                             </Grid.RowDefinitions>
                             <TextBlock Text="最新采集读数" Style="{StaticResource SectionHeadingStyle}" Margin="0,0,0,10"
                                        ToolTip="显示勾选设备的全部点位；停止后保留最后结果。这里不是历史记录列表。" />
-                            <!-- 仍使用原 Readings；改布局不会另外创建任务或重复读取。 -->
+                            <!-- Readings 属性是集合，每项是 MonitoringReadingViewModel，包含device和pointviewmodel，补上设备名，数值仍从任务的原读数行取。 -->
                             <DataGrid x:Name="MonitoringReadingsGrid" Grid.Row="1"
                                       ItemsSource="{Binding Readings}" Style="{StaticResource MonitorTableStyle}">
                                 <DataGrid.Columns>
@@ -303,6 +300,7 @@
                                           IsChecked="{Binding OnlyCheckedDevices, Mode=TwoWay}"
                                           FontSize="12" VerticalAlignment="Center" Margin="0,0,0,6" />
                             </WrapPanel>
+                            <!-- AlarmRecords属性，是集合，每项是一条 AlarmRecord，列显示发生时间、设备、原因和状态等属性。 -->
                             <DataGrid x:Name="MonitoringAlarmsGrid" Grid.Row="1"
                                       ItemsSource="{Binding AlarmRecords}" Style="{StaticResource MonitorTableStyle}">
                                 <DataGrid.Columns>

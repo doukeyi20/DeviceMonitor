@@ -1,7 +1,5 @@
 <!--
-    阅读入口：DataContext 是已有 UserManagementViewModel；Users/SelectedUser 是账户列表和当前选择。
-    创建/启停/重置密码走命令；读密码框、弹确认/提示/密码窗口走事件回到后台。
-    Loaded 订阅这些后台方法，Unloaded 解除订阅；密码框不长期绑定到 ViewModel。
+    数据源是 UserManagementViewModel；按钮执行命令，取密码和弹窗通过事件交给后台。
 -->
 <UserControl x:Class="DeviceMonitor.Views.UserManagementView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -20,7 +18,7 @@
                 <Style TargetType="Grid">
                     <Setter Property="MinHeight" Value="330" />
                     <Style.Triggers>
-                        <!-- 创建表单展开时保留足够高度；小窗口可滚动，不压扁账户表。 -->
+                        <!-- 展开创建表单后保留最低高度，小窗口可以滚动。 -->
                         <DataTrigger Binding="{Binding IsExpanded, ElementName=CreateOperatorExpander}" Value="True">
                             <Setter Property="MinHeight" Value="470" />
                         </DataTrigger>
@@ -41,7 +39,7 @@
                        Margin="0,5,0,0" TextWrapping="Wrap"
                        Style="{StaticResource SubtleTextStyle}" />
 
-            <!-- 平时先看账户表；需要新增时再展开输入，不让大表单挤走启停按钮。 -->
+            <!-- 创建表单默认收起，需要新增账户时展开。 -->
             <Border Grid.Row="2" Margin="0,14,0,12" Style="{StaticResource ToolbarCardStyle}">
                 <Expander x:Name="CreateOperatorExpander" IsExpanded="False"
                           Header="创建操作员（需要时展开）" FontSize="14" FontWeight="SemiBold">
@@ -66,7 +64,7 @@
                         </StackPanel>
                         <StackPanel Grid.Column="2">
                             <TextBlock Text="初始密码" FontWeight="SemiBold" />
-                            <!-- 密码框名字不变，创建命令仍通过后台读取这里的密码。 -->
+                            <!-- 后台通过 x:Name 找到密码框，创建命令需要时才读取。 -->
                             <PasswordBox x:Name="NewPasswordInput" Height="36" Margin="0,5,0,0" FontWeight="Normal" />
                         </StackPanel>
                         <StackPanel Grid.Column="4">
@@ -90,7 +88,7 @@
                 </Expander>
             </Border>
 
-            <!-- 先选中一行，再在表格上方启停；无需滚到所有账户下面找按钮。 -->
+            <!-- 先选账户，再执行启用、停用或重置密码。 -->
             <Border Grid.Row="3" Grid.RowSpan="3" Style="{StaticResource SectionCardStyle}">
                 <Grid>
                     <Grid.RowDefinitions>
@@ -127,6 +125,7 @@
                                    TextWrapping="Wrap" Style="{StaticResource SubtleTextStyle}" />
                     </StackPanel>
 
+                    <!-- Users 每项是一个 UserAccount，列显示它的属性；选中的对象写回 SelectedUser。 -->
                     <DataGrid x:Name="UsersGrid" Grid.Row="2" MinHeight="100"
                               ItemsSource="{Binding Users}" AutoGenerateColumns="False"
                               CanUserAddRows="False" CanUserDeleteRows="False" CanUserReorderColumns="False"
@@ -143,7 +142,7 @@
                                     </Style>
                                 </DataGridTextColumn.ElementStyle>
                             </DataGridTextColumn>
-                            <!-- 只翻译显示文字，账户的 Role 枚举和权限判断不变。 -->
+                            <!-- 根据 Role 显示中文角色名，不修改账户角色。 -->
                             <DataGridTemplateColumn Header="角色" Width="120">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>

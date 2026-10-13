@@ -7,24 +7,23 @@ using System.Text;
 namespace DeviceMonitor.Core.Diagnostics;
 
 /// <summary>
-/// 把 AppLog 交来的关键信息追加到文件，按日期/大小换文件并限制保留数量。
-/// 锁只保护短暂文件追加；日志写失败记状态，不把正常业务一起弄失败。
+/// 把日志追加到文件，按日期和大小换文件，并清理多余旧日志。
 /// </summary>
 public sealed class FileLog
 {
-    private readonly object _gate = new();
-    private readonly long _maxFileBytes;
-    private readonly int _retainedFiles;
-    private readonly Dictionary<string, DateTimeOffset> _lastWarnings = new();
-    private string? _currentFile;
-    private string? _currentDay;
-    private int _sequence;
+    private readonly object _gate = new(); // 同一时刻只让一个调用写文件。
+    private readonly long _maxFileBytes; // 单个日志文件最多多大，超过就换新文件。
+    private readonly int _retainedFiles; // 最多保留多少个日志文件。
+    private readonly Dictionary<string, DateTimeOffset> _lastWarnings = new(); // 同类日志上次写入的时间。
+    private string? _currentFile; // 当前正在追加的日志文件路径。
+    private string? _currentDay; // 当前文件所属日期，换一天就换文件。
+    private int _sequence; // 文件名里的递增序号，避免同一时刻生成同名文件。
 
     public string DirectoryPath { get; }
-    public string? LastWriteError { get; private set; }
+    public string? LastWriteError { get; private set; } // 最近一次写入失败的原因，供界面提醒。
 
     /// <summary>
-    /// AppLog 初始化时创建。检查并保存日志目录与文件大小/数量限制，此时还不写文件。
+    /// 记住日志目录、文件大小和保留数量，此时还不创建日志文件。
     /// </summary>
     public FileLog(string directoryPath, long maxFileBytes = 2 * 1024 * 1024, int retainedFiles = 14)
     {
@@ -37,12 +36,14 @@ public sealed class FileLog
     }
 
     /// <summary>
-    /// AppLog 调用这里。context 只传固定说明和编号，不传密码、SQL、连接字符串。
-    /// 异常只记类型、错误码和调用位置，不记可能夹带输入内容的 Message / ToString。
+    /// 由 AppLog.Info、Warning 和 Error 调用。
+    /// 追加一条日志。context 不要传密码、SQL 或连接字符串。
+    /// 异常只记类型、错误码和位置，不记可能含敏感数据的消息。
     /// </summary>
     public void Write(string level, string operation, string context = "", Exception? exception = null,
         string? throttleKey = null)
     {
+        // 多个地方同时写日志时，排队写，避免互相抢同一个文件。
         lock (_gate)
         {
             DateTimeOffset now = DateTimeOffset.Now;
@@ -50,6 +51,7 @@ public sealed class FileLog
                 && now - last < TimeSpan.FromSeconds(30))
                 return; // 设备断线可能每秒报错，同一类错误最多每 30 秒写一次。
 
+            // 把时间、级别、操作和错误信息拼成一行。
             string details = SafeExceptionDetails(exception);
             string line = $"{now:yyyy-MM-dd HH:mm:ss.fff zzz} [{OneLine(level, 12)}] " +
                 $"{OneLine(operation, 160)} | {OneLine(context, 1024)}{details}{Environment.NewLine}";
@@ -58,6 +60,7 @@ public sealed class FileLog
                 Directory.CreateDirectory(DirectoryPath);
                 string day = now.ToString("yyyyMMdd");
                 int bytes = Encoding.UTF8.GetByteCount(line);
+                // 第一次写、换了一天或文件太大，都要准备新文件名。
                 bool newFile = _currentFile is null || _currentDay != day
                     || (File.Exists(_currentFile) && new FileInfo(_currentFile).Length + bytes > _maxFileBytes);
                 if (newFile)
@@ -68,26 +71,29 @@ public sealed class FileLog
                         $"device-monitor-{day}-{now:HHmmssfff}-{Environment.ProcessId}-{++_sequence:D4}.log");
                 }
 
+                // 真正写入这一行；文件不存在时会创建，存在时追加。
                 File.AppendAllText(_currentFile!, line, new UTF8Encoding(false));
                 if (newFile)
                     RemoveOldFiles();
                 LastWriteError = null;
+
+                // 写成功后记下同类日志的时间，30 秒内不重复写。
                 if (throttleKey is not null)
                 {
                     if (_lastWarnings.Count >= 256)
-                        _lastWarnings.Clear(); // 不让长期运行时的去重记录无限增多。
+                        _lastWarnings.Clear(); // 避免长期运行后，这份记录越积越多。
                     _lastWarnings[throttleKey] = now;
                 }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
             {
-                LastWriteError = ex.GetType().Name; // 不能在日志失败后再递归写一条日志。
+                LastWriteError = ex.GetType().Name; // 写日志失败就记下原因，不能再用写日志来报告这个错误。
             }
         }
     }
 
     /// <summary>
-    /// 开始一个新日志文件后调用。只清理本程序命名格式的旧日志，保留最近有限个，不碰无关文件。
+    /// 清理超出保留数量的旧日志，不碰用户的其他文件。
     /// </summary>
     private void RemoveOldFiles()
     {
@@ -102,20 +108,19 @@ public sealed class FileLog
     }
 
     /// <summary>
-    /// 清理旧日志前调用，确认名字符合本程序生成格式，不因后缀碰巧是 .log 就删除。
+    /// 检查是不是本程序生成的日志文件名。
     /// </summary>
     private static bool IsOwnFileName(string name) =>
         System.Text.RegularExpressions.Regex.IsMatch(name,
             @"^device-monitor-\d{8}-\d{9}-\d+-\d{4,}\.log$");
 
     /// <summary>
-    /// Write 调用。只整理异常类型、错误码和调用位置，不读可能夹带密码或 SQL 的 Message。
+    /// 提取可写入日志的异常信息，不读取异常消息中的敏感内容。
     /// </summary>
     private static string SafeExceptionDetails(Exception? exception)
     {
         var details = new StringBuilder();
-        // 外层可能只是“任务失败”。往里找几层才能看到真正的 SQLite / 网络错误。
-        // 不读 Message，避免把调用方传进异常里的密码、SQL 等内容带到文件中。
+        // 最多向里找四层错误；不读取 Message，避免写出密码或 SQL。
         for (int depth = 0; exception is not null && depth < 4; depth++, exception = exception.InnerException)
         {
             details.Append($" | {exception.GetType().FullName} HResult={exception.HResult}");
@@ -129,7 +134,7 @@ public sealed class FileLog
     }
 
     /// <summary>
-    /// 写日志前共用，把换行折成空格并限制文字长度，防止一条消息伪造多条日志。
+    /// 去掉换行并截短过长文字，让一条日志只占一行。
     /// </summary>
     private static string OneLine(string? value, int maxLength)
     {

@@ -8,16 +8,15 @@ namespace DeviceMonitor.Views
 {
 
     /// <summary>
-    /// 设备管理页的后台：加载时把开表单、确认和提示方法订阅到已有 ViewModel。
-    /// DataContext 来自主窗口的 DataTemplate，不在本文件另建第二个设备管理 ViewModel。
+    /// 设备管理页面后台，负责打开表单、确认弹窗和提示。
+    /// DataContext 是主窗口传来的 DeviceManagementViewModel，这里不另建一份。
     /// </summary>
     public partial class DeviceManagementView : UserControl
     {
-        private DeviceManagementViewModel? _subscribedViewModel;
+        private DeviceManagementViewModel? _subscribedViewModel; // 当前已订阅的对象，离开页面时用它解除订阅。
 
         /// <summary>
-        /// WPF 根据 DataTemplate 创建设备管理页面时调用这里，只加载 XAML。
-        /// DataContext 会指向 MainViewModel.Pages 中已有的 DeviceManagementViewModel，不在这里重复创建。
+        /// 创建页面控件，数据源由主窗口的 DataTemplate 传入。
         /// </summary>
         public DeviceManagementView()
         {
@@ -25,7 +24,7 @@ namespace DeviceMonitor.Views
         }
 
         /// <summary>
-        /// 页面显示时 WPF 调用：从 DataContext 取已有对象，再登记开表单/提示/确认方法；这里不刷新数据库。
+        /// 页面显示时，接上 ViewModel 的界面请求。
         /// </summary>
         private void DeviceManagementView_Loaded(object sender, RoutedEventArgs e)
         {
@@ -33,8 +32,7 @@ namespace DeviceMonitor.Views
         }
 
         /// <summary>
-        /// 页面的数据源更换时，由 XAML 的 DataContextChanged 事件调用。
-        /// 如果页面已经加载，就重新 SubscribeViewModel，改为响应新的 ViewModel。
+        /// 数据源换了，已显示的页面要改为订阅新对象。
         /// </summary>
         private void DeviceManagementView_DataContextChanged(
             object sender, DependencyPropertyChangedEventArgs e)
@@ -44,8 +42,7 @@ namespace DeviceMonitor.Views
         }
 
         /// <summary>
-        /// Loaded 或换数据源时调用。先解除旧订阅，再把本页面的方法登记到新的 ViewModel 上。
-        /// 登记用 +=；并不是登记这一刻就弹窗口。
+        /// 先解除旧订阅，再接上新数据源的事件；订阅时不会立刻弹窗。
         /// </summary>
         private void SubscribeViewModel()
         {
@@ -54,9 +51,9 @@ namespace DeviceMonitor.Views
 
             if (DataContext is DeviceManagementViewModel viewModel)
             {
-                _subscribedViewModel = viewModel;  // 传对象
-                viewModel.DeviceEditorRequested += OpenDeviceEditor;  // 把弹出窗口的方法订阅
-                viewModel.MessageRequested += ShowMessage;  // 把显示消息的方法订阅
+                _subscribedViewModel = viewModel; // 记住这个对象，后面才能解除它的订阅。
+                viewModel.DeviceEditorRequested += OpenDeviceEditor;
+                viewModel.MessageRequested += ShowMessage;
                 viewModel.ConfirmationRequested += ConfirmAction; // 停用、删除都先问一次。
             }
         }
@@ -64,8 +61,8 @@ namespace DeviceMonitor.Views
 
 
         /// <summary>
-        /// 已由 SubscribeViewModel 订阅到 DeviceEditorRequested；ViewModel 的 AddDevice 新增设备命令或 EditDevice 编辑设备命令触发事件时调用这里。
-        /// null 表示新增，具体 DeviceInfo 表示编辑；创建 AddDeviceWindow，传入已有设备管理 ViewModel，再 ShowDialog 显示表单。
+        /// 由 DeviceManagementViewModel 的 DeviceEditorRequested 事件调用。
+        /// 打开新增或编辑表单，device 为 null 表示新增，有设备对象表示编辑。
         /// </summary>
         private void OpenDeviceEditor(DeviceInfo? device)
         {
@@ -74,18 +71,16 @@ namespace DeviceMonitor.Views
 
             try
             {
-                // 把同一份设备管理 ViewModel 交给表单，让它保存后能刷新管理列表。
-                // 表单会另建 DeviceEditorViewModel 作为自己的数据源；null 是新增，有设备对象就是编辑。
-                // 创建编辑窗口
+                // 传入管理页对象供保存后刷新列表；表单会创建自己的 DeviceEditorViewModel。
                 AddDeviceWindow dialog = new AddDeviceWindow(_subscribedViewModel, device);
 
-                // 设置窗口的 Owner 为当前页面所在的 Window，这样 ShowDialog 才会阻塞当前窗口。
+                // 指定弹窗属于当前主窗口。
                 Window? owner = Window.GetWindow(this);
 
                 if (owner is not null)
                     dialog.Owner = owner;
 
-                // 显示窗口，阻塞当前线程直到窗口关闭；
+                // 显示表单，关闭后这句才返回；弹窗期间界面仍可响应。
                 dialog.ShowDialog();
             }
             catch (Exception ex)
@@ -94,7 +89,8 @@ namespace DeviceMonitor.Views
             }
         }
 
-        // 验证弹窗：由 ViewModel 的 ConfirmationRequested 事件触发时调用，显示 MessageBox，用户点击 Yes/No 后把结果写回 request.Confirmed。
+        // 确认弹窗：选“是”就把 request.Confirmed 写成 true，否则为 false。
+        // 由 DeviceManagementViewModel 的 ConfirmationRequested 事件调用。
         private void ConfirmAction(DeviceConfirmationRequest request)
         {
             Window? owner = Window.GetWindow(this);
@@ -103,13 +99,14 @@ namespace DeviceMonitor.Views
                     MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
                 : MessageBox.Show(request.Message, request.Title,
                     MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+            // 写回同一个对象，命令返回后就能检查这个结果。
             request.Confirmed = result == MessageBoxResult.Yes;
         }
 
 
         /// <summary>
-        /// 平时由 ViewModel 的 MessageRequested 事件调用；OpenDeviceEditor 打开失败时也直接调用。
-        /// 找到承载页面的窗口，再显示 MessageBox；不进行数据库操作。
+        /// 由 DeviceManagementViewModel 的 MessageRequested 事件调用。
+        /// 找到页面所属窗口，弹出消息提示。
         /// </summary>
         private void ShowMessage(string message, string title)
         {
@@ -121,8 +118,7 @@ namespace DeviceMonitor.Views
         }
 
         /// <summary>
-        /// 切换走、页面从显示区域移除时，由 XAML 的 Unloaded 事件调用。
-        /// 只调用 UnsubscribeViewModel 解除后台方法的登记，不销毁 MainViewModel.Pages 中的页面数据对象。
+        /// 离开页面时解除订阅，ViewModel 中的数据仍保留。
         /// </summary>
         private void DeviceManagementView_Unloaded(object sender, RoutedEventArgs e)
         {
@@ -130,13 +126,13 @@ namespace DeviceMonitor.Views
         }
 
         /// <summary>
-        /// 离开页面或准备换订阅对象时调用，用 -= 解除原来的登记；页面数据源仍留在 MainViewModel.Pages 中。
+        /// 解除旧数据源的事件订阅，不再响应它的弹窗请求。
         /// </summary>
         private void UnsubscribeViewModel()
         {
             if (_subscribedViewModel is not null)
             {
-                // 离开页面时解除引用，防止 ViewModel 一直持有旧页面。
+                // -= 断开旧页面的方法，最后清掉保存的引用。
                 _subscribedViewModel.DeviceEditorRequested -= OpenDeviceEditor;
                 _subscribedViewModel.MessageRequested -= ShowMessage;
                 _subscribedViewModel.ConfirmationRequested -= ConfirmAction;

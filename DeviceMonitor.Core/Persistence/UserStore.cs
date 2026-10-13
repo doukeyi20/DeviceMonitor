@@ -9,8 +9,7 @@ namespace DeviceMonitor.Core.Persistence
 {
 
     /// <summary>
-    /// 只操作 Users 表：首次建管理员、登录验证、操作员管理和修改/重置密码。
-    /// 窗口一路传来同一个 UserStore；每个方法临时开自己的连接，不保存明文密码，也不打开 UI。
+    /// 用户数据库操作：创建账户、验证登录、启停账户、修改密码，不保存明文密码。
     /// </summary>
     public sealed class UserStore
     {
@@ -18,8 +17,7 @@ namespace DeviceMonitor.Core.Persistence
         private readonly string _connectionString;
 
         /// <summary>
-        /// 由 App.OnStartup 创建，使用 DatabaseInitializer 准备好的数据库路径，后续窗口沿用同一个对象。
-        /// 这里只保存连接配置；真正查询或写入时，下面的方法才打开连接。
+        /// 记住数据库连接设置，查询或保存时再打开连接。
         /// </summary>
         public UserStore(string databasePath)
         {
@@ -34,8 +32,8 @@ namespace DeviceMonitor.Core.Persistence
 
 
         /// <summary>
-        /// LoginViewModel 构造时和 ShowAdminSetup 打开首次创建面板前调用这里。
-        /// 查询 Users 表是否有任意账户；有返回 true，没有返回 false。它不判断当前输入的用户名是否正确。
+        /// 由 LoginViewModel 构造方法和 ShowAdminSetup 调用。
+        /// 检查数据库是否已有账户，不是检查输入的用户名是否正确。
         /// </summary>
         public bool HasAnyUser()
         {
@@ -53,9 +51,8 @@ namespace DeviceMonitor.Core.Persistence
 
 
         /// <summary>
-        /// 由 LoginViewModel.Login 调用，传入用户名和这次从密码框读到的密码。
-        /// 先查用户名对应的记录，再用 PasswordHasher.Verify 验证；账户启用且密码匹配才返回 UserAccount，否则返回 null。
-        /// 返回的用户对象不包含密码；是否打开主窗口由外面的登录流程决定。
+        /// 由 LoginViewModel.Login 调用。
+        /// 检查用户名、密码和启用状态；成功返回用户信息，失败返回 null。
         /// </summary>
         public UserAccount? CheckLogin(string userName, string password)
         {
@@ -115,8 +112,8 @@ namespace DeviceMonitor.Core.Persistence
         }
 
         /// <summary>
-        /// 由 LoginViewModel.CreateFirstAdmin 在输入检查通过后调用。
-        /// 先用 PasswordHasher.Hash 生成保存用的密码信息，再向 Users 插入管理员；只有表中没有任何账户时才允许插入，成功返回 true。
+        /// 由 LoginViewModel.CreateFirstAdmin 调用。
+        /// 数据库没有任何账户时，创建第一个管理员；密码先生成哈希再保存。
         /// </summary>
         public bool TryCreateFirstAdministrator(string userName, string password)
         {
@@ -130,6 +127,7 @@ namespace DeviceMonitor.Core.Persistence
                     nameof(password));
             }
 
+            // 计算密码的哈希和随机盐，保存这些结果，不直接保存原密码。
             var passwordData = PasswordHasher.Hash(password);
 
             using SqliteConnection connection = new SqliteConnection(_connectionString);
@@ -146,6 +144,7 @@ namespace DeviceMonitor.Core.Persistence
         WHERE NOT EXISTS (SELECT 1 FROM Users);
         """;
 
+            // 只有数据库还没有账户时才插入；返回 1 表示成功创建了一条管理员记录。
             command.Parameters.AddWithValue("$userName", userName.Trim());
             command.Parameters.AddWithValue("$salt", passwordData.Salt);
             command.Parameters.AddWithValue("$hash", passwordData.Hash);
@@ -157,8 +156,8 @@ namespace DeviceMonitor.Core.Persistence
         }
 
         /// <summary>
-        /// UserManagementViewModel.LoadUsers 调用，查询账户基本信息并返回 UserAccount 列表。
-        /// 不返回密码信息；由 ViewModel 再把列表放进界面绑定的 Users。
+        /// 由 UserManagementViewModel.LoadUsers 调用。
+        /// 查询账户列表，只返回基本信息，不返回密码。
         /// </summary>
         public IReadOnlyList<UserAccount> GetUsers(UserAccount currentUser)
         {
@@ -203,7 +202,7 @@ namespace DeviceMonitor.Core.Persistence
 
         /// <summary>
         /// 由 UserManagementViewModel.TryCreateOperator 调用。
-        /// 检查当前管理员权限，用 PasswordHasher.Hash 处理密码，再向 Users 插入操作员；成功返回 true，用户名重复返回 false。
+        /// 管理员创建操作员账户；成功返回 true，用户名重复返回 false。
         /// </summary>
         public bool TryCreateOperator(
             UserAccount currentUser,
@@ -255,8 +254,8 @@ namespace DeviceMonitor.Core.Persistence
         }
 
         /// <summary>
-        /// 由 UserManagementViewModel.TrySetOperatorEnabled 调用，外层已经过确认框。
-        /// 只修改指定操作员的 IsEnabled；不能用这里停用管理员。成功返回 true，目标不符合或无需改变时返回 false。
+        /// 由 UserManagementViewModel.TrySetOperatorEnabled 调用。
+        /// 启用或停用指定操作员，不能用这个方法停用管理员。
         /// </summary>
         public bool TrySetOperatorEnabled(
     UserAccount currentUser, long operatorId, bool enabled)
@@ -297,8 +296,8 @@ namespace DeviceMonitor.Core.Persistence
         }
 
         /// <summary>
-        /// 管理员重置操作员密码时调用，不需要操作员的旧密码。
-        /// 停用账户也能重置，但不会因此变成已启用，更不能借此修改管理员密码。
+        /// 由 PasswordEditViewModel.SaveAsync 在重置操作员密码时调用。
+        /// 管理员重置操作员密码，不需要旧密码，也不改变账户的启停状态。
         /// </summary>
         public bool TryResetOperatorPassword(UserAccount currentUser, long operatorId, string newPassword)
         {
@@ -338,8 +337,8 @@ namespace DeviceMonitor.Core.Persistence
 
 
         /// <summary>
-        /// 修改密码窗口的 SaveAsync 调用：自己改密码必须先验证旧密码。
-        /// 只替换密码对应的盐、哈希、迭代次数，不改用户名、角色、启停状态。
+        /// 由 PasswordEditViewModel.SaveAsync 在修改自己的密码时调用。
+        /// 验证旧密码后换成新密码，不改变用户名、角色或启停状态。
         /// </summary>
         public bool TryChangePassword(UserAccount currentUser, string oldPassword, string newPassword)
         {
@@ -399,7 +398,7 @@ namespace DeviceMonitor.Core.Persistence
         }
 
         /// <summary>
-        /// 修改/重置密码时共用的底线检查。至少 6 个字符且不能全是空白；不合格就拒绝写库。
+        /// 密码至少 6 个字符，不能全是空白。
         /// </summary>
         private static void ValidateNewPassword(string password)
         {

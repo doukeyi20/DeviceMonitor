@@ -1,7 +1,7 @@
 namespace DeviceMonitor.Core.Models;
 
 /// <summary>
-/// 一次报警的具体原因：超过上限、低于下限、采集失败；不表示是否已经恢复。
+/// 报警原因：超过上限、低于下限、采集失败。恢复情况另看 AlarmState。
 /// </summary>
 public enum AlarmKind
 {

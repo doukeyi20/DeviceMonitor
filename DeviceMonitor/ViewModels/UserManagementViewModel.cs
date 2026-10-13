@@ -11,8 +11,7 @@ namespace DeviceMonitor.ViewModels
 {
 
     /// <summary>
-    /// 用户管理页的数据源：刷新账户、创建操作员、启停操作员和请求重置密码。
-    /// 读密码/确认/开窗通过事件回到页面后台；真正改账户由同一个 UserStore 完成。
+    /// 用户管理页：查询账户、创建和启停操作员、重置密码。
     /// </summary>
     public partial class UserManagementViewModel : PageViewModel
     {
@@ -20,13 +19,14 @@ namespace DeviceMonitor.ViewModels
         // 存储当前登录的用户信息
         private readonly UserAccount _currentUser;
         private readonly UserStore _userStore;
-        private PasswordEditViewModel? _passwordEditor;
-        private bool _isClosing;
+        private PasswordEditViewModel? _passwordEditor; // 当前打开的重置密码表单数据，避免重复开窗。
+        private bool _isClosing; // 退出后不再创建、启停或重置账户。
 
         // 普通输入可以直接绑定；密码不放进长期保存的绑定属性。
         [ObservableProperty]
         private string _newUserName = string.Empty;
 
+        // 用户表当前选中的 UserAccount，启停和重置密码都操作它。
         [ObservableProperty]
         [NotifyCanExecuteChangedFor(nameof(EnableOperatorCommand))]
         [NotifyCanExecuteChangedFor(nameof(DisableOperatorCommand))]
@@ -46,13 +46,12 @@ namespace DeviceMonitor.ViewModels
             private set => SetProperty(ref _pageMessage, value);
         }
 
-        // 页面展示的用户列表。增删列表项时，WPF 会收到更新通知。
+        // 用户表绑定这里，每项是一个 UserAccount，包含名称、角色和启用状态，不含密码。
         public ObservableCollection<UserAccount> Users { get; } = new();
 
 
         /// <summary>
-        /// 由 MainViewModel 为管理员创建，传入已登录用户和同一个 UserStore。
-        /// 保存这两个对象，检查角色，并调用 RefreshUsers 先加载用户列表。
+        /// 接住当前用户和 UserStore，检查管理员权限并加载账户列表。
         /// </summary>
         public UserManagementViewModel(
             UserAccount currentUser,
@@ -73,8 +72,8 @@ namespace DeviceMonitor.ViewModels
 
 
         /// <summary>
-        /// 构造函数和“刷新账户”按钮调用这里；失败时保留旧表格，并给出可以重试的提示。
-        /// 不读取密码，也不会清空正在填写的新账户表单。
+        /// 由 RefreshUsersCommand 调用；本类构造方法也会调用一次。
+        /// 刷新账户列表，失败时保留旧列表，不清空正在填写的表单。
         /// </summary>
         [RelayCommand(CanExecute = nameof(CanManageUsers))]
         private void RefreshUsers()
@@ -94,6 +93,7 @@ namespace DeviceMonitor.ViewModels
         }
 
         // 刷新按钮、创建成功和启停完成后共用这里；按 Id 尽量恢复选择。
+        // 由 RefreshUsers 和 RefreshUsersAfterOperation 调用。
         private void LoadUsers()
         {
             // 先查成功，再替换界面列表，避免查询失败时把原列表清空。
@@ -113,9 +113,8 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 点击“创建操作员”后，CreateOperatorCommand 调用这里。
-        /// 触发 PasswordsRequested，让 UserManagementView.ReadPasswords 读两个密码框；检查通过后调用 TryCreateOperator。
-        /// 成功后发出清空密码和显示提示的事件，由页面后台执行。
+        /// 由 CreateOperatorCommand 调用。
+        /// 读取两次密码，检查并创建操作员；成功后清空密码框并提示。
         /// </summary>
         [RelayCommand(CanExecute = nameof(CanManageUsers))]
         private void CreateOperator()
@@ -141,8 +140,7 @@ namespace DeviceMonitor.ViewModels
                     return;
                 }
 
-                // 调用 UserManagementView.xaml.cs 的 ReadPasswords：
-                // 把两个密码框的值填回 passwords，回来后继续检查，再决定是否创建账户。
+                // 让 UserManagementView.ReadPasswords 读取两个密码框，填回 passwords 再检查。
                 PasswordsRequested.Invoke(passwords);
                 if (passwords.Password.Length < 6)
                 {
@@ -169,8 +167,7 @@ namespace DeviceMonitor.ViewModels
                 NewUserName = string.Empty;
                 // 调用 UserManagementView.xaml.cs 的 ClearPasswords：清空创建操作员的两个密码框。
                 FormResetRequested?.Invoke();
-                // 调用 UserManagementView.xaml.cs 的 ShowMessage：显示 PageMessage 中的完整结果。
-                // 若账户已创建、只是刷新失败，提示中也会保留这两件事。
+                // 让 UserManagementView.ShowMessage 显示结果，创建成功和刷新失败要分开说。
                 MessageRequested?.Invoke(PageMessage, "创建操作员");
             }
             catch (Exception ex)
@@ -187,8 +184,8 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 由 CreateOperator 在输入检查通过后调用。
-        /// 把用户名、密码和当前管理员交给 UserStore.TryCreateOperator；创建成功再刷新表格，刷新失败单独提示。
+        /// 由 CreateOperator 调用。
+        /// 保存操作员账户，成功后刷新列表；刷新失败单独提示。
         /// </summary>
         public bool TryCreateOperator(string userName, string password)
         {
@@ -204,7 +201,8 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 点击“启用操作员”后，EnableOperatorCommand 调用这里，再把 true 交给 ChangeSelectedOperatorStatus。
+        /// 由 EnableOperatorCommand 调用。
+        /// 启用选中的操作员，传 true。
         /// </summary>
         [RelayCommand(CanExecute = nameof(CanEnableOperator))]
         private void EnableOperator()
@@ -212,12 +210,14 @@ namespace DeviceMonitor.ViewModels
             ChangeSelectedOperatorStatus(true);
         }
 
-        // EnableOperatorCommand 判断按钮能不能点时调用：当前有权限，并且选中的是停用的操作员，不是管理员。
+        // 有权限且选中停用的操作员，才能启用。
+        // 由 EnableOperatorCommand 判断按钮能不能点时调用。
         private bool CanEnableOperator() =>
             CanManageUsers() && SelectedUser is { Role: UserRole.Operator, IsEnabled: false };
 
         /// <summary>
-        /// 点击“停用操作员”后，DisableOperatorCommand 调用这里，再把 false 交给 ChangeSelectedOperatorStatus。
+        /// 由 DisableOperatorCommand 调用。
+        /// 停用选中的操作员，传 false。
         /// </summary>
         [RelayCommand(CanExecute = nameof(CanDisableOperator))]
         private void DisableOperator()
@@ -225,13 +225,14 @@ namespace DeviceMonitor.ViewModels
             ChangeSelectedOperatorStatus(false);
         }
 
-        // DisableOperatorCommand 判断按钮能不能点时调用：当前有权限，并且选中的是启用的操作员，不是管理员。
+        // 有权限且选中启用的操作员，才能停用。
+        // 由 DisableOperatorCommand 判断按钮能不能点时调用。
         private bool CanDisableOperator() =>
             CanManageUsers() && SelectedUser is { Role: UserRole.Operator, IsEnabled: true };
 
         /// <summary>
-        /// 由 EnableOperator 和 DisableOperator 共用。
-        /// 先触发 ConfirmationRequested，让 UserManagementView.ConfirmAction 弹框并把选择写回；确认后才调用 TrySetOperatorEnabled。
+        /// 由 EnableOperator 和 DisableOperator 调用。
+        /// 确认后保存操作员的启停状态。
         /// </summary>
         private void ChangeSelectedOperatorStatus(bool enabled)
         {
@@ -245,8 +246,7 @@ namespace DeviceMonitor.ViewModels
             {
                 var confirmation = new UserConfirmationRequest(
                     $"确定{action}操作员“{selected.UserName}”吗？", "确认账户操作");
-                // 调用 UserManagementView.xaml.cs 的 ConfirmAction：弹出启用/停用确认框。
-                // 后台把是否点“是”填入 confirmation.Confirmed，回来后才决定要不要改数据库。
+                // 让 UserManagementView.ConfirmAction 弹框，把是否点“是”写回 confirmation.Confirmed。
                 ConfirmationRequested?.Invoke(confirmation);
                 if (!confirmation.Confirmed)
                     return;
@@ -263,8 +263,8 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 由 ChangeSelectedOperatorStatus 在用户确认后调用。
-        /// 调用 UserStore.TrySetOperatorEnabled 改数据库，再刷新列表显示最新状态；取消确认不会走到这里。
+        /// 由 ChangeSelectedOperatorStatus 调用。
+        /// 保存操作员启停状态，再刷新列表显示实际状态。
         /// </summary>
         public bool TrySetOperatorEnabled(long operatorId, bool enabled)
         {
@@ -281,8 +281,8 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 选中操作员后点“重置密码”：只打开密码表单，不重新启用账户、不读取原密码。
-        /// PasswordWindow 仍通过 SaveCommand → UserStore 写入，回到这里后只更新操作提示。
+        /// 由 ResetOperatorPasswordCommand 调用。
+        /// 打开选中操作员的密码重置表单，不读取旧密码，也不重新启用账户。
         /// </summary>
         [RelayCommand(CanExecute = nameof(CanResetOperatorPassword))]
         private void ResetOperatorPassword()
@@ -294,8 +294,7 @@ namespace DeviceMonitor.ViewModels
             NotifyUserCommands();
             try
             {
-                // 调用 UserManagementView.xaml.cs 的 OpenPasswordEditor：
-                // 把 editor 作为密码窗口的数据源并显示窗口；窗口关闭后，才继续检查 IsSaved。
+                // 让 UserManagementView.OpenPasswordEditor 显示 editor，关闭后检查是否保存成功。
                 PasswordEditorRequested.Invoke(editor);
                 if (editor.IsSaved && !_isClosing)
                     PageMessage = "操作员密码已重置，下次登录使用新密码。账户启停状态未改变，已登录会话不会被强制退出。";
@@ -308,12 +307,14 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 重置按钮的条件：当前可管理，并且选中的是操作员；停用操作员也能重置，但不会被启用。
+        /// 由 ResetOperatorPasswordCommand 判断按钮能不能点时调用。
+        /// 有权限且选中操作员才能重置密码，停用的操作员也可以。
         /// </summary>
         private bool CanResetOperatorPassword() =>
             CanManageUsers() && SelectedUser is { Role: UserRole.Operator };
 
         // 写入已经完成后，刷新是第二件事。刷新出错要单独提示，不能让用户以为账户没创建。
+        // 由 TryCreateOperator 和 TrySetOperatorEnabled 保存成功后调用。
         private void RefreshUsersAfterOperation(string resultMessage)
         {
             try
@@ -329,14 +330,16 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 账户操作共用条件：已启用管理员，没在退出，也没打开重置密码表单。
+        /// 由 RefreshUsersCommand、CreateOperatorCommand 判断按钮能不能点时调用。
+        /// 账户已启用、是管理员，且没在退出或重置密码，才能操作。
         /// </summary>
         private bool CanManageUsers() =>
             !_isClosing && _passwordEditor is null &&
             _currentUser.Role == UserRole.Administrator && _currentUser.IsEnabled;
 
         /// <summary>
-        /// 打开/关闭重置窗口或退出时调用，让账户按钮重新判断能不能点，不会执行按钮业务。
+        /// 由 ResetOperatorPassword 和 StopOperationsAsync 调用。
+        /// 让账户按钮重新判断能不能点，不执行账户操作。
         /// </summary>
         private void NotifyUserCommands()
         {
@@ -347,7 +350,8 @@ namespace DeviceMonitor.ViewModels
             ResetOperatorPasswordCommand.NotifyCanExecuteChanged();
         }
 
-        // MainViewModel 关窗/退出登录时调用，等密码写入完成，不能关窗后还在改账户。
+        // 由 MainViewModel.StopBackgroundWorkAsync 在退出前调用。
+        // 等密码写入完成，不能关窗后还在改账户。
         public async Task StopOperationsAsync()
         {
             _isClosing = true;

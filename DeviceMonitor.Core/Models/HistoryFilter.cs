@@ -3,16 +3,17 @@ using System;
 namespace DeviceMonitor.Core.Models;
 
 /// <summary>
-/// 一次查询按钮确定的设备/名称/时间条件，HistoryViewModel 交给 HistoryStore。
-/// 翻页、趋势和导出沿用同一份；之后改输入框不会暗中改变这份条件。
+/// 记住本次历史查询的条件，翻页、趋势和导出继续用它。
+/// 改输入框不会立即改变这份条件，要重新点击查询。
 /// </summary>
 public sealed class HistoryFilter
 {
     public long? DeviceId { get; }
-    public string PointName { get; }
+    public string PointName { get; } // 按名称包含这段文字来筛选，空白表示不限点位名。
     public DateTimeOffset? StartUtc { get; }
     public DateTimeOffset? EndUtcExclusive { get; }
 
+    // 检查条件、去掉名称前后空格，再把时间转成 UTC 保存。
     public HistoryFilter(long? deviceId = null, string? pointName = null,
         DateTimeOffset? startUtc = null, DateTimeOffset? endUtcExclusive = null)
     {

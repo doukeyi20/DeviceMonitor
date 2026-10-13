@@ -1,7 +1,5 @@
 <!--
-    阅读入口：DataContext 是已有 AcquisitionViewModel。Loaded 订阅开窗事件并刷新启用设备。
-    上表选中设备 → SelectedDevice → 自动 OnSelectedDeviceChanged → 查询该设备的 Points → 下表显示配置。
-    管理采集点开 PointWindow；读取一次只测选中点，不存历史、不创建连续采集任务。
+    数据源是 AcquisitionViewModel；上表选设备，下表看它的点位配置，可单次测试。
 -->
 <UserControl x:Class="DeviceMonitor.Views.AcquisitionView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -12,7 +10,7 @@
              FontFamily="Microsoft YaHei UI"
              Foreground="{StaticResource PrimaryTextBrush}">
 
-    <!-- 从上往下看：先选设备，再看这台设备的采集点，单次测试也放在点位旁。 -->
+    <!-- 先选设备，再看点位；测试按钮放在点位表旁。 -->
     <ScrollViewer x:Name="PageScrollViewer"
                   VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <Grid Height="{Binding ViewportHeight, ElementName=PageScrollViewer}" MinHeight="596">
@@ -42,7 +40,7 @@
                         <Button Content="刷新设备" Command="{Binding RefreshDevicesCommand}"
                                 Height="34" Margin="0,0,10,6"
                                 Style="{StaticResource SecondaryActionButtonStyle}" />
-                        <!-- 命令提出开窗请求，页面后台负责真正弹出窗口。 -->
+                        <!-- 命令触发开窗事件，后台 OpenPointWindow 真正显示窗口。 -->
                         <Button Content="管理采集点" Command="{Binding ManagePointsCommand}"
                                 Height="34" Margin="0,0,16,6"
                                 Style="{StaticResource SecondaryActionButtonStyle}" />
@@ -53,7 +51,7 @@
                         </StackPanel>
                     </WrapPanel>
 
-                    <!-- 上表是设备。选择设备后，SelectedDevice 会让 ViewModel 查询它的点位。 -->
+                    <!-- 每行是 DeviceInfo；选中写入 SelectedDevice，自动调用 OnSelectedDeviceChanged 加载点位。 -->
                     <Grid Grid.Row="1">
                         <DataGrid x:Name="DevicesGrid"
                                   ItemsSource="{Binding Devices}"
@@ -75,7 +73,7 @@
                                 <DataGridTextColumn ElementStyle="{StaticResource TableCellTextStyle}" Header="采集间隔(ms)" Binding="{Binding SamplingIntervalMilliseconds}" Width="2*" MinWidth="120" />
                             </DataGrid.Columns>
                         </DataGrid>
-                        <!-- 设置默认不显示，当启用设备为0时显示。 -->
+                        <!-- 默认隐藏，Devices.Count 为 0 时显示。 -->
                         <TextBlock Text="暂无已启用设备。请先到设备管理添加并启用设备，再刷新这里。"
                                    IsHitTestVisible="False" TextWrapping="Wrap" TextAlignment="Center"
                                    Margin="16,44,16,4" VerticalAlignment="Center"
@@ -110,7 +108,7 @@
                         <Run Text=" · 采集点" />
                     </TextBlock>
 
-                    <!-- 测试按钮跟点位表放在一起；只测一个点，不启动连续采集，也不保存历史。 -->
+                    <!-- 只测试选中的一个点，不连续采集、不保存历史。 -->
                     <WrapPanel Grid.Row="1">
                         <Button Content="刷新采集点" Command="{Binding RefreshPointsCommand}"
                                 Height="34" Margin="0,0,10,6"
@@ -132,7 +130,7 @@
                         </StackPanel>
                     </Border>
 
-                    <!-- 下表是当前设备的 PointInfo。选中点位只影响上方的单次测试。 -->
+                    <!-- Points 每项是 PointInfo 配置；选中写入 SelectedPoint，供单次测试使用。 -->
                     <DataGrid x:Name="PointsGrid" Grid.Row="3"
                               ItemsSource="{Binding Points}"
                               SelectedItem="{Binding SelectedPoint, Mode=TwoWay}"

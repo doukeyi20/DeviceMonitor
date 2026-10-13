@@ -11,16 +11,14 @@ namespace DeviceMonitor.ViewModels
 {
 
     /// <summary>
-    /// 一台设备的点位表单数据源：刷新列表、新增、带入编辑、保存修改和删除。
-    /// Device 一旦传入就不换；这里只改配置，不连接设备，不开始采集。
+    /// 管理一台设备的采集点配置，不负责读取或连续采集。
     /// </summary>
     public partial class PointViewModel : ObservableObject
     {
         private readonly UserAccount _currentUser;
         private readonly DeviceStore _deviceStore;
 
-        // 打开窗口时传入的是哪台设备，这里就一直保存那台设备。
-        // 只有 get，表示窗口不能把它换成另一台。
+        // 本窗口一直管理这台设备，只有 get，不能中途换设备。
         public DeviceInfo Device { get; }
 
         // 窗口顶部标题，例如“T1 - 采集点管理”。
@@ -30,7 +28,7 @@ namespace DeviceMonitor.ViewModels
         public string DeviceEndpoint =>
             $"{Device.Host}:{Device.Port} · Unit ID：{Device.UnitId}";
 
-        // 表格显示这个集合。查询得到的新对象会放进这里，不直接绑定数据库。
+        // 左侧配置表绑定这里，每项是一个 PointInfo 点位配置，不是读数。
         public ObservableCollection<PointInfo> Points { get; } = new();
 
         // 表格选中哪一行，就把那一行的 PointInfo 传到这个属性。
@@ -42,8 +40,7 @@ namespace DeviceMonitor.ViewModels
 
         public event Action<PointDeleteRequest>? DeleteConfirmationRequested;
 
-        // 记住点击“编辑”那一刻的点位，作为本次保存的固定目标。
-        // 它与 SelectedPoint 分开：随后点到另一行，不应改变正在编辑的记录。
+        // 固定本次编辑的点，之后选中另一行也不能改变保存目标。
         private PointInfo? _editingPoint;
         public bool IsEditing => _editingPoint is not null;
         public string FormTitle => _editingPoint is null
@@ -82,8 +79,8 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// AcquisitionViewModel.CreatePointViewModel 创建这里，再由页面后台传给 PointWindow。
-        /// 接住用户、DeviceStore 和目标 DeviceInfo；构造时 RefreshPoints 加载这台设备的点位。
+        /// 由 AcquisitionViewModel.CreatePointViewModel 创建，作为点位窗口的数据源。
+        /// 接住目标设备和数据库对象，并加载这台设备的点位。
         /// </summary>
         public PointViewModel(UserAccount currentUser, DeviceStore deviceStore, DeviceInfo device)
         {
@@ -98,8 +95,8 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 构造函数直接调用；点击采集点窗口的“刷新”按钮时，RefreshPointsCommand 也调用这里。
-        /// 通过 LoadPoints 重查列表并更新提示；正在编辑的输入不会被清空。
+        /// 由 RefreshPointsCommand 调用；本类构造方法也会调用一次。
+        /// 刷新点位列表，不清空正在编辑的输入。
         /// </summary>
         [RelayCommand]
         private void RefreshPoints()
@@ -119,10 +116,9 @@ namespace DeviceMonitor.ViewModels
             }
         }
 
-        // 新增、编辑和手动刷新都调用这里，加载采集点
         /// <summary>
-        /// 由 RefreshPoints、SavePoint 和 DeletePoint 调用，是它们共用的列表更新方法。
-        /// 调用 DeviceStore.GetPoints，只查 Device.Id 对应的点位；填入 Points，并按点位 Id 恢复选择。
+        /// 由 RefreshPoints、SavePoint 和 DeletePoint 调用。
+        /// 查询这台设备的点位并填入 Points，再按编号恢复选择。
         /// </summary>
         private void LoadPoints(long? pointToSelect = null)
         {
@@ -140,13 +136,13 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 编辑选中点位按钮的命令。
-        /// 用 SetEditingPoint 固定本次编辑目标，再把它的配置填回输入属性；数据库此时还没有修改。
+        /// 由 BeginEditPointCommand 调用。
+        /// 记住要编辑的点，并把原配置填入输入框；此时不修改数据库。
         /// </summary>
         [RelayCommand(CanExecute = nameof(CanBeginEditPoint))]
         private void BeginEditPoint()
         {
-            // 设备的点位对象
+            // 取出表格当前选中的点位配置。
             PointInfo? point = SelectedPoint;
             if (!CanBeginEditPoint() || point is null)
                 return;
@@ -154,7 +150,7 @@ namespace DeviceMonitor.ViewModels
             // 先固定编辑目标点位对象。
             SetEditingPoint(point);
 
-            // 把输入的值填入
+            // 把点位原配置填入右侧表单，之后用户修改这些属性。
             PointName = point.Name;
             AddressText = point.Address.ToString(CultureInfo.InvariantCulture);
             SelectedRegisterType = point.RegisterType;
@@ -165,7 +161,8 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 编辑和删除共用的选中检查：没在编辑，SelectedPoint 属于本设备，且仍在当前 Points 列表中。
+        /// 由 BeginEditPointCommand 判断按钮能不能点时调用。
+        /// 没有正在编辑，且选中了本设备的有效点位，才能开始编辑或删除。
         /// </summary>
         private bool CanBeginEditPoint()
         {
@@ -176,15 +173,14 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 点击采集点窗口的保存按钮后，SavePointCommand 调用这里；新增和编辑共用它。
-        /// 检查输入并组装 PointInput，再按是否正在编辑调用 DeviceStore.TryAddPoint 或 TryUpdatePoint。
-        /// 保存成功才 ResetForm 清空表单，并 LoadPoints 更新列表；这里只保存配置，不读取设备。
+        /// 由 SavePointCommand 调用。
+        /// 检查输入，新增或修改点位配置；成功后清空表单并刷新列表。
         /// </summary>
         [RelayCommand]
         private void SavePoint()
         {
 
-            // 先检查输入，空白、负数、非数字都不能直接拿去保存。
+            // 先取出表单属性并检查名称、类型和地址。
             string name = PointName?.Trim() ?? string.Empty;
 
             if (string.IsNullOrWhiteSpace(name))
@@ -198,8 +194,7 @@ namespace DeviceMonitor.ViewModels
                 PageMessage = "请选择寄存器类型。";
                 return;
             }
-            // 地址输入先保持字符串，空白、负数、非数字都不能直接拿去保存。
-            // 0 是有效协议地址，不用“大于 0”来校验它。
+            // 把地址文字转成整数，允许 0，不允许负数或非数字。
             if (!ushort.TryParse(AddressText?.Trim(), NumberStyles.None,
                 CultureInfo.InvariantCulture, out ushort address))
             {
@@ -212,8 +207,7 @@ namespace DeviceMonitor.ViewModels
                 return;
             }
 
-            // SavePoint 调用这里：先检查上下限，再交给数据库保存。
-            // 例如 UInt16 不能填负数；Int16 可以填负数，但不能超过它的范围。
+            // 检查上下限是否符合数据类型；例如 UInt16 不能填负数。
             if (!TryReadLimit(LowerLimitText, "下限", dataType, out int? lowerLimit) ||
                 !TryReadLimit(UpperLimitText, "上限", dataType, out int? upperLimit))
                 return;
@@ -223,8 +217,7 @@ namespace DeviceMonitor.ViewModels
                 return;
             }
 
-            // 把分散的输入属性组装成一个对象，交给 DeviceStore。
-            // Device.Id 单独传入，用户不能在输入框中改成别的设备编号。
+            // 把输入装成 PointInput；设备编号另传，不能由输入框改掉。
             PointInput input = new PointInput
             {
                 Name = name,
@@ -235,11 +228,11 @@ namespace DeviceMonitor.ViewModels
                 UpperLimit = upperLimit
             };
 
-            // 新增时没有点位编号；编辑时使用进入编辑那一刻记住的编号。
-            // 不拿此时 SelectedPoint 的编号保存，避免选中另一行后误改记录。
+            // 编辑用之前记住的编号，不用当前选择；新增时没有编号。
             long? editingId = _editingPoint?.Id;
             try
             {
+                // 有正在编辑的编号就修改，没有就新增。
                 bool saved;
                 if (editingId.HasValue)
                     saved = _deviceStore.TryUpdatePoint(_currentUser, Device.Id, editingId.Value, input);
@@ -260,12 +253,12 @@ namespace DeviceMonitor.ViewModels
                 return;
             }
 
-            // 写入成功才退出编辑并清空表单，失败时让用户保留输入继续修改。
+            // 保存成功才清空表单，失败时保留输入。
             ResetForm();
 
             try
             {
-                // 再查询数据库，显示真正保存的值；编辑后重新选中被修改的那条记录。
+                // 重查保存后的配置，编辑时恢复选中被修改的点。
                 LoadPoints(editingId);
                 PageMessage = editingId.HasValue
                     ? $"已修改采集点“{name}”（编号 {editingId.Value}），未新增记录。"
@@ -273,17 +266,19 @@ namespace DeviceMonitor.ViewModels
             }
             catch (Exception ex)
             {
-                // 写入和刷新是两件事，不能把刷新失败误报成“没有保存”。
+                // 已保存成功，只是刷新失败，不能提示成保存失败。
                 PageMessage = $"采集点已保存，但刷新列表失败，请重试刷新：{ex.Message}";
             }
         }
 
         // 保存按钮的输入检查。空白不是 0，而是“不设置这一侧的报警界限”。
+        // 由 SavePoint 检查上下限输入时调用。
         private bool TryReadLimit(string text, string label, PointDataType dataType, out int? limit)
         {
             limit = null;
             if (string.IsNullOrWhiteSpace(text))
                 return true;
+            // Int16 允许负数，UInt16 不允许；按所选类型确定上下界。
             int minimum = dataType == PointDataType.Int16 ? short.MinValue : ushort.MinValue;
             int maximum = dataType == PointDataType.Int16 ? short.MaxValue : ushort.MaxValue;
             if (!int.TryParse(text.Trim(), NumberStyles.AllowLeadingSign,
@@ -296,9 +291,9 @@ namespace DeviceMonitor.ViewModels
             return true;
         }
 
-        // 点击“取消编辑”后，CancelEditPointCommand 调用这里。
-        // 调用 ResetForm 放弃输入并退出编辑；不撤销已保存数据，因为这些编辑输入还没写入数据库。
+        // 放弃尚未保存的输入并退出编辑，不改变已保存数据。
         [RelayCommand(CanExecute = nameof(CanCancelEditPoint))]
+        // 由 CancelEditPointCommand 调用。
         private void CancelEditPoint()
         {
             if (!IsEditing)
@@ -307,11 +302,13 @@ namespace DeviceMonitor.ViewModels
             PageMessage = "已取消编辑，数据库中的原配置没有改变。";
         }
 
-        // CancelEditPointCommand 判断能不能取消编辑时调用；只有已经进入编辑模式才返回 true。
+        // 只有正在编辑，才能取消编辑。
+        // 由 CancelEditPointCommand 判断按钮能不能点时调用。
         private bool CanCancelEditPoint() => IsEditing;
 
         /// <summary>
-        /// 保存成功或取消编辑时调用，退出编辑并清空输入；数据库失败时不清空，用户还可以修正后重试。
+        /// 由 SavePoint 保存成功后或 CancelEditPoint 取消编辑时调用。
+        /// 清空输入并退出编辑；保存失败时不调用，保留输入供修改。
         /// </summary>
         private void ResetForm()
         {
@@ -325,10 +322,12 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        ///记住这次要修改哪个采集点，并把界面切换成编辑状态保存目标。
+        /// 由 BeginEditPoint 和 ResetForm 调用。
+        /// 记住要修改的点位，并切换到编辑状态。
         /// </summary>
         private void SetEditingPoint(PointInfo? point)
         {
+            // 记住固定目标，再更新表单标题、保存文字和相关按钮。
             _editingPoint = point;
             OnPropertyChanged(nameof(IsEditing));
             OnPropertyChanged(nameof(FormTitle));
@@ -339,9 +338,8 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 点击“删除选中点位”后，DeletePointCommand 调用这里。
-        /// 先触发 DeleteConfirmationRequested，让 PointWindow.ConfirmDeletePoint 弹框并把结果写回；确认后才调用 DeviceStore.TryDeletePoint。
-        /// 删除成功后 LoadPoints 更新列表；删除的是系统保存的配置，不是设备寄存器。
+        /// 由 DeletePointCommand 调用。
+        /// 确认后删除选中点位的配置，再刷新列表；不清除设备寄存器里的数值。
         /// </summary>
         [RelayCommand(CanExecute = nameof(CanDeletePoint))]
         private void DeletePoint()
@@ -350,13 +348,11 @@ namespace DeviceMonitor.ViewModels
             if (!CanDeletePoint() || point is null)
                 return;
 
-            // 记住点击删除那一刻的点位。确认框显示的和最后删除的必须是同一条，
-            // 不能弹框后再去读 SelectedPoint，以免删到后来选中的另一行。
+            // 固定本次删除目标，不能弹框后再取选择，避免删错点。
             PointDeleteRequest request = new PointDeleteRequest(Device, point);
             try
             {
-                // 调用 PointWindow.xaml.cs 的 ConfirmDeletePoint：显示 request 中这台设备、这个点位的删除确认框。
-                // 后台把是否点“是”填回 request.Confirmed；关闭确认框后，才继续下面的数据库删除判断。
+                // 让 PointWindow.ConfirmDeletePoint 弹框，把是否点“是”写回 request.Confirmed。
                 DeleteConfirmationRequested?.Invoke(request);
                 if (!request.Confirmed)
                 {
@@ -369,6 +365,7 @@ namespace DeviceMonitor.ViewModels
                     return;
                 }
 
+                // 确认后按设备编号、点位编号删除配置。
                 if (!_deviceStore.TryDeletePoint(_currentUser, Device.Id, point.Id))
                 {
                     PageMessage = "未删除：点位已不存在，或设备已停用 / 不存在。请刷新列表。";
@@ -383,8 +380,7 @@ namespace DeviceMonitor.ViewModels
 
             try
             {
-                // 删除成功后再查数据库；原来选中的是被删除行时，选择恢复为 null。
-                // 不清空新增表单，避免丢掉用户还没保存的另一份输入。
+                // 重查列表，清掉已删除点的选择，不清空另一份尚未保存的新增输入。
                 LoadPoints();
                 PageMessage = $"已删除采集点“{point.Name}”（编号 {point.Id}）。";
             }
@@ -396,7 +392,8 @@ namespace DeviceMonitor.ViewModels
         }
 
         /// <summary>
-        /// 删除条件复用 CanBeginEditPoint：选中本设备点位，并且没有未结束的编辑。
+        /// 由 DeletePointCommand 判断按钮能不能点时调用。
+        /// 删除和开始编辑使用相同的选中检查。
         /// </summary>
         private bool CanDeletePoint() => CanBeginEditPoint();
     }

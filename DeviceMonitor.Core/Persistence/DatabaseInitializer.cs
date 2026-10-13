@@ -8,8 +8,7 @@ namespace DeviceMonitor.Core.Persistence
 {
 
     /// <summary>
-    /// 启动时准备同一份 SQLite 文件：新库建表，旧库按版本补结构，保留已有配置和历史。
-    /// 构造函数只确定路径；Initialize 才打开数据库。先理解这两件事，第一遍不用逐句研究版本升级 SQL。
+    /// 准备数据库：新库建表，旧库升级，保留已有配置和历史。
     /// </summary>
     public class DatabaseInitializer
     {
@@ -30,8 +29,7 @@ namespace DeviceMonitor.Core.Persistence
         public string DatabasePath { get; }
 
         /// <summary>
-        /// 由 App.OnStartup 在正常启动时创建。
-        /// 算出本机正式数据库的文件夹和文件路径；这里只保存路径，尚未创建文件夹或打开数据库。
+        /// 算出数据库文件夹和文件路径，此时还不创建文件。
         /// </summary>
         public DatabaseInitializer()
         {
@@ -51,8 +49,7 @@ namespace DeviceMonitor.Core.Persistence
         }
 
         /// <summary>
-        /// 测试程序需要独立的临时数据库时使用这个重载；正常 App 启动不用它。
-        /// 检查并保存明确传入的完整文件路径，随后仍要调用 Initialize 才会准备数据库。
+        /// 使用指定的数据库路径，供独立测试使用；仍要调用 Initialize 才会建库。
         /// </summary>
         public DatabaseInitializer(string databasePath)
         {
@@ -69,8 +66,8 @@ namespace DeviceMonitor.Core.Persistence
         }
 
         /// <summary>
-        /// App.OnStartup 先调用这里，再创建各 Store。打开数据库、读版本、按需升级，全部成功才提交事务。
-        /// 版本号不是几套同时在用的同名表；完成后仍是 DatabasePath 指向的这一份库。
+        /// 由 App.OnStartup 在程序启动时调用。
+        /// 打开数据库，检查版本并按需建表或升级，全部成功才保存。
         /// </summary>
         public void Initialize()
         {
@@ -270,9 +267,8 @@ namespace DeviceMonitor.Core.Persistence
 
             if (databaseVersion < 7)
             {
-                // 点位删掉后，旧采集请求可能还在等设备响应，旧编号不能立刻给新点使用。
-                // SQLite 需要重建这张表才能加 AUTOINCREMENT；8 列数据和原约束照样保留。
-                // 这些步骤仍在同一个事务里，任何一步出错都会退回原来的表和版本。
+                // 重建点位表，让编号只增不复用，避免旧读数混到新点位名下。
+                // 保留原数据；任一步失败都回到升级前的状态。
                 command.CommandText = """
                     CREATE TABLE DevicePoints_v7 (
                         Id INTEGER PRIMARY KEY AUTOINCREMENT,

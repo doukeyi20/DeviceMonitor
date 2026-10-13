@@ -1,7 +1,5 @@
 <!--
-    阅读入口：AcquisitionViewModel.CreatePointViewModel 创建数据源，后台把同一个对象交给本窗口。
-    左侧 Points/SelectedPoint 是配置列表；右侧是新增或编辑的输入，不是实际读数。
-    SavePointCommand → SavePoint → DeviceStore；删除确认通过事件请后台弹框。这里不读取设备寄存器。
+    数据源是传来的 PointViewModel；左侧显示点位配置，右侧填写新增或编辑内容，不显示实时读数。
 -->
 <Window x:Class="DeviceMonitor.Views.PointWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -18,7 +16,7 @@
         FontFamily="Microsoft YaHei UI">
 
     <Window.Resources>
-        <!-- 只调整本窗口的下拉框，不改变其他页面的外观。 -->
+        <!-- 本窗口专用的下拉框样式。 -->
         <Style TargetType="{x:Type ComboBox}">
             <Setter Property="Height" Value="38" />
             <Setter Property="FontSize" Value="13" />
@@ -29,7 +27,7 @@
         </Style>
     </Window.Resources>
 
-    <!-- 左边选点，右边填配置。右侧表单自己滚动，保存和关闭按钮不用滚到底找。 -->
+    <!-- 左边选点，右边填配置；输入区可滚动，保存和关闭按钮固定。 -->
     <Grid Margin="20">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -42,7 +40,7 @@
             <ColumnDefinition Width="*" MinWidth="310" />
         </Grid.ColumnDefinitions>
 
-        <!-- 当前设备由打开窗口时传入，用户不用重新选设备或填写连接地址。 -->
+        <!-- 显示打开窗口时传入的设备，不在弹窗里重新选设备。 -->
         <Border Grid.Row="0" Grid.ColumnSpan="3" Margin="0,0,0,14"
                 Style="{StaticResource ToolbarCardStyle}">
             <Grid>
@@ -74,11 +72,11 @@
                     <Run Text=" 个采集点" />
                 </TextBlock>
                 <WrapPanel Grid.Row="1" Margin="0,0,0,4">
-                    <!-- 没选点位，或正在编辑时，命令的 CanExecute 会让按钮不能点击。 -->
+                    <!-- 命令的 CanExecute 决定按钮能否点，例如未选点位时不能编辑。 -->
                     <Button Content="编辑选中点" Command="{Binding BeginEditPointCommand}"
                             Margin="0,0,8,6" Height="34"
                             Style="{StaticResource SecondaryActionButtonStyle}" />
-                    <!-- 删除命令先向窗口后台请求确认，确认后才会调用数据库删除方法。 -->
+                    <!-- 删除命令先让后台确认，选“是”才删除配置。 -->
                     <Button Content="删除选中点" Command="{Binding DeletePointCommand}"
                             Margin="0,0,8,6" Height="34"
                             Style="{StaticResource DangerActionButtonStyle}" />
@@ -87,8 +85,7 @@
                             Style="{StaticResource SecondaryActionButtonStyle}" />
                 </WrapPanel>
 
-                <!-- Points 提供表格的行；SelectedItem 把选中的那一个 PointInfo 写回 SelectedPoint。
-                     每列的绑定仍从当前行的 PointInfo 取属性，不是从 ViewModel 取。 -->
+                <!-- Points 每项是 PointInfo，列读取这一项的属性；选中的对象写回 SelectedPoint。 -->
                 <DataGrid Grid.Row="2" MinHeight="120"
                           ItemsSource="{Binding Points}"
                           SelectedItem="{Binding SelectedPoint, Mode=TwoWay}"
@@ -117,7 +114,7 @@
                     <RowDefinition Height="*" />
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
-                <!-- 显示固定的编辑目标；选中另一行不会偷偷改掉保存目标。 -->
+                <!-- 显示正在编辑的点；再选另一行不会改变本次保存目标。 -->
                 <TextBlock Text="{Binding FormTitle}" ToolTip="{Binding FormTitle}"
                            Margin="0,0,0,12" TextTrimming="CharacterEllipsis"
                            Style="{StaticResource SectionHeadingStyle}" />
@@ -125,7 +122,7 @@
                 <ScrollViewer x:Name="PointPageScroll" Grid.Row="1"
                               VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <StackPanel Margin="0,0,4,0">
-                        <!-- 这些绑定从窗口的 PointViewModel 取值，输入立即写回对应属性。 -->
+                        <!-- 输入内容立即写回 PointViewModel 对应的属性，保存时再取这些值。 -->
                         <StackPanel Margin="0,0,0,12">
                             <TextBlock Text="采集点名称" Margin="0,0,0,6" FontWeight="SemiBold" />
                             <TextBox Text="{Binding PointName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
@@ -136,8 +133,7 @@
                             <StackPanel>
                                 <TextBlock Text="地址与类型" Style="{StaticResource SectionHeadingStyle}" Margin="0,0,0,10" />
                                 <TextBlock Text="寄存器类型" Margin="0,0,0,6" />
-                                <!-- Tag 保存真实枚举值，Content 只负责显示中文。
-                                     选择后，SelectedValue 把 Tag 写入 ViewModel 的属性。 -->
+                                <!-- Content 显示中文，Tag 保存实际类型；选中后把 Tag 写回 SelectedRegisterType。 -->
                                 <ComboBox SelectedValuePath="Tag"
                                           SelectedValue="{Binding SelectedRegisterType, Mode=TwoWay}">
                                     <ComboBoxItem Content="保持寄存器（03）" Tag="{x:Static models:RegisterType.Holding}" />
@@ -149,7 +145,7 @@
                                              Width="120" Height="38" VerticalContentAlignment="Center" />
                                 </StackPanel>
                                 <TextBlock Text="数据类型" Margin="0,10,0,6" />
-                                <!-- 数据类型单独占一行，小窗口也能看全中文选项。 -->
+                                <!-- 选中的 Tag 写回 SelectedDataType。 -->
                                 <ComboBox SelectedValuePath="Tag"
                                           SelectedValue="{Binding SelectedDataType, Mode=TwoWay}">
                                     <ComboBoxItem Content="UInt16 · 无符号整数" Tag="{x:Static models:PointDataType.UInt16}" />
@@ -212,13 +208,13 @@
             </Grid>
         </Border>
 
-        <!-- 此窗口只配置点位。真正读取和结果显示已经放到采集管理主页面。 -->
+        <!-- 本窗口只改配置，单次测试在采集点配置页面，连续采集在监控页。 -->
         <Grid Grid.Row="2" Grid.ColumnSpan="3" Margin="0,14,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <!-- 校验、保存、刷新结果都由 ViewModel 修改这条提示。 -->
+            <!-- PageMessage 显示输入检查、保存或刷新的结果。 -->
             <TextBlock Text="{Binding PageMessage}" Margin="0,0,16,0" VerticalAlignment="Center"
                        TextWrapping="Wrap" Style="{StaticResource SubtleTextStyle}" />
             <!-- ShowDialog 打开的窗口可用 IsCancel 关闭，点击或按 Esc 都可以。 -->

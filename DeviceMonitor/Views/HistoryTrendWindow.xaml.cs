@@ -6,23 +6,23 @@ using DeviceMonitor.ViewModels;
 namespace DeviceMonitor.Views;
 
 /// <summary>
-/// 历史趋势弹窗：接住外面建好的 HistoryTrendViewModel，显示后执行一次加载命令。
-/// 关窗先等查询结束；这里只控制窗口，曲线由控件根据绑定的 Records 绘制。
+/// 历史趋势窗口，接收数据源、显示后查询，关闭前等查询结束。
+/// 曲线由控件根据 Records 绘制，后台不直接画图。
 /// </summary>
 public partial class HistoryTrendWindow : Window
 {
     private readonly HistoryTrendViewModel _viewModel;
-    private bool _isClosing;
-    private bool _canClose;
+    private bool _isClosing; // 已开始关窗等待，不重复收尾。
+    private bool _canClose; // 查询收尾后设为 true，下次 Close 才真正关闭。
 
     /// <summary>
-    /// HistoryView.OpenTrendWindow 创建这里。接住准备好的趋势 ViewModel 设为 DataContext，不另建 Store 或开始采集。
+    /// 把历史页传来的趋势数据源设为 DataContext。
     /// </summary>
     public HistoryTrendWindow(HistoryTrendViewModel viewModel)
     {
         _viewModel = viewModel ?? throw new ArgumentNullException(nameof(viewModel));
         InitializeComponent();
-        DataContext = _viewModel; // 沿用父页面传来的对象，不在窗口中再 new Store 或找数据库路径。
+        DataContext = _viewModel;
     }
 
     // 窗口显示后查一次；构造函数只准备对象，不堵住打开窗口的过程。
@@ -33,16 +33,16 @@ public partial class HistoryTrendWindow : Window
     }
 
     /// <summary>
-    /// 关闭按钮只请求 Close；是否还要等查询，由下面 OnClosing 统一处理。
+    /// 请求关闭，是否等待查询由 OnClosing 处理。
     /// </summary>
     private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
 
-    // 用户关窗时先拦一次，查完后再关；不会中途丢下仍在回填界面的后台任务。
+    // 先拦住关闭，等查询结束后再关窗。
     protected override async void OnClosing(CancelEventArgs e)
     {
         base.OnClosing(e);
         if (e.Cancel || _canClose) return;
-        e.Cancel = true;
+        e.Cancel = true; // 这次先不关，避免查询还没结束。
         if (_isClosing) return;
         _isClosing = true;
         IsEnabled = false;
@@ -50,6 +50,7 @@ public partial class HistoryTrendWindow : Window
         finally
         {
             _canClose = true;
+            // 等本次关闭事件返回，再真正关闭。
             _ = Dispatcher.BeginInvoke(new Action(Close));
         }
     }

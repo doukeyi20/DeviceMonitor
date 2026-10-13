@@ -6,8 +6,8 @@ namespace DeviceMonitor.Core.Models
 {
 
     /// <summary>
-    /// 设备表单检查后的输入包，DeviceEditorViewModel 组装后交给保存方法。
-    /// 新增和编辑共用；没有数据库 Id，编辑目标编号单独传，不负责连接或保存。
+    /// 设备表单检查后的数据，新增和编辑都用它。
+    /// 编辑哪台设备的编号另外传，不放在这份输入里。
     /// </summary>
     public class DeviceInput
     {

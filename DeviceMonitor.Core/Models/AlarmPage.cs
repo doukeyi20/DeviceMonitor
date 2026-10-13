@@ -1,16 +1,17 @@
 namespace DeviceMonitor.Core.Models;
 
 /// <summary>
-/// AlarmStore 一页查询的返回包：记录、总数、页码和最大记录编号。
-/// 最大编号排除查询后新报警，但原事件仍能恢复或更新，所以不是完全不变的数据库快照。
+/// 一页报警查询结果：本页记录、总数、页码、最大记录编号。
+/// 排除查询后新增的报警，但已有报警的状态仍可能更新。
 /// </summary>
 public sealed class AlarmPage
 {
-    public IReadOnlyList<AlarmRecord> Records { get; }
-    public long TotalRecords { get; }
-    public int PageNumber { get; }
-    public long SnapshotId { get; }
+    public IReadOnlyList<AlarmRecord> Records { get; } // 本页报警，交给界面表格显示。
+    public long TotalRecords { get; } // 所有匹配页的总条数。
+    public int PageNumber { get; } // 本页页码。
+    public long SnapshotId { get; } // 本次查询的最大编号，翻页和导出继续用。
 
+    // 把这一页记录及分页信息装在一起，交回页面。
     public AlarmPage(IReadOnlyList<AlarmRecord> records, long totalRecords, int pageNumber, long snapshotId)
     {
         ArgumentNullException.ThrowIfNull(records);

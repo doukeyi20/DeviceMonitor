@@ -2,8 +2,7 @@ namespace DeviceMonitor.ViewModels
 {
 
     /// <summary>
-    ///定义了两个临时装数据的类，让 ViewModel 和界面后台来回传数据。
-    ///第一个装“后台读到的密码”；第二个装“要显示的提示，以及用户是否确认”
+    /// 临时装密码的对象，让 ViewModel 和界面后台来回传数据。
     /// </summary>
     public sealed class UserPasswordsRequest
     {
@@ -12,8 +11,8 @@ namespace DeviceMonitor.ViewModels
     }
 
     /// <summary>
-    /// 用户启停前的确认容器：ViewModel 放提示内容，页面后台弹框后填 Confirmed。
-    /// 默认 false；没有订阅者或用户取消时，不继续修改账户。
+    /// 临时装确认信息：ViewModel 放提示，后台弹框后填回 Confirmed。
+    /// 默认 false，用户没确认就不修改账户。
     /// </summary>
     public sealed class UserConfirmationRequest
     {
@@ -21,6 +20,7 @@ namespace DeviceMonitor.ViewModels
         public string Title { get; }
         public bool Confirmed { get; set; }
 
+        // 命令先填入提示内容，后台弹窗后再写回 Confirmed。
         public UserConfirmationRequest(string message, string title)
         {
             Message = message;

@@ -12,36 +12,36 @@ using DeviceMonitor.Core.Persistence;
 namespace DeviceMonitor.ViewModels;
 
 /// <summary>
-/// 采集读数历史的数据源：先保存筛选输入，点查询才生成固定条件；翻页和导出沿用查过的范围。
-/// 页面首次 Loaded 查询，不在构造函数中查库；选择文件和开趋势窗口交给页面后台，本类不启动采集。
+/// 读数历史页面的数据和命令：查询、翻页、导出，以及打开点位趋势。
+/// 输入条件要点查询才生效，翻页和导出沿用上次已查询的范围。
 /// </summary>
 public sealed partial class HistoryViewModel : PageViewModel
 {
-    public const int PageSize = 200; // 每页 200 条，不再是只能看最近 200 条。
+    public const int PageSize = 200; // 每页显示 200 条。
     private readonly UserAccount _currentUser;
     private readonly HistoryStore _historyStore;
     private readonly HistoryCsvExporter _csvExporter;
     private readonly HistoryDeviceOption _allDevices = new(null, "全部设备");
-    // 上次查询真正使用的条件；输入框后来改了，不等于已经重新查询。
+    // 上次已查询的条件，和输入框正在编辑的条件分开保存。
     private HistoryFilter? _appliedFilter;
-    // 本次查询允许的最大历史编号；翻页/导出不混入后来新增的记录，不是数据库结构版本。
+    // 本次查询的最大历史编号，翻页和导出不混入后来新增的记录。
     private long _snapshotId;
-    private long _totalRecords;
-    private int _currentPage;
+    private long _totalRecords; // 本次条件下的总条数，不只是当前页条数。
+    private int _currentPage; // 当前页码，无记录时为 0。
     private int _filterVersion; // 判断等待查询时，用户是否又改了筛选输入。
     private int _exportVersion; // 判断进度消息是否仍属于当前这一次导出。
-    private bool _updatingDeviceOptions;
-    private bool _hasLoadedRecords;
-    private bool _lastQueryFailed;
-    private bool _isShuttingDown;
-    private HistoryTrendViewModel? _openTrend;
+    private bool _updatingDeviceOptions; // 程序刷新下拉选项时，不误判为用户改了条件。
+    private bool _hasLoadedRecords; // 已查过一次，切回页面不再自动重查。
+    private bool _lastQueryFailed; // 上次查询失败时，保留旧表格，但暂不允许翻页和导出。
+    private bool _isShuttingDown; // 退出时禁止新操作，也不再回填结果。
+    private HistoryTrendViewModel? _openTrend; // 当前打开的趋势窗口数据，关窗收尾时也要等它。
 
-    public ObservableCollection<HistoryDeviceOption> DeviceOptions { get; } = new();
-    public ObservableCollection<HistoryRecord> Records { get; } = new();
-    // 现有历史入口下的第二个标签。它独立保存报警筛选条件，不和读数查询混在一起。
+    public ObservableCollection<HistoryDeviceOption> DeviceOptions { get; } = new(); // 设备筛选下拉框的选项。
+    public ObservableCollection<HistoryRecord> Records { get; } = new(); // 历史表当前页，每项是一条已保存的读数。
+    // “报警历史”标签的数据源，有自己的查询条件和表格。
     public AlarmHistoryViewModel Alarms { get; }
 
-    // 下面是输入框绑定的条件；只改变输入不会立即查库，要点击“查询 / 刷新”。
+    // 筛选控件绑定下面这些属性，改完要点击查询才生效。
     [ObservableProperty] private HistoryDeviceOption? _selectedDevice;
     [ObservableProperty] private string _pointNameFilter = string.Empty;
     [ObservableProperty] private bool _useTimeFilter;
@@ -49,17 +49,17 @@ public sealed partial class HistoryViewModel : PageViewModel
     [ObservableProperty] private DateTime? _endDate = DateTime.Today;
     [ObservableProperty] private string _startTimeText = "00:00:00";
     [ObservableProperty] private string _endTimeText = "23:59:59";
-    [ObservableProperty] private bool _filtersChanged;
-    [ObservableProperty] private bool _isLoading;
-    [ObservableProperty] private bool _isExporting;
-    // 表格选中一行后保存这里；趋势按该行的设备/点位编号查，不按名称猜。
+    [ObservableProperty] private bool _filtersChanged; // 输入已改，但还没按新条件查询。
+    [ObservableProperty] private bool _isLoading; // 正在查询时限制重复操作。
+    [ObservableProperty] private bool _isExporting; // 正在导出时限制查询和翻页。
+    // 历史表选中的记录，趋势按其中的设备编号、点位编号查。
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(ShowTrendCommand))]
     private HistoryRecord? _selectedRecord;
 
-    // 这些只读信息来自已查询的结果，不能让输入框随便修改，所以保留手写 getter。
+    // 页码、数量和提示由查询结果计算，供界面显示。
     public int CurrentPage => _currentPage;
-    // 页面切走再回来时用它判断：已有结果就保留，不自动清掉选择、页码和查询批次。
+    // 页面 Loaded 用它判断是否需要首次查询。
     public bool HasLoadedRecords => _hasLoadedRecords;
     public long TotalRecords => _totalRecords;
     public long TotalPages => _totalRecords == 0 ? 0 : (_totalRecords - 1) / PageSize + 1;
@@ -83,7 +83,7 @@ public sealed partial class HistoryViewModel : PageViewModel
     public event Func<string?>? ExportPathRequested;
     public event Action<HistoryTrendViewModel>? TrendRequested;
 
-    /// <summary>MainViewModel 创建，接住同一个账户和 HistoryStore；不在构造函数里查库。</summary>
+    /// <summary>准备历史页面和报警历史标签；首次查询在页面加载后执行。</summary>
     public HistoryViewModel(UserAccount currentUser, HistoryStore historyStore, AlarmStore? alarmStore = null) : base("历史记录")
     {
         _currentUser = currentUser ?? throw new ArgumentNullException(nameof(currentUser));
@@ -97,8 +97,8 @@ public sealed partial class HistoryViewModel : PageViewModel
     }
 
     /// <summary>
-    /// 页面 Loaded 或查询按钮执行 RefreshRecordsCommand 后调用。
-    /// 先把输入整理成固定条件，再查第一页；刷新会把查询之后的新采集记录包含进来。
+    /// 由 RefreshRecordsCommand 或 ResetFiltersAsync 调用；首次显示页面也会执行此命令。
+    /// 按当前输入查询第一页，并把最新保存的记录纳入本次查询。
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanRefreshRecords))]
     private async Task RefreshRecordsAsync()
@@ -106,6 +106,7 @@ public sealed partial class HistoryViewModel : PageViewModel
         if (!CanRefreshRecords()) return;
         try
         {
+            // 先检查并固定条件，再后台查询第一页。
             HistoryFilter filter = BuildFilter();
             await LoadPageAsync(filter, 1, null, refreshDeviceOptions: true);
         }
@@ -117,13 +118,14 @@ public sealed partial class HistoryViewModel : PageViewModel
     }
 
     /// <summary>
-    /// 查询/重置命令判断按钮能不能点时调用。没有查询、导出或退出工作正在进行才允许。
+    /// 由 RefreshRecordsCommand、ResetFiltersCommand 判断按钮能不能点时调用。
+    /// 没有查询、导出或退出工作时，才允许重新查询。
     /// </summary>
     private bool CanRefreshRecords() => !IsBusy;
 
     /// <summary>
-    /// 刷新命令调用：把输入整理成固定的查询条件；需要时将本机日期时间转成 UTC。
-    /// 条件对象交给 LoadPageAsync；改输入不会直接修改已经应用的旧条件。
+    /// 由 RefreshRecordsAsync 调用。
+    /// 把筛选输入装成查询条件；启用时间筛选时，先转成数据库使用的 UTC 时间。
     /// </summary>
     private HistoryFilter BuildFilter()
     {
@@ -133,28 +135,30 @@ public sealed partial class HistoryViewModel : PageViewModel
     }
 
     /// <summary>
-    /// 查询和翻页共用这里。后台返回普通列表；await 后才更新界面集合和页码。
-    /// 查失败时保留旧结果，不先 Clear；设备选项只在重新查询时刷新。
+    /// 由 RefreshRecordsAsync、PreviousPageAsync 和 NextPageAsync 调用。
+    /// 后台查一页记录，成功后更新表格和页码，失败就保留旧结果。
     /// </summary>
     private async Task LoadPageAsync(HistoryFilter filter, int page, long? snapshotId, bool refreshDeviceOptions = false)
     {
+        // 标记正在查询，记住输入版本，等待期间改了条件就需要再查。
         IsLoading = true;
         _lastQueryFailed = false;
         int filterVersion = _filterVersion;
         PageMessage = "正在查询历史记录…";
         try
         {
+            // 设备选项按需重查，记录每次都查；后台不直接操作界面集合。
             var result = await Task.Run(() =>
             {
                 var options = refreshDeviceOptions ? _historyStore.GetDeviceOptions(_currentUser) : null;
                 var data = _historyStore.GetPage(_currentUser, filter, page, PageSize, snapshotId);
                 return (Options: options, Data: data);
             });
-            // 退出登录已经在等这次查询，不再把旧账户的结果写回离开的页面。
+            // 退出后不再把结果填回旧页面。
             if (_isShuttingDown) return;
             if (result.Options is not null)
             {
-                // 换下拉框对象时不当作用户修改条件，按设备编号恢复同一个筛选目标。
+                // 重建设备选项并按编号恢复选择，这不算用户改条件。
                 _updatingDeviceOptions = true;
                 try
                 {
@@ -163,6 +167,7 @@ public sealed partial class HistoryViewModel : PageViewModel
                     foreach (HistoryDeviceOption option in result.Options) DeviceOptions.Add(option);
                     SelectedDevice = filter.DeviceId.HasValue
                         ? DeviceOptions.FirstOrDefault(item => item.DeviceId == filter.DeviceId) : _allDevices;
+                    // 这个编号已经没有历史选项时，也保留它作为当前筛选目标。
                     if (filter.DeviceId.HasValue && SelectedDevice is null)
                     {
                         SelectedDevice = new HistoryDeviceOption(filter.DeviceId, "暂无历史的设备");
@@ -171,9 +176,13 @@ public sealed partial class HistoryViewModel : PageViewModel
                 }
                 finally { _updatingDeviceOptions = false; }
             }
+
+            // 查询成功了才替换表格，每个 HistoryRecord 就是表里的一行。
             SelectedRecord = null;
             Records.Clear();
             foreach (HistoryRecord record in result.Data.Records) Records.Add(record);
+
+            // 记住已查询的条件、最大编号和页码，后续翻页、导出沿用它们。
             _appliedFilter = filter;
             _snapshotId = result.Data.SnapshotId;
             _totalRecords = result.Data.TotalRecords;
@@ -196,7 +205,10 @@ public sealed partial class HistoryViewModel : PageViewModel
         }
     }
 
-    /// <summary>重置按钮调用，恢复全部设备/全部时间，清空点位名称，并重新查询第一页。</summary>
+    /// <summary>
+    /// 由 ResetFiltersCommand 调用。
+    /// 恢复默认筛选条件，再查询第一页。
+    /// </summary>
     [RelayCommand(CanExecute = nameof(CanRefreshRecords))]
     private async Task ResetFiltersAsync()
     {
@@ -210,29 +222,37 @@ public sealed partial class HistoryViewModel : PageViewModel
         await RefreshRecordsAsync();
     }
 
-    /// <summary>上一页按钮调用，沿用已查询条件和最大记录编号，不读取新输入框的条件。</summary>
+    /// <summary>
+    /// 由 PreviousPageCommand 调用。
+    /// 按上次已查询的范围加载上一页。
+    /// </summary>
     [RelayCommand(CanExecute = nameof(CanPreviousPage))]
     private Task PreviousPageAsync() => CanPreviousPage()
         ? LoadPageAsync(_appliedFilter!, _currentPage - 1, _snapshotId) : Task.CompletedTask;
 
     /// <summary>
-    /// 上一页按钮条件：有已查结果、条件未改、上次查询没失败，而且当前不是第一页。
+    /// 由 PreviousPageCommand 判断按钮能不能点时调用。
+    /// 结果有效、条件未改且当前不是第一页，才允许上一页。
     /// </summary>
     private bool CanPreviousPage() => !IsBusy && !FiltersChanged && !_lastQueryFailed && _hasLoadedRecords && _currentPage > 1;
 
-    /// <summary>下一页按钮调用，读取同一批结果的下一页；新数据等点击查询再纳入。</summary>
+    /// <summary>
+    /// 由 NextPageCommand 调用。
+    /// 按同一查询范围加载下一页，不混入后来新增的数据。
+    /// </summary>
     [RelayCommand(CanExecute = nameof(CanNextPage))]
     private Task NextPageAsync() => CanNextPage()
         ? LoadPageAsync(_appliedFilter!, _currentPage + 1, _snapshotId) : Task.CompletedTask;
 
     /// <summary>
-    /// 下一页按钮条件：有已查结果、条件未改、上次查询没失败，而且后面还有页。
+    /// 由 NextPageCommand 判断按钮能不能点时调用。
+    /// 结果有效、条件未改且后面还有页，才允许下一页。
     /// </summary>
     private bool CanNextPage() => !IsBusy && !FiltersChanged && !_lastQueryFailed && _hasLoadedRecords && _currentPage < TotalPages;
 
     /// <summary>
-    /// 点击“点位趋势”后调用。先准备所选点位的数据源，再通过事件请后台打开窗口。
-    /// 不把当前页的 200 条直接画成曲线；子窗口会按同一批查询范围重新取这个点的历史。
+    /// 由 ShowTrendCommand 调用。
+    /// 为选中记录的点位打开趋势窗口；趋势会单独查这个点的历史，不只画当前页。
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanShowTrend))]
     private void ShowTrend()
@@ -243,18 +263,22 @@ public sealed partial class HistoryViewModel : PageViewModel
         {
             _openTrend = CreateTrendViewModel(SelectedRecord!);
             ShowTrendCommand.NotifyCanExecuteChanged();
-            // 调用 HistoryView.xaml.cs 的 OpenTrendWindow：
-            // 把刚准备好的 _openTrend 作为数据源，打开 HistoryTrendWindow；窗口关闭后才回到这里。
+            // HistoryView.xaml.cs 的 OpenTrendWindow 用 _openTrend 打开窗口，关闭后再返回。
             TrendRequested.Invoke(_openTrend);
         }
         catch (Exception ex) { PageMessage = $"打开趋势失败：{ex.Message}"; }
         finally { _openTrend = null; ShowTrendCommand.NotifyCanExecuteChanged(); }
     }
 
+    // 选中了有效记录，且当前没有另一个趋势窗口，才允许打开。
+    // 由 ShowTrendCommand 判断按钮能不能点时调用。
     private bool CanShowTrend() => !IsBusy && !FiltersChanged && _hasLoadedRecords && !_lastQueryFailed
         && _openTrend is null && SelectedRecord is not null && Records.Contains(SelectedRecord);
 
-    /// <summary>ShowTrend 创建子窗口的数据源时调用；沿用账户、Store、已经应用的条件和记录快照。</summary>
+    /// <summary>
+    /// 由 ShowTrend 打开趋势窗口前调用。
+    /// 把所选点位和本次查询范围交给趋势窗口的数据对象。
+    /// </summary>
     public HistoryTrendViewModel CreateTrendViewModel(HistoryRecord record)
     {
         ArgumentNullException.ThrowIfNull(record);
@@ -264,13 +288,15 @@ public sealed partial class HistoryViewModel : PageViewModel
     }
 
     /// <summary>
-    /// 导出按钮调用。先触发事件让后台选择路径，再在后台导出已查询条件的全部结果，不只当前页。
-    /// 工具还会生成 ExportRecordsCancelCommand，取消按钮用它通知这里的 cancellationToken。
+    /// 由 ExportRecordsCommand 调用。
+    /// 选择文件后，导出本次查询的全部结果，不只当前页。
+    /// 工具包生成 ExportRecordsCancelCommand，取消按钮用它发出停止信号。
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanExportRecords), IncludeCancelCommand = true)]
     private async Task ExportRecordsAsync(CancellationToken cancellationToken)
     {
         if (!CanExportRecords()) return;
+        // 固定上次已查询的范围和本次导出编号，不重新读取输入框。
         HistoryFilter filter = _appliedFilter!;
         long snapshot = _snapshotId;
         long total = _totalRecords;
@@ -279,17 +305,19 @@ public sealed partial class HistoryViewModel : PageViewModel
         try
         {
             if (ExportPathRequested is null) throw new InvalidOperationException("页面尚未准备好，无法选择导出文件。");
-            // 调用 HistoryView.xaml.cs 的 ChooseExportPath：弹出保存文件窗口。
-            // 选好后把完整路径返回给 path；点取消则返回 null，这一步还没有开始导出数据。
+            // HistoryView.xaml.cs 的 ChooseExportPath 弹出保存窗口，返回路径；取消返回 null。
             string? path = ExportPathRequested.Invoke();
             cancellationToken.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(path)) { PageMessage = "已取消选择导出文件。"; return; }
-            // 进度会排队回到界面线程；旧导出晚到的通知不能盖住新一轮提示。
+
+            // 后台进度送回界面显示，过期的导出通知不再采用。
             var progress = new Progress<long>(count =>
             {
                 if (!_isShuttingDown && IsExporting && exportVersion == _exportVersion)
                     PageMessage = $"正在导出：已写入 {count} / {total} 条，可取消。";
             });
+
+            // 真正的查库和写 CSV 在后台执行，等结束后显示写入条数。
             long written = await Task.Run(() => _csvExporter.Export(_currentUser, filter, snapshot,
                 path, cancellationToken, progress), cancellationToken);
             if (!_isShuttingDown) PageMessage = $"已导出 {written} 条记录：{path}";
@@ -307,14 +335,16 @@ public sealed partial class HistoryViewModel : PageViewModel
     }
 
     /// <summary>
-    /// 导出按钮条件：有非空的已查结果，条件未改且没有忙碌或查询失败；不导出尚未查询的新输入。
+    /// 由 ExportRecordsCommand 判断按钮能不能点时调用。
+    /// 有有效结果、条件未改且当前不忙，才允许导出。
     /// </summary>
     private bool CanExportRecords() => !IsBusy && !FiltersChanged && _hasLoadedRecords && !_lastQueryFailed && _totalRecords > 0;
 
     /// <summary>
-    /// 自动入口：生成属性 SelectedDevice 的 setter 调用。用户改设备则标记条件已改；程序刷新下拉选项时暂不标记。
+    /// SelectedDevice 改变后自动调用；用户换设备就标记条件已改，程序刷新选项时跳过。
     /// </summary>
     partial void OnSelectedDeviceChanged(HistoryDeviceOption? value) { if (!_updatingDeviceOptions) MarkFiltersChanged(); }
+    // 下面这些输入属性变化后也会自动调用对应方法，只标记待查询，不立即查库。
     partial void OnPointNameFilterChanged(string value) => MarkFiltersChanged();
     partial void OnUseTimeFilterChanged(bool value) => MarkFiltersChanged();
     partial void OnStartDateChanged(DateTime? value) => MarkFiltersChanged();
@@ -323,32 +353,40 @@ public sealed partial class HistoryViewModel : PageViewModel
     partial void OnEndTimeTextChanged(string value) => MarkFiltersChanged();
 
     /// <summary>
-    /// 筛选输入的自动 On...Changed 回调调用。增加输入版本号，标记待重新查询，不在这里查数据库。
+    /// 输入改了就递增版本、提醒重新查询，不立即查库。
     /// </summary>
     private void MarkFiltersChanged() { _filterVersion++; FiltersChanged = true; }
+    // 条件或忙碌状态变化后，自动刷新界面提示和按钮状态。
     partial void OnFiltersChangedChanged(bool value) => NotifyStateChanged();
     partial void OnIsLoadingChanged(bool value) => NotifyStateChanged();
     partial void OnIsExportingChanged(bool value) => NotifyStateChanged();
 
     /// <summary>
-    /// 输入/查询/导出状态变化后调用，通知页码、总数、空结果提示和按钮条件更新；不会替用户执行查询。
+    /// 由查询、导出或筛选状态变化，以及退出处理调用。
+    /// 统一刷新页码、提示和按钮能否点击，不执行查询。
     /// </summary>
     private void NotifyStateChanged()
     {
+        // 先刷新界面显示，再刷新按钮状态。
         OnPropertyChanged(nameof(IsBusy)); OnPropertyChanged(nameof(CanEditFilters));
         OnPropertyChanged(nameof(HasLoadedRecords));
         OnPropertyChanged(nameof(ShowEmptyMessage)); OnPropertyChanged(nameof(RefreshButtonText));
         OnPropertyChanged(nameof(CurrentPage)); OnPropertyChanged(nameof(TotalRecords)); OnPropertyChanged(nameof(TotalPages));
         OnPropertyChanged(nameof(RecordSummary)); OnPropertyChanged(nameof(PageDescription)); OnPropertyChanged(nameof(FilterStatusText));
+
         RefreshRecordsCommand.NotifyCanExecuteChanged(); ResetFiltersCommand.NotifyCanExecuteChanged();
         PreviousPageCommand.NotifyCanExecuteChanged(); NextPageCommand.NotifyCanExecuteChanged();
         ExportRecordsCommand.NotifyCanExecuteChanged();
         ShowTrendCommand.NotifyCanExecuteChanged();
     }
 
-    /// <summary>主窗口关闭时调用：取消导出，并等查询和导出真正结束，再让应用退出。</summary>
+    /// <summary>
+    /// 由 MainViewModel.StopBackgroundWorkAsync 在退出前调用。
+    /// 退出时禁止新操作，取消导出，再等查询、导出和子窗口操作收尾。
+    /// </summary>
     public async Task StopOperationsAsync()
     {
+        // 先禁止新操作并发出导出取消信号，再收集所有未结束任务一起等待。
         _isShuttingDown = true;
         NotifyStateChanged();
         ExportRecordsCommand.Cancel();

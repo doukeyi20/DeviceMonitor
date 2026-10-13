@@ -5,17 +5,18 @@ namespace DeviceMonitor.Core.Communication
 {
 
     /// <summary>
-    /// 只测试 Host/Port 能否建立 TCP 连接，结束就释放连接；不发送 Modbus 报文。
-    /// 设备管理页的测试命令调用它；TCP 成功不等于 Unit ID/寄存器地址正确。
+    /// 测试设备的地址和端口能否连通，不发送 Modbus 请求。
+    /// TCP 连通不代表 Unit ID 和寄存器地址正确。
     /// </summary>
     public sealed class TcpConnectionTester
     {
         /// <summary>
-        /// 由 DeviceManagementViewModel.TestConnectionAsync 调用，传入选中设备的配置。
-        /// 只尝试连接 Host 和 Port；正常返回就是 TCP 连接成功，失败或超时抛出异常，结束后释放连接。不会发送 Modbus 请求。
+        /// 由 DeviceManagementViewModel.TestConnectionAsync 调用。
+        /// 尝试连接设备，失败或超时就抛异常；测试结束后关闭连接。
         /// </summary>
         public async Task TestAsync(DeviceInfo device, CancellationToken cancellationToken = default)
         {
+            // 先检查地址、端口和超时设置。
             ArgumentNullException.ThrowIfNull(device);
             ArgumentException.ThrowIfNullOrWhiteSpace(device.Host);
 
@@ -31,11 +32,11 @@ namespace DeviceMonitor.Core.Communication
                     "连接超时必须大于 0。");
             }
 
-            // using 保证正常结束或发生异常时，临时 TCP 连接都会关闭。
+            // using 保证退出方法时关闭连接；timeout 同时响应手动取消和超时。
             using TcpClient client = new();
             using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-            // ConnectAsync 不读取设备的超时属性，需要明确安排到期取消。
+            // 到设定时间自动取消等待，不能只把超时数字放在配置里。
             timeout.CancelAfter(device.ConnectTimeoutMilliseconds);
 
             try
@@ -44,12 +45,12 @@ namespace DeviceMonitor.Core.Communication
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                // 点击“取消测试”或退出登录时，保留“用户取消”，不要误报成连接超时。
+                // 手动取消要原样传出去，不误报为超时。
                 throw new OperationCanceledException(cancellationToken);
             }
             catch (OperationCanceledException ex) when (timeout.IsCancellationRequested)
             {
-                // 将“到期取消”转成更易理解的超时异常，供 ViewModel 区分提示。
+                // 不是手动取消，而是时间到了，改为超时异常。
                 throw new TimeoutException(
                     $"TCP 连接超时（{device.ConnectTimeoutMilliseconds} ms）。", ex);
             }

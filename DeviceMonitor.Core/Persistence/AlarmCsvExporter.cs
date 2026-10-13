@@ -5,30 +5,30 @@ using DeviceMonitor.Core.Models;
 namespace DeviceMonitor.Core.Persistence;
 
 /// <summary>
-/// 报警历史的 CSV 导出：分批从 AlarmStore 取出已查询范围的记录，成功后才替换目标文件。
-/// 只固定新记录的最大编号，原事件仍可能更新恢复状态；不是整个文件同一瞬间的状态快照。
+/// 分批导出报警历史，全部写完后才替换目标 CSV。
+/// 不包含后来新增的报警，但已有报警的状态仍可能更新。
 /// </summary>
 public sealed class AlarmCsvExporter
 {
     private readonly AlarmStore _store;
 
     /// <summary>
-    /// AlarmHistoryViewModel 创建这里并传已有 AlarmStore；只保存对象，不立即导出。
+    /// 记住已有的报警数据库对象，此时不导出。
     /// </summary>
     public AlarmCsvExporter(AlarmStore store) =>
         _store = store ?? throw new ArgumentNullException(nameof(store));
 
     /// <summary>
-    /// 先写本次独有的临时文件，全部成功才替换目标；取消或失败保留用户原来的文件。
-    /// 沿用表格上次查询的条件和最大编号，不混入后来新增的报警。
-    /// 老报警仍可更新恢复状态：每批读到当时的状态，不把整份导出当作同一瞬间的快照。
+    /// 由 AlarmHistoryViewModel.ExportRecordsAsync 选好导出路径后调用。
+    /// 按上次查询条件导出。先写临时文件，成功才替换目标；失败或取消保留原文件。
     /// </summary>
     public long Export(UserAccount user, AlarmFilter filter, long snapshotId, string filePath,
         CancellationToken token = default, IProgress<long>? progress = null)
     {
+        // 先检查权限、查询条件和路径，不能覆盖数据库文件。
         ArgumentNullException.ThrowIfNull(user);
         ArgumentNullException.ThrowIfNull(filter);
-        // 不只靠页面隐藏按钮；即使从其他代码直接调用，也只允许已启用管理员导出。
+        // 真正导出前再检查管理员权限。
         if (!user.IsEnabled || user.Role != UserRole.Administrator)
             throw new UnauthorizedAccessException("只有已启用的管理员才能导出报警历史。");
         ArgumentOutOfRangeException.ThrowIfNegative(snapshotId);
@@ -44,7 +44,7 @@ public sealed class AlarmCsvExporter
         if (!Directory.Exists(directory))
             throw new DirectoryNotFoundException("导出文件夹不存在。");
 
-        // 和目标放在同一文件夹；最后移动成功，用户才会看到完整的导出结果。
+        // 临时文件放在目标旁边，全部写完才换成最终文件。
         string temporary = Path.Combine(directory, $".alarm-export-{Guid.NewGuid():N}.tmp");
         long written = 0;
         try
@@ -55,6 +55,7 @@ public sealed class AlarmCsvExporter
             using (var writer = new StreamWriter(stream, new UTF8Encoding(true)) { NewLine = "\r\n" })
             {
                 writer.WriteLine("记录编号,报警事件编号,设备编号,设备名称,采集点编号,采集点名称,报警类别,报警类型,报警说明,报警状态,读取值,限值,发生次数,首次发生时间(本机含时区),首次发生时间(UTC),最后发生时间(本机含时区),最后发生时间(UTC),结束时间(本机含时区),结束时间(UTC)");
+                // after 记住上一批最后一条，每批最多查 1000 条，不一次加载全部报警。
                 AlarmRecord? after = null;
                 while (true)
                 {
@@ -64,15 +65,18 @@ public sealed class AlarmCsvExporter
                     foreach (AlarmRecord record in batch)
                     {
                         token.ThrowIfCancellationRequested();
+                        // 一条 AlarmRecord 写成 CSV 的一行。
                         writer.WriteLine(ToCsvLine(record));
                         written++;
                     }
+                    // 记录本批末尾，再报告已写条数。
                     after = batch[^1];
                     progress?.Report(written);
                 }
             }
             // 最后一批写完后也检查取消，避免点击取消后仍覆盖原文件。
             token.ThrowIfCancellationRequested();
+            // 全部写完才替换目标文件，前面失败或取消都不会覆盖原文件。
             File.Move(temporary, path, overwrite: true);
             return written;
         }
@@ -83,7 +87,7 @@ public sealed class AlarmCsvExporter
         }
     }
 
-    // 一条报警对应 CSV 的一行；数据库 NULL 保持空白，不能写成“读数 0”或假的结束时间。
+    // 一条报警写一行，未知数值和结束时间留空，不填假数据。
     private static string ToCsvLine(AlarmRecord record) => string.Join(",",
         Field(record.Id.ToString(CultureInfo.InvariantCulture)),
         Field(record.EventId),
@@ -106,8 +110,7 @@ public sealed class AlarmCsvExporter
     // 文字里有逗号、双引号、换行也能保存：整格加引号，内部双引号再写一遍。
     private static string Field(string value) => "\"" + value.Replace("\"", "\"\"") + "\"";
 
-    // 名称和说明都可能来自输入或设备。以公式符号开头就补单引号，避免 Excel 把文字当公式。
-    // 只处理这些自由文本，真正的负数读数和限值仍按原数字写出。
+    // 文本像公式时补单引号，避免 Excel 执行；真正的负数仍按数字写出。
     private static string SafeText(string value)
     {
         string trimmed = value.TrimStart();
@@ -115,13 +118,13 @@ public sealed class AlarmCsvExporter
     }
 
     /// <summary>
-    /// 组装 CSV 一行时调用，给人查看的时间转成本机格式；空结束时间保持空白。
+    /// 转成本机时间文字，供 CSV 显示。
     /// </summary>
     private static string LocalTime(DateTimeOffset time) =>
         time.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff zzz", CultureInfo.InvariantCulture);
 
     /// <summary>
-    /// 组装 CSV 一行时调用，同时保留统一 UTC 时间，便于后续处理；空时间不伪造数值。
+    /// 转成 UTC 时间文字，供 CSV 保存统一时间。
     /// </summary>
     private static string UtcTime(DateTimeOffset time) =>
         time.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);

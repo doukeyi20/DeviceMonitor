@@ -2,19 +2,20 @@ namespace DeviceMonitor.Core.Models
 {
 
     /// <summary>
-    /// 一条已经保存的点位配置：DeviceId 说明属于哪台设备，Address/类型说明怎么读取。
-    /// 设备可有多个点；本对象没有最近读数或采集 Task，读数显示在 PointReadingViewModel。
+    /// 点位配置对象，每个对象对应一个点位。
+    /// DeviceId 说明属于哪台设备，Address 和类型说明怎么读。
+    /// 这里只有配置，最新读数放在 PointReadingViewModel 中。
     /// </summary>
     public sealed class PointInfo
     {
-        public long Id { get; }
+        public long Id { get; } // 数据库中这个采集点的编号。
         // 这个编号决定该点位属于哪台设备，不是窗口序号。
         public long DeviceId { get; }
         public string Name { get; }
-        public RegisterType RegisterType { get; }
+        public RegisterType RegisterType { get; } // 决定用 03 还是 04 功能码读取。
         // 保存真正发给设备的协议地址，从 0 开始，不包含 4xxxx 等编号前缀。
         public ushort Address { get; }
-        public PointDataType DataType { get; }
+        public PointDataType DataType { get; } // 决定把两个字节解释成 UInt16 还是 Int16。
         // 不填就不检查这一侧；上下限只用于报警，不会修改设备里的数值。
         public int? LowerLimit { get; }
         public int? UpperLimit { get; }
@@ -34,10 +35,12 @@ namespace DeviceMonitor.Core.Models
             _ => "未知数据类型"
         };
 
+        // 检查配置后保存到只读属性，数据库查询结果和配置表的一行都用这个对象。
         public PointInfo(long id, long deviceId, string name,
             RegisterType registerType, ushort address, PointDataType dataType,
             int? lowerLimit = null, int? upperLimit = null)
         {
+            // 编号、名称、类型和限值都必须有效。
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(id);
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(deviceId);
             ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -48,6 +51,8 @@ namespace DeviceMonitor.Core.Models
                 throw new ArgumentOutOfRangeException(nameof(dataType));
             ValidateLimits(dataType, lowerLimit, upperLimit);
 
+
+            // 参数填进属性后，界面就能从这个 PointInfo 取出配置。
             Id = id;
             DeviceId = deviceId;
             Name = name;
@@ -58,11 +63,12 @@ namespace DeviceMonitor.Core.Models
             UpperLimit = upperLimit;
         }
 
-        // 构造查询结果、保存表单都用同一套检查，避免界面漏检查后写入错误配置。
+        // 查询和保存都检查配置，不能只依赖界面的输入检查。
         internal static void ValidateLimits(PointDataType dataType, int? lowerLimit, int? upperLimit)
         {
             if (!Enum.IsDefined(dataType))
                 throw new ArgumentOutOfRangeException(nameof(dataType));
+            // 先按类型确定整数范围，再检查限值是否在范围内、下限是否小于上限。
             int minimum = dataType == PointDataType.Int16 ? short.MinValue : ushort.MinValue;
             int maximum = dataType == PointDataType.Int16 ? short.MaxValue : ushort.MaxValue;
             if (lowerLimit.HasValue && (lowerLimit < minimum || lowerLimit > maximum))

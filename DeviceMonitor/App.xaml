@@ -1,5 +1,5 @@
 ﻿<!--
-    阅读入口：这里放全局颜色和控件样式，不启动业务。程序从 App.xaml.cs 的 OnStartup 开始。
+    全项目共用的颜色和控件样式；程序启动代码在 App.xaml.cs。
 -->
 <Application x:Class="DeviceMonitor.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -21,7 +21,7 @@
             <Setter Property="FontSize" Value="14" />
         </Style>
 
-        <!-- 这些样式只管外观：页面标题、分区标题、卡片和说明文字统一用一套尺寸。 -->
+        <!-- 各页面共用的标题、卡片和说明文字样式。 -->
         <Style x:Key="PageTitleStyle" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
             <Setter Property="FontSize" Value="25" />
             <Setter Property="FontWeight" Value="SemiBold" />
@@ -146,7 +146,7 @@
             <Setter Property="BorderBrush" Value="Transparent" />
         </Style>
 
-        <!-- 删除仍用原命令；这里只让危险操作在一排普通按钮中更容易认出来。 -->
+        <!-- 删除按钮用不同外观，提醒这是危险操作。 -->
         <Style x:Key="DangerActionButtonStyle" TargetType="Button" BasedOn="{StaticResource SecondaryActionButtonStyle}">
             <Setter Property="Foreground" Value="#9A4D49" />
             <Setter Property="BorderBrush" Value="#E3CDCB" />
@@ -219,7 +219,7 @@
             <Setter Property="EnableColumnVirtualization" Value="True" />
         </Style>
 
-        <!-- 选中行改成浅灰底，避免系统的亮蓝色突然打断整页灰白风格。 -->
+        <!-- 表格选中行用浅灰色背景。 -->
         <Style TargetType="DataGridCell">
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Padding" Value="0" />
