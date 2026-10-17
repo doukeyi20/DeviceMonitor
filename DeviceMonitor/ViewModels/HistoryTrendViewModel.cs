@@ -43,7 +43,7 @@ public sealed partial class HistoryTrendViewModel : ObservableObject
     private bool _isLoading;
 
     [ObservableProperty]
-    private string _pageMessage = "打开窗口后查询该点位的历史读数。";
+    private string _pageMessage = string.Empty;
 
     /// <summary>
     /// 保存所选点位及历史页的查询范围，打开窗口后再查数据。
@@ -62,7 +62,7 @@ public sealed partial class HistoryTrendViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 由 HistoryTrendWindow_Loaded 执行 LoadTrendCommand 时调用。
+    /// 由 HistoryTrendWindow_Loaded 自动执行 LoadTrendCommand 时调用。
     /// 查这个点最近的历史读数，更新 Records，通知图表重画。
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanLoadTrend))]
@@ -70,7 +70,7 @@ public sealed partial class HistoryTrendViewModel : ObservableObject
     {
         if (!CanLoadTrend()) return;
         IsLoading = true;
-        PageMessage = "正在读取已保存的点位历史，不会向设备发送请求…";
+        PageMessage = "正在查询历史…";
         try
         {
             // 后台按设备编号、点位编号和历史页范围查询，不只取表格当前页。
@@ -89,8 +89,8 @@ public sealed partial class HistoryTrendViewModel : ObservableObject
             OnPropertyChanged(nameof(AverageValueText));
             OnPropertyChanged(nameof(RangeText));
             PageMessage = Records.Count == 0 ? "该点位在本次查询范围内没有已保存的读数。"
-                : IsTruncated ? $"匹配 {TotalRecords} 条，仅绘制其中最新的 {MaximumPoints} 条。可回历史页面缩短时间范围后再看。"
-                : $"已绘制本次匹配的全部 {Records.Count} 条读数。要看新采集数据，请回历史页面重新查询。";
+                : IsTruncated ? $"匹配 {TotalRecords} 条，显示最新 {MaximumPoints} 条。"
+                : $"已绘制 {Records.Count} 条读数。";
         }
         catch (Exception ex)
         {

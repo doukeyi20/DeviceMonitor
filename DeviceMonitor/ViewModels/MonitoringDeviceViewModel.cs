@@ -14,6 +14,13 @@ public sealed partial class MonitoringDeviceViewModel : ObservableObject
     public DeviceInfo Device { get; }
     public string EnabledText => Device.IsEnabled ? "已启用" : "已停用";
 
+    // 左侧窄栏只放连接方式和目标；完整串口参数留在悬停详情中。
+    public string ConnectionSummary => Device.CommunicationMode == DeviceCommunicationMode.Rtu
+        ? $"RTU · {Device.SerialPortName} · 站号 {Device.UnitId}"
+        : $"TCP · {Device.Host}:{Device.Port}";
+    public string ConnectionDetails => $"{Device.CommunicationText} · {Device.Endpoint} · " +
+        $"{(Device.CommunicationMode == DeviceCommunicationMode.Rtu ? "站号" : "Unit ID")} {Device.UnitId}";
+
     // 勾选框绑定这里；勾选和点击选中一行是两回事。
     [ObservableProperty]
     private bool _isChecked;

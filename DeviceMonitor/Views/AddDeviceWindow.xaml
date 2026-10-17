@@ -1,124 +1,120 @@
-<!--
-    新增和编辑共用这个表单，数据源是后台创建的 DeviceEditorViewModel。
--->
+<!-- 新增、编辑共用。选择 TCP 或 RTU 后，只显示对应的连接参数。 -->
 <Window x:Class="DeviceMonitor.Views.AddDeviceWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="{Binding WindowTitle}"
-        Width="700" Height="600" MinWidth="600" MinHeight="500"
-        WindowStartupLocation="CenterOwner"
-        Background="{StaticResource PageBackgroundBrush}"
-        FontFamily="Microsoft YaHei UI"
-        Foreground="{StaticResource PrimaryTextBrush}">
-
+        Title="{Binding WindowTitle}" Width="720" Height="760" MinWidth="620" MinHeight="560"
+        Icon="{StaticResource ApplicationIcon}"
+        WindowStartupLocation="CenterOwner" Background="{StaticResource PageBackgroundBrush}"
+        FontFamily="Microsoft YaHei UI" Foreground="{StaticResource PrimaryTextBrush}">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
+    </Window.Resources>
     <Grid Margin="22">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
-
         <StackPanel>
             <TextBlock x:Name="FormTitle" Text="{Binding FormTitle}" Style="{StaticResource PageTitleStyle}" />
-            <TextBlock x:Name="FormDescription" Text="{Binding FormDescription}"
-                       Margin="0,6,0,0" TextWrapping="Wrap" Style="{StaticResource SubtleTextStyle}" />
         </StackPanel>
-
-        <!-- 输入区可以滚动，保存和取消按钮固定在底部。 -->
-        <ScrollViewer Grid.Row="1" Margin="0,16,0,14"
-                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <!-- 参数多时只滚动输入区，底部按钮一直可见。 -->
+        <ScrollViewer Grid.Row="1" Margin="0,16,0,14" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
             <StackPanel>
                 <Border Style="{StaticResource SectionCardStyle}" Margin="0,0,0,12">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="18" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
-                        <TextBlock Grid.ColumnSpan="3" Text="设备与连接" Margin="0,0,0,12"
-                                   Style="{StaticResource SectionHeadingStyle}" />
-                        <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,0,0,12">
-                            <TextBlock Text="设备名称" Style="{StaticResource SubtleTextStyle}" />
-                            <TextBox x:Name="DeviceNameInput"
-                                     Text="{Binding DeviceName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                     Height="36" Margin="0,5,0,0" />
+                    <StackPanel>
+                        <TextBlock Text="设备与连接" Style="{StaticResource SectionHeadingStyle}" Margin="0,0,0,12" />
+                        <Grid Margin="0,0,0,12">
+                            <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="18" /><ColumnDefinition /></Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="设备名称" Style="{StaticResource SubtleTextStyle}" />
+                                <TextBox x:Name="DeviceNameInput" Text="{Binding DeviceName, UpdateSourceTrigger=PropertyChanged}" Height="36" Margin="0,5,0,0" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="2">
+                                <TextBlock Text="通信方式" Style="{StaticResource SubtleTextStyle}" />
+                                <ComboBox ItemsSource="{Binding CommunicationOptions}" DisplayMemberPath="Value" SelectedValuePath="Key"
+                                          SelectedValue="{Binding SelectedCommunicationMode}" Height="36" Margin="0,5,0,0" />
+                            </StackPanel>
+                        </Grid>
+                        <Grid Visibility="{Binding IsTcp, Converter={StaticResource BoolToVisibility}}" Margin="0,0,0,12">
+                            <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="18" /><ColumnDefinition /></Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="主机地址 / IP" Style="{StaticResource SubtleTextStyle}" />
+                                <TextBox x:Name="HostInput" Text="{Binding Host, UpdateSourceTrigger=PropertyChanged}" Height="36" Margin="0,5,0,0" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="2">
+                                <TextBlock Text="TCP 端口" Style="{StaticResource SubtleTextStyle}" />
+                                <TextBox x:Name="PortInput" Text="{Binding PortText, UpdateSourceTrigger=PropertyChanged}" Height="36" Margin="0,5,0,0" />
+                            </StackPanel>
+                        </Grid>
+                        <StackPanel Visibility="{Binding IsRtu, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock Text="COM 口" Style="{StaticResource SubtleTextStyle}" />
+                            <DockPanel Margin="0,5,0,0">
+                                <Button DockPanel.Dock="Right" Content="刷新串口" Command="{Binding RefreshSerialPortsCommand}"
+                                        Style="{StaticResource SecondaryActionButtonStyle}" Width="96" Height="36" Margin="8,0,0,0" />
+                                <ComboBox x:Name="SerialPortNameInput" ItemsSource="{Binding SerialPorts}" IsEditable="True"
+                                          Text="{Binding SerialPortName, UpdateSourceTrigger=PropertyChanged}" Height="36" />
+                            </DockPanel>
+                            <TextBlock Text="{Binding PortHint}" Style="{StaticResource StatusMessageTextStyle}" TextWrapping="Wrap" Margin="0,5,0,12" />
+                            <Grid Margin="0,0,0,12">
+                                <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="18" /><ColumnDefinition /></Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="波特率" Style="{StaticResource SubtleTextStyle}" />
+                                    <TextBox x:Name="BaudRateInput" Text="{Binding BaudRateText, UpdateSourceTrigger=PropertyChanged}" Height="36" Margin="0,5,0,0" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="校验位" Style="{StaticResource SubtleTextStyle}" />
+                                    <ComboBox ItemsSource="{Binding ParityOptions}" DisplayMemberPath="Value" SelectedValuePath="Key"
+                                              SelectedValue="{Binding SelectedParity}" Height="36" Margin="0,5,0,0" />
+                                </StackPanel>
+                            </Grid>
+                            <TextBlock Text="数据位固定 8 位；串口参数须与设备一致。"
+                                       Style="{StaticResource SubtleTextStyle}" TextWrapping="Wrap" Margin="0,0,0,12" />
                         </StackPanel>
-                        <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,0,0,12">
-                            <TextBlock Text="主机地址 / IP" Style="{StaticResource SubtleTextStyle}" />
-                            <TextBox x:Name="HostInput"
-                                     Text="{Binding Host, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                     Height="36" Margin="0,5,0,0" />
-                        </StackPanel>
-                        <StackPanel Grid.Row="2" Grid.Column="0">
-                            <TextBlock Text="TCP 端口" Style="{StaticResource SubtleTextStyle}" />
-                            <TextBox x:Name="PortInput"
-                                     Text="{Binding PortText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                     Height="36" Margin="0,5,0,0" />
-                        </StackPanel>
-                        <StackPanel Grid.Row="2" Grid.Column="2">
-                            <TextBlock Text="Unit ID" Style="{StaticResource SubtleTextStyle}" />
-                            <TextBox x:Name="UnitIdInput"
-                                     Text="{Binding UnitIdText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                     Height="36" Margin="0,5,0,0" />
-                        </StackPanel>
-                    </Grid>
+                        <Grid>
+                            <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="18" /><ColumnDefinition /></Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="{Binding StationLabel}" Style="{StaticResource SubtleTextStyle}" />
+                                <TextBox x:Name="UnitIdInput" Text="{Binding UnitIdText, UpdateSourceTrigger=PropertyChanged}" Height="36" Margin="0,5,0,0" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="2" Visibility="{Binding IsRtu, Converter={StaticResource BoolToVisibility}}">
+                                <TextBlock Text="停止位" Style="{StaticResource SubtleTextStyle}" />
+                                <ComboBox ItemsSource="{Binding StopBitOptions}" DisplayMemberPath="Value" SelectedValuePath="Key"
+                                          SelectedValue="{Binding SelectedStopBits}" Height="36" Margin="0,5,0,0" />
+                            </StackPanel>
+                        </Grid>
+                    </StackPanel>
                 </Border>
-
                 <Border Style="{StaticResource SectionCardStyle}">
                     <Grid>
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="18" />
-                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition /><ColumnDefinition Width="12" /><ColumnDefinition />
+                            <ColumnDefinition Width="12" /><ColumnDefinition />
                         </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
-                        <TextBlock Grid.ColumnSpan="3" Text="采集与超时" Margin="0,0,0,12"
-                                   Style="{StaticResource SectionHeadingStyle}" />
-                        <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,0,0,12">
+                        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                        <TextBlock Grid.ColumnSpan="5" Text="采集与超时" Style="{StaticResource SectionHeadingStyle}" Margin="0,0,0,12" />
+                        <StackPanel Grid.Row="1">
                             <TextBlock Text="采集间隔（毫秒）" Style="{StaticResource SubtleTextStyle}" />
-                            <TextBox x:Name="SamplingIntervalInput"
-                                     Text="{Binding SamplingIntervalText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                     Height="36" Margin="0,5,0,0" />
+                            <TextBox x:Name="SamplingIntervalInput" Text="{Binding SamplingIntervalText, UpdateSourceTrigger=PropertyChanged}" Height="36" Margin="0,5,0,0" />
                         </StackPanel>
-                        <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,0,0,12">
+                        <StackPanel Grid.Row="2" Margin="0,12,0,0" Visibility="{Binding IsTcp, Converter={StaticResource BoolToVisibility}}">
                             <TextBlock Text="连接超时（毫秒）" Style="{StaticResource SubtleTextStyle}" />
-                            <TextBox x:Name="ConnectTimeoutInput"
-                                     Text="{Binding ConnectTimeoutText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                     Height="36" Margin="0,5,0,0" />
+                            <TextBox x:Name="ConnectTimeoutInput" Text="{Binding ConnectTimeoutText, UpdateSourceTrigger=PropertyChanged}" Height="36" Margin="0,5,0,0" />
                         </StackPanel>
-                        <StackPanel Grid.Row="2" Grid.Column="0">
+                        <StackPanel Grid.Row="1" Grid.Column="2">
                             <TextBlock Text="读取超时（毫秒）" Style="{StaticResource SubtleTextStyle}" />
-                            <TextBox x:Name="ReadTimeoutInput"
-                                     Text="{Binding ReadTimeoutText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                     Height="36" Margin="0,5,0,0" />
+                            <TextBox x:Name="ReadTimeoutInput" Text="{Binding ReadTimeoutText, UpdateSourceTrigger=PropertyChanged}" Height="36" Margin="0,5,0,0" />
                         </StackPanel>
-                        <StackPanel Grid.Row="2" Grid.Column="2">
-                            <TextBlock Text="写入超时（毫秒）" Style="{StaticResource SubtleTextStyle}" />
-                            <TextBox x:Name="WriteTimeoutInput"
-                                     Text="{Binding WriteTimeoutText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                     Height="36" Margin="0,5,0,0" />
+                        <StackPanel Grid.Row="1" Grid.Column="4">
+                            <TextBlock Text="发送超时（毫秒）" ToolTip="发读取请求的超时，不是写入寄存器。" Style="{StaticResource SubtleTextStyle}" />
+                            <TextBox x:Name="WriteTimeoutInput" Text="{Binding WriteTimeoutText, UpdateSourceTrigger=PropertyChanged}" Height="36" Margin="0,5,0,0" />
                         </StackPanel>
                     </Grid>
                 </Border>
             </StackPanel>
         </ScrollViewer>
-
-        <Border Grid.Row="2" Padding="0,12,0,0" BorderThickness="0,1,0,0"
-                BorderBrush="{StaticResource BorderBrushNeutral}">
+        <Border Grid.Row="2" Padding="0,12,0,0" BorderThickness="0,1,0,0" BorderBrush="{StaticResource BorderBrushNeutral}">
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button Content="取消" Width="90" Height="36" IsCancel="True"
-                        Style="{StaticResource SecondaryActionButtonStyle}" />
-                <Button x:Name="SaveDeviceButton" Content="{Binding SaveButtonText}"
-                        Width="120" Height="36" Margin="10,0,0,0"
+                <Button Content="取消" Width="90" Height="36" IsCancel="True" Style="{StaticResource SecondaryActionButtonStyle}" />
+                <Button x:Name="SaveDeviceButton" Content="{Binding SaveButtonText}" Width="120" Height="36" Margin="10,0,0,0"
                         Command="{Binding SaveCommand}" Style="{StaticResource PrimaryActionButtonStyle}" />
             </StackPanel>
         </Border>

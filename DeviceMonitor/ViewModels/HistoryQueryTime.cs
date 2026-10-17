@@ -3,7 +3,8 @@ using System.Globalization;
 namespace DeviceMonitor.ViewModels;
 
 /// <summary>
-/// 历史查询共用的时间工具：检查输入，再把本机时间转成数据库用的 UTC 时间。
+/// 历史查询共用的时间工具：检查输入，
+/// 如果有查询条件有时间范围，就需要调用这个类转换时间，然后再生成查询条件对象
 /// </summary>
 internal static class HistoryQueryTime
 {

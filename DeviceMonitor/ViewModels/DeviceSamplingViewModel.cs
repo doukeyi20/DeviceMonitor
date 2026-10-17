@@ -13,7 +13,7 @@ using DeviceMonitor.Core.Diagnostics;
 namespace DeviceMonitor.ViewModels;
 
 /// <summary>
-/// 一台设备的采集任务：按 DeviceId 查配置，循环读全部点位、更新显示并保存成功读数。
+/// 一台设备的采集任务：开始时查一次配置，再循环读全部点位、更新显示和保存历史。
 /// </summary>
 public sealed class DeviceSamplingViewModel : ObservableObject
 {
@@ -142,39 +142,33 @@ public sealed class DeviceSamplingViewModel : ObservableObject
     /// <summary>
     /// 由本类 Start 启动。
     /// 采集循环的主方法。
-    /// 每轮查配置，然后逐点读取、检查报警、保存历史，再等一段时间开始下一轮。
-    /// 一个点读取失败就跳过它；主动停止或配置不可用才结束这台设备的循环。
+    /// 开始时加载配置；每轮逐点读取、检查报警、保存历史，再等一段时间继续。
+    /// 本次采集一直使用这份配置；要改设备或点位，先停止，再重新开始。
     /// </summary>
     private async Task RunAsync(CancellationToken cancellationToken)
     {
         try
         {
-            // 一轮接一轮采集，直到停止或出错结束。
+            cancellationToken.ThrowIfCancellationRequested();
+            StatusText = "正在加载本次采集要用的设备和点位配置…";
+
+            // 只在开始时查一次。config 里是配置，不是读到的数值。
+            var config = await Task.Run(LoadConfiguration, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            _lastDeviceName = config.Device.Name;
+
+            // 停止期间可能改过点位或上下限，开始时处理一次旧报警。
+            if (_alarms is not null)
+                await _alarms.ReconcileConfigurationAsync(config.Device, config.Points);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // 每个点建一行，本次采集不再比较配置或重建行。
+            PrepareRows(config.Points);
+
+            // 一轮接一轮采集，直到收到停止信号。
             while (true)
             {
-                // 已收到停止信号就抛出取消异常，交给外层结束循环。
                 cancellationToken.ThrowIfCancellationRequested();
-                StatusText = "正在读取这一轮要用的设备和采集点配置…";
-
-                // 后台查最新配置，让下一轮能发现设备停用或点位修改。
-                var config = await Task.Run(LoadConfiguration, cancellationToken);
-
-                // config.Device 是设备配置，config.Points 是点位配置，都还没有读数。
-                // 查库期间也可能点了停止，所以再检查一次。
-                cancellationToken.ThrowIfCancellationRequested();
-                // 记下名称，出错时也能说明是哪台设备。
-                _lastDeviceName = config.Device.Name;
-
-                // 点位删除或限值改了，就结束不再适用的旧报警。
-                if (_alarms is not null)
-                    await _alarms.ReconcileConfigurationAsync(config.Device, config.Points);
-
-                // 等待报警处理期间也可能点了停止。
-                cancellationToken.ThrowIfCancellationRequested();
-
-                // 给每个点准备显示行；这里只准备对象，下面才读设备。
-                UpdateRows(config.Points);
-
                 // 只统计这一轮读成功的点数。
                 int succeeded = 0;
 
@@ -198,6 +192,7 @@ public sealed class DeviceSamplingViewModel : ObservableObject
 
                         cancellationToken.ThrowIfCancellationRequested();
                         
+                        // result的第一个作用，更新显示
                         // 把结果填到这一行的数值、时间、状态属性中；实现更新显示。
                         row.ShowResult(result);
                         
@@ -225,10 +220,12 @@ public sealed class DeviceSamplingViewModel : ObservableObject
 
                     // 只有上面的读取成功，才走到这里。
 
+                    // result的第二个作用，检查报警
                     // 有报警对象，就用这次读数检查报警。
                     if (_alarms is not null)
                         await _alarms.ReportReadingAsync(config.Device, result);
 
+                    // result的第三个作用，保存历史记录
                     // 把这个点本次读到的值，保存成一条历史记录。
                     await SaveReadingAsync(config.Device, result);
                 }
@@ -253,13 +250,15 @@ public sealed class DeviceSamplingViewModel : ObservableObject
         catch (Exception ex)
         {
             AppLog.Error("设备采集任务无法继续", $"DeviceId={DeviceId}", ex);
-            // 设备停用、没有点位、查询失败等情况，结束这台设备的任务。
+            // 开始时配置不可用，或发生无法继续的错误，就结束这台设备的任务。
             StatusText = $"采集已结束：{ex.Message}";
             if (_alarms is not null)
                 await _alarms.ReportDeviceFailureAsync(DeviceId, _lastDeviceName, ex.Message);
         }
         finally
         {
+            // 等本次串口收发结束，再退出自己的占用；同 COM 下其他设备仍可继续采集。
+            await _pointReader.CloseAsync();
             // 无论停止还是出错，都释放本次“停止开关”。
             _cancellation?.Dispose();
             _cancellation = null;
@@ -273,8 +272,8 @@ public sealed class DeviceSamplingViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 查出这台设备和它的全部采集点配置，供 RunAsync 本轮使用。
-    /// 设备停用/删除或没有点位时抛异常，让这一台任务结束。
+    /// 由 RunAsync 开始时调用一次。
+    /// 查出本次要用的设备和全部点位；设备不可用或没有点位时不开始读取。
     /// </summary>
     private (DeviceInfo Device, IReadOnlyList<PointInfo> Points) LoadConfiguration()
     {
@@ -293,33 +292,13 @@ public sealed class DeviceSamplingViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 由 RunAsync 每轮读取之前调用。
-    /// 点位增删或配置变了，就重新准备显示行；没变就继续用原对象。
+    /// 由 RunAsync 加载配置后调用一次。
+    /// 为本次采集准备表格行，数值等下面读取成功后再填。
     /// points 中每项是 PointInfo 配置，Readings 中每项是 PointReadingViewModel 显示行。
     /// </summary>
-    private void UpdateRows(IReadOnlyList<PointInfo> points)
+    private void PrepareRows(IReadOnlyList<PointInfo> points)
     {
-        // 先比数量，数量相同再逐个比配置。
-        bool changed = Readings.Count != points.Count;
-        if (!changed)
-        {
-            for (int i = 0; i < points.Count; i++)
-            {
-                // 比配置，不是比两次读到的数值。
-                if (!Readings[i].HasSameConfiguration(points[i]))
-                {
-                    changed = true;
-                    // 发现一处变化就够了，下面会重建显示行。
-                    break;
-                }
-            }
-        }
-
-        // 配置一样就保留原行。
-        if (!changed)
-            return;
-
-        // 为每份点位配置新建一行，数值等后面的读取来填；不删除数据库数据。
+        // 每份 PointInfo 配置对应一个显示行，不改数据库里的点位和历史。
         Readings.Clear();
         foreach (PointInfo point in points)
             Readings.Add(new PointReadingViewModel(point));

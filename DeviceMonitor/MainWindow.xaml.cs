@@ -5,6 +5,8 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Windows.Interop;
 using DeviceMonitor.Core.Diagnostics;
 using DeviceMonitor.Core.Models;
 using DeviceMonitor.Core.Persistence;
@@ -14,7 +16,7 @@ using DeviceMonitor.Views;
 namespace DeviceMonitor;
 
 /// <summary>
-/// 主窗口的界面操作：弹窗、打开日志目录、退出登录和关窗收尾。
+/// 主窗口的界面操作：窗口按钮、弹窗、打开日志目录、退出登录和关窗收尾。
 /// 页面和采集管理器由 MainViewModel 准备。
 /// </summary>
 public partial class MainWindow : Window
@@ -38,6 +40,7 @@ public partial class MainWindow : Window
         _deviceStore = deviceStore ?? throw new ArgumentNullException(nameof(deviceStore));
         _historyStore = historyStore ?? throw new ArgumentNullException(nameof(historyStore));
         InitializeComponent();
+        FitWindowToWorkArea();
 
         // 创建页面数据和管理器，再把 ViewModel 的界面请求接到下面的方法。
         _viewModel = new MainViewModel(currentUser, userStore, deviceStore, historyStore);
@@ -45,6 +48,37 @@ public partial class MainWindow : Window
         _viewModel.PasswordEditorRequested += OpenPasswordEditor;
         _viewModel.LogsFolderRequested += OpenLogsFolder;
         DataContext = _viewModel;
+    }
+
+    // 构造方法调用：默认用大窗口；屏幕放不下时，只在打开前收小一次。
+    private void FitWindowToWorkArea()
+    {
+        Rect workArea = SystemParameters.WorkArea;
+        Width = Math.Min(Width, workArea.Width - 24);
+        Height = Math.Min(Height, workArea.Height - 24);
+    }
+
+    /// <summary>
+    /// WPF 创建原生窗口后自动调用，不需要在构造方法里手动调用。
+    /// XAML 先用 CanMinimize 禁止拖边框；这里单独开放最大化、还原按钮。
+    /// WPF 的 ResizeMode 没有“能最大化但不能拖边框”的单独选项。
+    /// </summary>
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        IntPtr handle = new WindowInteropHelper(this).Handle;
+        const int styleIndex = -16; // GWL_STYLE：窗口外框和标题栏按钮的设置。
+        const int maximizeButton = 0x00010000; // WS_MAXIMIZEBOX：显示最大化按钮。
+        const int sizingBorder = 0x00040000; // WS_THICKFRAME：允许拖动边框缩放。
+        int style = GetWindowLong(handle, styleIndex);
+        int fixedStyle = (style | maximizeButton) & ~sizingBorder;
+        if (SetWindowLong(handle, styleIndex, fixedStyle) == 0)
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+
+        // 刷新标题栏和边框；不改变当前位置、大小或激活状态。
+        const uint refreshFrameOnly = 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020;
+        if (!SetWindowPos(handle, IntPtr.Zero, 0, 0, 0, 0, refreshFrameOnly))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
     }
 
     // 点账户按钮时，展开它的菜单。
@@ -258,4 +292,16 @@ public partial class MainWindow : Window
         AppLog.Info("关闭主窗口", $"UserId={_viewModel.CurrentUser.Id}");
         base.OnClosed(e);
     }
+
+    // 仅由 OnSourceInitialized 调用 Windows 的窗口接口；窗口样式本身是 32 位数值。
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW", SetLastError = true)]
+    private static extern int GetWindowLong(IntPtr handle, int index);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongW", SetLastError = true)]
+    private static extern int SetWindowLong(IntPtr handle, int index, int value);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowPos(IntPtr handle, IntPtr insertAfter,
+        int x, int y, int width, int height, uint flags);
 }

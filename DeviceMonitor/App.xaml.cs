@@ -41,7 +41,7 @@ namespace DeviceMonitor
                 // 创建初始化对象，确定数据库路径。
                 DatabaseInitializer initializer = new DatabaseInitializer();
 
-                // 准备数据库和表
+                // 首次按 EF 迁移建库建表；以后只应用尚未执行的迁移，不清空配置和历史。
                 initializer.Initialize();
 
                 // 创建数据库操作对象，后面沿用这些对象。

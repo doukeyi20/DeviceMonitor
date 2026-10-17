@@ -38,15 +38,11 @@
                     </StackPanel>
                 </Border>
             </Grid>
-            <TextBlock Grid.Row="1" Margin="0,6,0,14" TextWrapping="Wrap"
-                       Text="管理设备连接参数和采集许可；启用不会自动开始采集。"
-                       Style="{StaticResource SubtleTextStyle}" />
 
             <!-- 按功能分组放按钮，窗口窄时自动换行。 -->
             <Border Grid.Row="2" Style="{StaticResource ToolbarCardStyle}" Margin="0,0,0,10">
                 <WrapPanel>
                     <StackPanel Margin="0,0,18,6">
-                        <TextBlock Text="设备配置" Style="{StaticResource SubtleTextStyle}" Margin="0,0,0,6" />
                         <StackPanel Orientation="Horizontal">
                             <Button Content="新增设备" Width="100" Height="34" Margin="0,0,8,0"
                                     Command="{Binding AddDeviceCommand}" Style="{StaticResource PrimaryActionButtonStyle}" />
@@ -55,7 +51,6 @@
                         </StackPanel>
                     </StackPanel>
                     <StackPanel Margin="0,0,18,6">
-                        <TextBlock Text="采集许可" Style="{StaticResource SubtleTextStyle}" Margin="0,0,0,6" />
                         <StackPanel Orientation="Horizontal">
                             <Button x:Name="EnableDeviceButton" Content="启用设备" Width="92" Height="34" Margin="0,0,8,0"
                                     Command="{Binding EnableDeviceCommand}"
@@ -63,15 +58,15 @@
                                     Style="{StaticResource SecondaryActionButtonStyle}" />
                             <Button x:Name="DisableDeviceButton" Content="停用设备" Width="92" Height="34"
                                     Command="{Binding DisableDeviceCommand}"
-                                    ToolTip="保存为停用后，任务在后续检查到停用时结束；立即请求停止请到实时监控页。"
+                                    ToolTip="先到实时监控停止这台设备，等停止完成后才能停用。"
                                     Style="{StaticResource SecondaryActionButtonStyle}" />
                         </StackPanel>
                     </StackPanel>
                     <StackPanel Margin="0,0,18,6">
-                        <TextBlock Text="TCP 连接" Style="{StaticResource SubtleTextStyle}" Margin="0,0,0,6" />
                         <StackPanel Orientation="Horizontal">
                             <Button x:Name="TestConnectionButton" Content="{Binding TestConnectionButtonText}"
                                     Width="100" Height="34" Command="{Binding TestConnectionCommand}"
+                                    ToolTip="只测试 TCP 端口。RTU 请到采集点配置选择点位，点击读取一次。"
                                     Style="{StaticResource SecondaryActionButtonStyle}" />
                             <Button Content="取消测试" Width="92" Height="34" Margin="8,0,0,0"
                                     Command="{Binding TestConnectionCancelCommand}"
@@ -90,14 +85,12 @@
                         </StackPanel>
                     </StackPanel>
                     <StackPanel Margin="0,0,18,6">
-                        <TextBlock Text="设备列表" Style="{StaticResource SubtleTextStyle}" Margin="0,0,0,6" />
                         <Button Content="刷新设备" Width="100" Height="34"
                                 Command="{Binding RefreshDevicesCommand}"
                                 ToolTip="重新读取已保存的设备配置；不连接设备，也不启停采集。"
                                 Style="{StaticResource SecondaryActionButtonStyle}" />
                     </StackPanel>
                     <StackPanel Margin="0,0,0,6">
-                        <TextBlock Text="删除配置" Style="{StaticResource SubtleTextStyle}" Margin="0,0,0,6" />
                         <Button Content="{Binding DeleteDeviceButtonText}" Width="100" Height="34"
                                 Command="{Binding DeleteDeviceCommand}"
                                 ToolTip="先停止这台设备的采集，再删除设备及采集点配置；历史读数和报警历史保留。"
@@ -109,13 +102,18 @@
             <!-- 第一行显示配置操作结果，第二行显示 TCP 测试结果。 -->
             <StackPanel Grid.Row="3" Margin="0,0,0,10">
                 <TextBlock Text="{Binding PageMessage}" TextWrapping="Wrap"
-                           Style="{StaticResource SubtleTextStyle}" />
+                           Style="{StaticResource StatusMessageTextStyle}" />
                 <TextBlock Text="{Binding ConnectionTestMessage}" Margin="0,4,0,0" TextWrapping="Wrap"
-                           Style="{StaticResource SubtleTextStyle}" />
+                           Style="{StaticResource StatusMessageTextStyle}" />
             </StackPanel>
 
             <!-- Devices 每项是 DeviceInfo；列绑定这一行的属性，选中项写入 SelectedDevice。 -->
-            <Border Grid.Row="4" Style="{StaticResource SectionCardStyle}" Padding="0">
+            <Grid Grid.Row="4">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+            <Border Style="{StaticResource SectionCardStyle}" Padding="0">
                 <DataGrid x:Name="DevicesGrid" ItemsSource="{Binding Devices}"
                           SelectedItem="{Binding SelectedDevice, Mode=TwoWay}"
                           SelectionMode="Single" SelectionUnit="FullRow" AutoGenerateColumns="False"
@@ -125,19 +123,36 @@
                           ScrollViewer.HorizontalScrollBarVisibility="Auto"
                           ScrollViewer.VerticalScrollBarVisibility="Auto">
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="编号" Binding="{Binding Id}" Width="*" MinWidth="60" ElementStyle="{StaticResource TableCellTextStyle}" />
                         <DataGridTextColumn Header="设备名称" Binding="{Binding Name}" Width="2*" MinWidth="130" ElementStyle="{StaticResource TableCellTextStyle}" />
                         <DataGridCheckBoxColumn Header="启用状态" Binding="{Binding IsEnabled, Mode=OneWay}" Width="*" MinWidth="90" />
-                        <DataGridTextColumn Header="主机地址" Binding="{Binding Host}" Width="2*" MinWidth="150" ElementStyle="{StaticResource TableCellTextStyle}" />
-                        <DataGridTextColumn Header="端口" Binding="{Binding Port}" Width="*" MinWidth="65" ElementStyle="{StaticResource TableCellTextStyle}" />
-                        <DataGridTextColumn Header="Unit ID" Binding="{Binding UnitId}" Width="*" MinWidth="75" ElementStyle="{StaticResource TableCellTextStyle}" />
+                        <DataGridTextColumn Header="通信方式" Binding="{Binding CommunicationText}" Width="*" MinWidth="105" ElementStyle="{StaticResource TableCellTextStyle}" />
+                        <DataGridTextColumn Header="连接地址 / 参数" Binding="{Binding Endpoint}" Width="2*" MinWidth="180" ElementStyle="{StaticResource TableCellTextStyle}" />
+                        <DataGridTextColumn Header="站号/Unit ID" Binding="{Binding UnitId}" Width="115" MinWidth="115" ElementStyle="{StaticResource TableCellTextStyle}" />
                         <DataGridTextColumn Header="采集间隔(ms)" Binding="{Binding SamplingIntervalMilliseconds}" Width="2*" MinWidth="125" ElementStyle="{StaticResource TableCellTextStyle}" />
-                        <DataGridTextColumn Header="连接超时(ms)" Binding="{Binding ConnectTimeoutMilliseconds}" Width="2*" MinWidth="125" ElementStyle="{StaticResource TableCellTextStyle}" />
-                        <DataGridTextColumn Header="读取超时(ms)" Binding="{Binding ReadTimeoutMilliseconds}" Width="2*" MinWidth="125" ElementStyle="{StaticResource TableCellTextStyle}" />
-                        <DataGridTextColumn Header="写入超时(ms)" Binding="{Binding WriteTimeoutMilliseconds}" Width="2*" MinWidth="125" ElementStyle="{StaticResource TableCellTextStyle}" />
                     </DataGrid.Columns>
                 </DataGrid>
             </Border>
+            <!-- 编号和超时移到这里；选中行后读取同一个 DeviceInfo，不减少设备配置。 -->
+            <Border Grid.Row="1" x:Name="SelectedDeviceDetails" Margin="0,10,0,0" Padding="12,10">
+                <Border.Style>
+                    <Style TargetType="Border" BasedOn="{StaticResource ToolbarCardStyle}">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding SelectedDevice}" Value="{x:Null}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <StackPanel>
+                    <TextBlock Text="{Binding SelectedDeviceTitle}" Style="{StaticResource SectionHeadingStyle}"
+                               TextTrimming="CharacterEllipsis" ToolTip="{Binding SelectedDeviceTitle}" />
+                    <TextBlock Text="{Binding SelectedDeviceConnectionDetails}" Margin="0,5,0,0"
+                               FontSize="12" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding SelectedDeviceTimeoutDetails}" Margin="0,4,0,0"
+                               Style="{StaticResource SubtleTextStyle}" />
+                </StackPanel>
+            </Border>
+            </Grid>
         </Grid>
     </ScrollViewer>
 </UserControl>

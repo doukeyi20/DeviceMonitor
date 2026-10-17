@@ -61,6 +61,7 @@ namespace DeviceMonitor.Views
         protected override void OnClosed(EventArgs e)
         {
             _viewModel.DeleteConfirmationRequested -= ConfirmDeletePoint;
+            _viewModel.Dispose();
             base.OnClosed(e);
         }
     }

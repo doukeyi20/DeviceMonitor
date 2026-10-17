@@ -16,6 +16,9 @@
         <SolidColorBrush x:Key="SecondaryTextBrush" Color="#69717A" />
         <SolidColorBrush x:Key="AccentBrush" Color="#3D4854" />
 
+        <!-- 所有窗口共用波形图标，标题栏不再显示 WPF 默认图标。 -->
+        <ImageSource x:Key="ApplicationIcon">pack://application:,,,/DeviceMonitor.Desktop;component/Assets/AppIcon.ico</ImageSource>
+
         <Style TargetType="{x:Type TextBlock}">
             <Setter Property="FontFamily" Value="Microsoft YaHei UI" />
             <Setter Property="FontSize" Value="14" />
@@ -35,6 +38,13 @@
             <Setter Property="FontSize" Value="12" />
             <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}" />
             <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+        <!-- 空的操作提示不占位置；错误和进行中的状态仍正常显示。 -->
+        <Style x:Key="StatusMessageTextStyle" TargetType="TextBlock" BasedOn="{StaticResource SubtleTextStyle}">
+            <Style.Triggers>
+                <Trigger Property="Text" Value=""><Setter Property="Visibility" Value="Collapsed" /></Trigger>
+                <Trigger Property="Text" Value="{x:Null}"><Setter Property="Visibility" Value="Collapsed" /></Trigger>
+            </Style.Triggers>
         </Style>
         <Style x:Key="TableCellTextStyle" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
             <Setter Property="Margin" Value="8,0" />

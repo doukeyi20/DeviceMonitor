@@ -23,6 +23,14 @@ namespace DeviceMonitor.Views
         {
             InitializeComponent();
 
+            // 笔记本工作区较小时收小弹窗；参数区可滚动，底部按钮仍可见。
+            MaxHeight = SystemParameters.WorkArea.Height;
+            MaxWidth = SystemParameters.WorkArea.Width;
+            MinHeight = Math.Min(MinHeight, MaxHeight);
+            MinWidth = Math.Min(MinWidth, MaxWidth);
+            Height = Math.Min(Height, MaxHeight);
+            Width = Math.Min(Width, MaxWidth);
+
             _viewModel = new DeviceEditorViewModel(viewModel, deviceToEdit);
             _viewModel.InputErrorRequested += ShowInputError;
             _viewModel.MessageRequested += ShowMessage;
@@ -47,12 +55,14 @@ namespace DeviceMonitor.Views
         {
             MessageBox.Show(this, message, "输入有误", MessageBoxButton.OK, MessageBoxImage.Warning);
 
-            // 按属性名找到前端用 x:Name 命名的 TextBox。
-            TextBox? input = propertyName switch
+            // 按属性名找到输入框；串口是可输入的下拉框，其余是文本框。
+            Control? input = propertyName switch
             {
                 nameof(DeviceEditorViewModel.DeviceName) => DeviceNameInput,
                 nameof(DeviceEditorViewModel.Host) => HostInput,
                 nameof(DeviceEditorViewModel.PortText) => PortInput,
+                nameof(DeviceEditorViewModel.SerialPortName) => SerialPortNameInput,
+                nameof(DeviceEditorViewModel.BaudRateText) => BaudRateInput,
                 nameof(DeviceEditorViewModel.UnitIdText) => UnitIdInput,
                 nameof(DeviceEditorViewModel.SamplingIntervalText) => SamplingIntervalInput,
                 nameof(DeviceEditorViewModel.ConnectTimeoutText) => ConnectTimeoutInput,
@@ -61,7 +71,7 @@ namespace DeviceMonitor.Views
                 _ => null
             };
             input?.Focus();
-            input?.SelectAll();
+            if (input is TextBox textBox) textBox.SelectAll();
         }
 
         /// <summary>

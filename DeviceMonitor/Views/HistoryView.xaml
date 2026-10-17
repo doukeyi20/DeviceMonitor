@@ -29,7 +29,7 @@
                 <!-- 收起筛选区不清空条件，查询和重置按钮仍可见。 -->
                 <Expander x:Name="FilterExpander" IsExpanded="False" IsEnabled="{Binding CanEditFilters}">
                     <Expander.Header>
-                        <TextBlock Text="筛选条件（展开/收起）" Margin="0,3,205,3"
+                        <TextBlock Text="筛选条件" Margin="0,3,205,3"
                                    Style="{StaticResource SectionHeadingStyle}"
                                    ToolTip="按设备、点位名称和时间筛选。折叠不会重置条件。" />
                     </Expander.Header>
@@ -157,8 +157,6 @@
                 </Style></Border.Style>
                 <StackPanel>
                     <TextBlock Text="没有匹配的历史记录" FontWeight="SemiBold" TextAlignment="Center" />
-                    <TextBlock Text="可调整筛选条件，或连续采集成功保存后再查询。单次测试不产生历史。" Margin="0,5,0,0" TextWrapping="Wrap"
-                               TextAlignment="Center" Foreground="{StaticResource SecondaryTextBrush}" />
                 </StackPanel>
             </Border>
             </Grid>
@@ -175,9 +173,9 @@
         <!-- 过长的状态文字省略显示，鼠标悬停可看全。 -->
         <Grid Grid.Row="5" Margin="0,4,0,0">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-            <TextBlock Text="{Binding FilterStatusText}" ToolTip="{Binding FilterStatusText}" TextTrimming="CharacterEllipsis"
+            <TextBlock Style="{StaticResource StatusMessageTextStyle}" Text="{Binding FilterStatusText}" ToolTip="{Binding FilterStatusText}" TextTrimming="CharacterEllipsis"
                        FontSize="12" Margin="0,0,12,0" Foreground="{StaticResource SecondaryTextBrush}" />
-            <TextBlock Grid.Column="1" Text="{Binding PageMessage}" ToolTip="{Binding PageMessage}" TextTrimming="CharacterEllipsis"
+            <TextBlock Style="{StaticResource StatusMessageTextStyle}" Grid.Column="1" Text="{Binding PageMessage}" ToolTip="{Binding PageMessage}" TextTrimming="CharacterEllipsis"
                        FontSize="12" Foreground="{StaticResource SecondaryTextBrush}" />
         </Grid>
     </Grid>

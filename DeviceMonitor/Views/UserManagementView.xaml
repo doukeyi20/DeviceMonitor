@@ -35,14 +35,11 @@
             </Grid.RowDefinitions>
 
             <TextBlock Text="{Binding Title}" Style="{StaticResource PageTitleStyle}" />
-            <TextBlock Grid.Row="1" Text="创建操作员并管理账户的启用状态"
-                       Margin="0,5,0,0" TextWrapping="Wrap"
-                       Style="{StaticResource SubtleTextStyle}" />
 
             <!-- 创建表单默认收起，需要新增账户时展开。 -->
             <Border Grid.Row="2" Margin="0,14,0,12" Style="{StaticResource ToolbarCardStyle}">
                 <Expander x:Name="CreateOperatorExpander" IsExpanded="False"
-                          Header="创建操作员（需要时展开）" FontSize="14" FontWeight="SemiBold">
+                          Header="创建操作员" FontSize="14" FontWeight="SemiBold">
                     <Grid Margin="0,12,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
@@ -63,7 +60,7 @@
                                      Height="36" Margin="0,5,0,0" FontWeight="Normal" />
                         </StackPanel>
                         <StackPanel Grid.Column="2">
-                            <TextBlock Text="初始密码" FontWeight="SemiBold" />
+                            <TextBlock Text="初始密码（至少 6 个字符）" FontWeight="SemiBold" />
                             <!-- 后台通过 x:Name 找到密码框，创建命令需要时才读取。 -->
                             <PasswordBox x:Name="NewPasswordInput" Height="36" Margin="0,5,0,0" FontWeight="Normal" />
                         </StackPanel>
@@ -76,9 +73,6 @@
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            <TextBlock Text="密码至少 6 个字符，两次输入需一致。"
-                                       TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,12,0"
-                                       FontSize="12" Foreground="{StaticResource SecondaryTextBrush}" />
                             <Button x:Name="CreateOperatorButton" Grid.Column="1"
                                     Content="创建操作员" Height="36"
                                     Style="{StaticResource PrimaryActionButtonStyle}"
@@ -119,10 +113,8 @@
                         </WrapPanel>
                     </WrapPanel>
                     <StackPanel Grid.Row="1" Margin="0,0,0,10">
-                        <TextBlock Text="先选择操作员；管理员不能在这里启停。"
-                                   TextWrapping="Wrap" Style="{StaticResource SubtleTextStyle}" />
                         <TextBlock Text="{Binding PageMessage}" Margin="0,4,0,0"
-                                   TextWrapping="Wrap" Style="{StaticResource SubtleTextStyle}" />
+                                   TextWrapping="Wrap" Style="{StaticResource StatusMessageTextStyle}" />
                     </StackPanel>
 
                     <!-- Users 每项是一个 UserAccount，列显示它的属性；选中的对象写回 SelectedUser。 -->

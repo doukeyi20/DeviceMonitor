@@ -1,11 +1,13 @@
 using System;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Globalization;
 using System.Linq;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using DeviceMonitor.Core.Models;
 using DeviceMonitor.Core.Persistence;
+using DeviceMonitor.Sampling;
 
 namespace DeviceMonitor.ViewModels
 {
@@ -13,10 +15,12 @@ namespace DeviceMonitor.ViewModels
     /// <summary>
     /// 管理一台设备的采集点配置，不负责读取或连续采集。
     /// </summary>
-    public partial class PointViewModel : ObservableObject
+    public partial class PointViewModel : ObservableObject, IDisposable
     {
         private readonly UserAccount _currentUser;
         private readonly DeviceStore _deviceStore;
+        private readonly DeviceRuntimeManager? _deviceRuntimeManager;
+        private bool _isClosed; // 窗口已关闭，不再接受保存或删除。
 
         // 本窗口一直管理这台设备，只有 get，不能中途换设备。
         public DeviceInfo Device { get; }
@@ -24,9 +28,9 @@ namespace DeviceMonitor.ViewModels
         // 窗口顶部标题，例如“T1 - 采集点管理”。
         public string WindowTitle => $"{Device.Name} - 采集点管理";
 
-        // 把设备地址、端口和 Unit ID 拼成一行，方便界面显示。
+        // 采集点窗口顶部显示当前设备的连接方式、地址和目标编号。
         public string DeviceEndpoint =>
-            $"{Device.Host}:{Device.Port} · Unit ID：{Device.UnitId}";
+            $"{Device.CommunicationText} · {Device.Endpoint} · {(Device.CommunicationMode == DeviceCommunicationMode.Rtu ? "站号" : "Unit ID")}：{Device.UnitId}";
 
         // 左侧配置表绑定这里，每项是一个 PointInfo 点位配置，不是读数。
         public ObservableCollection<PointInfo> Points { get; } = new();
@@ -82,13 +86,18 @@ namespace DeviceMonitor.ViewModels
         /// 由 AcquisitionViewModel.CreatePointViewModel 创建，作为点位窗口的数据源。
         /// 接住目标设备和数据库对象，并加载这台设备的点位。
         /// </summary>
-        public PointViewModel(UserAccount currentUser, DeviceStore deviceStore, DeviceInfo device)
+        public PointViewModel(UserAccount currentUser, DeviceStore deviceStore, DeviceInfo device,
+            DeviceRuntimeManager? deviceRuntimeManager = null)
         {
             _currentUser = currentUser ?? throw new ArgumentNullException(nameof(currentUser));
             _deviceStore = deviceStore ?? throw new ArgumentNullException(nameof(deviceStore));
             Device = device ?? throw new ArgumentNullException(nameof(device));
+            _deviceRuntimeManager = deviceRuntimeManager;
             if (_currentUser.Role != UserRole.Administrator || !_currentUser.IsEnabled)
                 throw new UnauthorizedAccessException("只有已启用的管理员可以配置采集点。");
+
+            if (_deviceRuntimeManager is not null)
+                _deviceRuntimeManager.PropertyChanged += DeviceRuntimeManager_PropertyChanged;
 
             // 创建窗口的数据源时就查询，不必先点“刷新”才能看到原来的配置。
             RefreshPoints();
@@ -142,6 +151,8 @@ namespace DeviceMonitor.ViewModels
         [RelayCommand(CanExecute = nameof(CanBeginEditPoint))]
         private void BeginEditPoint()
         {
+            if (!CheckConfigurationCanChange())
+                return;
             // 取出表格当前选中的点位配置。
             PointInfo? point = SelectedPoint;
             if (!CanBeginEditPoint() || point is null)
@@ -166,7 +177,7 @@ namespace DeviceMonitor.ViewModels
         /// </summary>
         private bool CanBeginEditPoint()
         {
-            return !IsEditing
+            return CanChangeConfiguration() && !IsEditing
                 && SelectedPoint is not null
                 && SelectedPoint.DeviceId == Device.Id
                 && Points.Contains(SelectedPoint);
@@ -176,10 +187,12 @@ namespace DeviceMonitor.ViewModels
         /// 由 SavePointCommand 调用。
         /// 检查输入，新增或修改点位配置；成功后清空表单并刷新列表。
         /// </summary>
-        [RelayCommand]
+        [RelayCommand(CanExecute = nameof(CanChangeConfiguration))]
         private void SavePoint()
         {
-
+            // 窗口打开后也可能开始采集，保存前仍要确认设备已停止。
+            if (!CheckConfigurationCanChange())
+                return;
             // 先取出表单属性并检查名称、类型和地址。
             string name = PointName?.Trim() ?? string.Empty;
 
@@ -344,6 +357,8 @@ namespace DeviceMonitor.ViewModels
         [RelayCommand(CanExecute = nameof(CanDeletePoint))]
         private void DeletePoint()
         {
+            if (!CheckConfigurationCanChange())
+                return;
             PointInfo? point = SelectedPoint;
             if (!CanDeletePoint() || point is null)
                 return;
@@ -364,6 +379,8 @@ namespace DeviceMonitor.ViewModels
                     PageMessage = "请先保存或取消编辑，再删除采集点。";
                     return;
                 }
+                if (!CheckConfigurationCanChange())
+                    return;
 
                 // 确认后按设备编号、点位编号删除配置。
                 if (!_deviceStore.TryDeletePoint(_currentUser, Device.Id, point.Id))
@@ -396,5 +413,49 @@ namespace DeviceMonitor.ViewModels
         /// 删除和开始编辑使用相同的选中检查。
         /// </summary>
         private bool CanDeletePoint() => CanBeginEditPoint();
+
+        // 采集和停止收尾都没结束时，点位、地址和上下限不能修改。
+        private bool CanChangeConfiguration() => !_isClosed
+            && _currentUser.Role == UserRole.Administrator && _currentUser.IsEnabled
+            && Device.IsEnabled
+            && (_deviceRuntimeManager is null
+                || (!_deviceRuntimeManager.IsShuttingDown
+                    && !_deviceRuntimeManager.IsDeletingDevice(Device.Id)
+                    && !_deviceRuntimeManager.IsRunning(Device.Id)));
+
+        // 按钮和真正的写入入口都检查；不满足条件时保留输入。
+        private bool CheckConfigurationCanChange()
+        {
+            if (CanChangeConfiguration())
+                return true;
+            PageMessage = "暂时不能修改配置。请先停止这台设备，等停止完成后再保存或删除采集点。";
+            return false;
+        }
+
+        // 运行状态变了，编辑、保存和删除按钮跟着更新。
+        private void DeviceRuntimeManager_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName is nameof(DeviceRuntimeManager.ActiveSamplingCount)
+                or nameof(DeviceRuntimeManager.IsShuttingDown) or nameof(DeviceRuntimeManager.IsDeletingDevices))
+                NotifyConfigurationCommands();
+        }
+
+        private void NotifyConfigurationCommands()
+        {
+            BeginEditPointCommand.NotifyCanExecuteChanged();
+            SavePointCommand.NotifyCanExecuteChanged();
+            DeletePointCommand.NotifyCanExecuteChanged();
+        }
+
+        // 由 PointWindow.OnClosed 调用，关闭窗口后解除共用管理器的通知。
+        public void Dispose()
+        {
+            if (_isClosed)
+                return;
+            _isClosed = true;
+            if (_deviceRuntimeManager is not null)
+                _deviceRuntimeManager.PropertyChanged -= DeviceRuntimeManager_PropertyChanged;
+            NotifyConfigurationCommands();
+        }
     }
 }

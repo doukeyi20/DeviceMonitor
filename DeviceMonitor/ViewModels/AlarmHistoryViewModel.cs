@@ -73,12 +73,12 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
     public string RecordSummary => $"本页 {Records.Count} 条 / 匹配 {_totalRecords} 条";
     public string PageDescription => $"第 {CurrentPage} / {TotalPages} 页 · 每页 {PageSize} 条";
     public string FilterStatusText => FiltersChanged
-        ? "条件已修改，请点击查询；当前仍显示上次结果，暂不能翻页或导出。"
-        : "翻页沿用本次查询条件；新发生或刚恢复的报警请点击刷新。";
+        ? "筛选条件已更改，请重新查询。"
+        : string.Empty;
     public string StateExplanation => "“未恢复”只表示这条历史报警还没有恢复时间，不代表设备现在一定在线、离线或仍在采集。";
     public string ExportExplanation => "导出全部匹配页，不含查询后新增的报警；状态取各条导出读取时的值，不是整份文件同一时刻的状态快照。";
 
-    private string _pageMessage = "进入标签后自动查询。可以按设备、类别和报警发生时间筛选。";
+    private string _pageMessage = string.Empty;
     public string PageMessage
     {
         get => _pageMessage;
@@ -196,7 +196,7 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
             _hasLoadedRecords = true;
             FiltersChanged = filterVersion != _filterVersion;
             PageMessage = _totalRecords == 0
-                ? "当前条件下没有报警记录。正常采集不会生成报警，单次测试也不生成报警。"
+                ? "没有匹配的报警记录。"
                 : $"查询成功，匹配 {_totalRecords} 条，当前显示第 {_currentPage} 页。";
         }
         catch (Exception ex)

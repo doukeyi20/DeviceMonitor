@@ -39,7 +39,7 @@ namespace DeviceMonitor.ViewModels
         public event Action? FormResetRequested;
         public event Action<PasswordEditViewModel>? PasswordEditorRequested;
 
-        private string _pageMessage = "先选择操作员；管理员不能在这里启停。";
+        private string _pageMessage = string.Empty;
         public string PageMessage
         {
             get => _pageMessage;

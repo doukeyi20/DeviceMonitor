@@ -18,7 +18,7 @@ namespace DeviceMonitor.Sampling;
 /// </summary>
 public sealed class AlarmTracker : ObservableObject
 {
-    public const int DisplayLimit = 500; // 监控报警表最多显示 500 条。
+    public const int DisplayLimit = 500; // 最近报警最多保留 500 条；活动报警另有字典保存。
     private const int PendingLimit = 5000; // 待保存事件最多留 5000 个，防止一直失败时无限增长。
     private readonly UserAccount _currentUser;
     private readonly AlarmStore _store;
@@ -27,11 +27,11 @@ public sealed class AlarmTracker : ObservableObject
     private readonly SemaphoreSlim _saveGate = new(1, 1);
     // 设备编号 + 点位编号 + 异常类型 → 尚未结束的报警。
     private readonly Dictionary<(long DeviceId, long? PointId, AlarmKind Kind), AlarmRecord> _active = new();
-    private readonly ObservableCollection<AlarmRecord> _records = new(); // 监控报警表显示的记录。
+    private readonly ObservableCollection<AlarmRecord> _records = new(); // 最近报警记录，变化后通知监控行更新状态。
     // EventId → 待保存的最新报警版本；按同一编号更新，重试不会重复新增。
     private readonly Dictionary<string, AlarmRecord> _pending = new();
     private int _droppedUpdates; // 保存列表满了以后，没能保留的更新次数。
-    private string _persistenceStatusText = "本次运行尚无报警；过去的记录请到历史记录 → 报警历史查询。";
+    private string _persistenceStatusText = string.Empty;
 
     public ReadOnlyObservableCollection<AlarmRecord> Records { get; } // 每项是一条 AlarmRecord，页面只能查看。
     public string PersistenceStatusText
@@ -55,8 +55,22 @@ public sealed class AlarmTracker : ObservableObject
     }
 
     /// <summary>
-    /// 由 DeviceSamplingViewModel.RunAsync 每轮查完配置后调用。
-    /// 根据最新点位配置结束已失效的旧报警规则；停止监测不等于恢复正常。
+    /// 由 MonitoringReadingViewModel 更新点位状态时调用。
+    /// 找这个点尚未结束的报警；整台设备的采集异常也算，读取失败优先显示。
+    /// </summary>
+    public AlarmRecord? GetCurrentAlarm(long deviceId, long pointId)
+    {
+        _dispatcher.VerifyAccess();
+        // 不从最近 500 条里找，避免持续很久的报警被新记录挤掉。
+        if (_active.TryGetValue((deviceId, pointId, AlarmKind.AcquisitionFailure), out AlarmRecord? failure)) return failure;
+        if (_active.TryGetValue((deviceId, null, AlarmKind.AcquisitionFailure), out AlarmRecord? deviceFailure)) return deviceFailure;
+        if (_active.TryGetValue((deviceId, pointId, AlarmKind.HighLimit), out AlarmRecord? high)) return high;
+        return _active.TryGetValue((deviceId, pointId, AlarmKind.LowLimit), out AlarmRecord? low) ? low : null;
+    }
+
+    /// <summary>
+    /// 由 DeviceSamplingViewModel.RunAsync 开始时加载配置后调用一次。
+    /// 检查重新开始前改过的点位和上下限；停止监测不等于恢复正常。
     /// </summary>
     public async Task ReconcileConfigurationAsync(DeviceInfo device, IReadOnlyList<PointInfo> points)
     {
@@ -83,7 +97,7 @@ public sealed class AlarmTracker : ObservableObject
 
     /// <summary>
     /// 由 DeviceSamplingViewModel.RunAsync 在点位读取成功后调用。
-    /// 用新读数恢复这个点的读取异常，再检查上下限；等于限值不算越限。
+    /// 用新读数恢复这个点的读取异常，再检查上下限；检查是否报警
     /// </summary>
     public async Task ReportReadingAsync(DeviceInfo device, PointReadResult result)
     {
@@ -91,10 +105,13 @@ public sealed class AlarmTracker : ObservableObject
         PointInfo point = result.Point;
         // 读成功了，之前的读取异常就恢复；数值报警仍需单独比较。
         Recover(device.Id, point.Id, AlarmKind.AcquisitionFailure, result.ReadAt, "此点已重新读取成功。");
+        // 检查数值是否大于上限
         EvaluateLimit(device, result, AlarmKind.HighLimit, point.UpperLimit,
             point.UpperLimit.HasValue && result.Value > point.UpperLimit.Value);
+        // 检查数值是否小于下限
         EvaluateLimit(device, result, AlarmKind.LowLimit, point.LowerLimit,
             point.LowerLimit.HasValue && result.Value < point.LowerLimit.Value);
+        // 立即保存报警更新，避免丢失。
         await FlushAsync();
     }
 
@@ -104,10 +121,12 @@ public sealed class AlarmTracker : ObservableObject
     {
         if (!outside)
         {
+            // 无越界，调用Recover
             Recover(device.Id, result.Point.Id, kind, result.ReadAt, "有效读数已回到该限值允许的范围。");
             return;
         }
         string direction = kind == AlarmKind.HighLimit ? "高于上限" : "低于下限";
+        // 越界了，调用Observe创建或更新报警
         Observe(device.Id, device.Name, result.Point.Id, result.Point.Name, kind,
             $"读数 {result.Value} {direction} {limit}。", result.Value, limit, result.ReadAt);
     }
@@ -222,7 +241,7 @@ public sealed class AlarmTracker : ObservableObject
 
     /// <summary>
     /// 由 Observe 和 End 更新报警后调用。
-    /// 更新报警表，并把这条报警的最新版本放入待保存字典。
+    /// 更新最近报警列表，并把这条报警的最新版本放入待保存字典。
     /// </summary>
     private void Publish(AlarmRecord record)
     {
@@ -288,7 +307,7 @@ public sealed class AlarmTracker : ObservableObject
                 OnPropertyChanged(nameof(PendingSaveCount));
             }
             if (_records.Count > 0)
-                PersistenceStatusText = $"报警记录已保存；本页保留本次运行最近 {DisplayLimit} 条，完整记录到报警历史查询。" + DroppedText();
+                PersistenceStatusText = "报警记录已保存。" + DroppedText();
         }
         finally { _saveGate.Release(); }
     }

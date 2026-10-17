@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Net.Sockets;
+using System.Collections.Concurrent;
 using DeviceMonitor.Core.Models;
 
 namespace DeviceMonitor.Core.Communication
@@ -11,10 +12,13 @@ namespace DeviceMonitor.Core.Communication
     /// </summary>
     public sealed class ModbusPointReader
     {
+        // 这个读取器实际用过哪些串口；结束时只退出自己的使用，不关闭别人的采集。
+        private readonly ConcurrentDictionary<string, byte> _serialPorts = new(StringComparer.OrdinalIgnoreCase);
+
         /// <summary>
         /// 由 AcquisitionViewModel.ReadOnceAsync 或 DeviceSamplingViewModel.RunAsync 调用。
         /// 根据设备配置连接，发送点位读取请求，收到并检查响应后返回数值。
-        /// 每次调用独立连接，结束就关闭；显示、报警和历史保存由调用方处理。
+        /// TCP 每次独立连接；RTU 同一 COM 口排队共用。显示、报警和历史由调用方处理。
         /// </summary>
         public async Task<PointReadResult> ReadAsync(
             DeviceInfo device, PointInfo point, CancellationToken cancellationToken = default)
@@ -22,10 +26,7 @@ namespace DeviceMonitor.Core.Communication
             // 先检查配置，以及点位是否属于这台设备，不合法就不发网络请求。
             ArgumentNullException.ThrowIfNull(device);
             ArgumentNullException.ThrowIfNull(point);
-            ArgumentException.ThrowIfNullOrWhiteSpace(device.Host);
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(device.Id);
-            if (device.Port is < 1 or > 65535)
-                throw new ArgumentOutOfRangeException(nameof(device.Port), "端口必须在 1 到 65535 之间。");
             if (device.ConnectTimeoutMilliseconds <= 0 ||
                 device.ReadTimeoutMilliseconds <= 0 || device.WriteTimeoutMilliseconds <= 0)
                 throw new ArgumentException("连接、读取、写入超时都必须大于 0。", nameof(device));
@@ -36,6 +37,21 @@ namespace DeviceMonitor.Core.Communication
             if (!Enum.IsDefined(point.RegisterType) || !Enum.IsDefined(point.DataType))
                 throw new ArgumentException("暂不支持这个采集点的寄存器类型或数据类型。", nameof(point));
             cancellationToken.ThrowIfCancellationRequested();
+
+            // RTU 只换掉收发字节的方式，点位、返回对象和后续采集流程仍沿用原来的。
+            if (device.CommunicationMode == DeviceCommunicationMode.Rtu)
+            {
+                SerialConnectionSettings.Validate(device.SerialPortName, device.BaudRate,
+                    device.Parity, device.StopBits, device.UnitId);
+                _serialPorts.TryAdd(SerialConnectionSettings.NormalizePortName(device.SerialPortName), 0);
+                ushort raw = await ModbusRtuTransport.ReadAsync(this, device, point, cancellationToken).ConfigureAwait(false);
+                return BuildResult(point, raw, cancellationToken);
+            }
+            if (device.CommunicationMode != DeviceCommunicationMode.Tcp)
+                throw new ArgumentException("不支持这个连接方式。", nameof(device));
+            ArgumentException.ThrowIfNullOrWhiteSpace(device.Host);
+            if (device.Port is < 1 or > 65535)
+                throw new ArgumentOutOfRangeException(nameof(device.Port), "端口必须在 1 到 65535 之间。");
 
             // 每次读取独立创建连接，using 保证成功、失败或取消后都关闭。
             using TcpClient client = new() { NoDelay = true };
@@ -56,20 +72,31 @@ namespace DeviceMonitor.Core.Communication
                 ushort rawValue = await ReadResponseAsync(
                     stream, device, transactionId, functionCode, cancellationToken).ConfigureAwait(false);
 
-                // 按点位的数据类型解释数值，例如 0xFFFF 按 Int16 解释就是 -1。
-                int value = point.DataType == PointDataType.Int16
-                    ? unchecked((short)rawValue)
-                    : rawValue;
-                cancellationToken.ThrowIfCancellationRequested();
-
-                // 把配置、原始值、解释后的值和时间一起交回调用方。
-                return new PointReadResult(point, rawValue, value, DateTimeOffset.UtcNow);
+                return BuildResult(point, rawValue, cancellationToken);
             }
             catch (Exception ex) when (cancellationToken.IsCancellationRequested)
             {
                 // 停止时网络也可能抛其他异常，统一按取消处理，不误报故障。
                 throw new OperationCanceledException("本次读取已取消。", ex, cancellationToken);
             }
+        }
+
+        /// <summary>采集循环的 finally、单次读取的 finally 调用，退出本读取器占用的串口。</summary>
+        public async Task CloseAsync()
+        {
+            foreach (string port in _serialPorts.Keys)
+            {
+                await ModbusRtuTransport.ReleaseAsync(port, this).ConfigureAwait(false);
+                _serialPorts.TryRemove(port, out _);
+            }
+        }
+
+        /// <summary>两种连接读到原始值后都调用这里，按点位类型解释整数并附上时间。</summary>
+        private static PointReadResult BuildResult(PointInfo point, ushort raw, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            int value = point.DataType == PointDataType.Int16 ? unchecked((short)raw) : raw;
+            return new PointReadResult(point, raw, value, DateTimeOffset.UtcNow);
         }
 
         /// <summary>

@@ -1,12 +1,10 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Linq;
 using System.Threading.Tasks;
-using System.Windows.Data;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -17,7 +15,7 @@ using DeviceMonitor.Sampling;
 namespace DeviceMonitor.ViewModels;
 
 /// <summary>
-/// 实时监控页面的数据：勾选设备后批量启停，右侧显示最新读数和报警。
+/// 实时监控页面的数据：勾选设备后批量启停，每个点显示最新读数、当前报警和实时波形。
 /// 本类管页面操作，DeviceRuntimeManager 管任务，DeviceSamplingViewModel 真正循环采集。
 /// </summary>
 public partial class MonitoringViewModel : PageViewModel
@@ -32,23 +30,25 @@ public partial class MonitoringViewModel : PageViewModel
     private readonly Dictionary<PointReadingViewModel, MonitoringReadingViewModel> _readingRows = new();
     private bool _isShuttingDown; // 退出后不再给旧页面回填数据。
     private bool _isChangingChecks; // 批量改勾选时，等全部改完再统一汇总。
+    private bool _isRefreshingReadingRows; // 更新行名单时先保留曲线，等恢复选中行后再切换。
+    private (long DeviceId, long PointId)? _lastSelectedPoint; // 重启加载期间暂时没行，也能记住原来看的点。
     private int _deviceListVersion; // 删除设备后递增，让删除前启动的旧查询作废。
 
     public DeviceRuntimeManager DeviceRuntime { get; } // 主窗口传来的共用管理器。
-    // 左侧设备表、右侧读数表和报警表分别绑定这三个集合/视图。
+    // 左侧设备表、右侧点位表分别绑定这两个集合。
     public ObservableCollection<MonitoringDeviceViewModel> Devices { get; } = new();
     public ObservableCollection<MonitoringReadingViewModel> Readings { get; } = new();
-    public ICollectionView AlarmRecords { get; }
-    public string[] AlarmCategories { get; } = { "全部", "数值报警", "采集异常" };
+    public LiveTrendViewModel Trend { get; } = new(); // 下方波形只看选中的一个点，不混合不同量纲。
     public int ActiveSamplingCount => DeviceRuntime.ActiveSamplingCount;
     public int CheckedDeviceCount => Devices.Count(row => row.IsChecked);
-    public string SelectionDescription => CheckedDeviceCount == 0
-        ? "尚未勾选设备。请先勾选，顶部按钮只控制勾选设备。"
-        : $"已勾选 {CheckedDeviceCount} 台：{string.Join("、", Devices.Where(row => row.IsChecked).Select(row => row.Device.Name))}。右侧汇总这些设备的最新读数。";
 
     // 鼠标高亮的行；批量启停仍看 IsChecked，不看这里。
     [ObservableProperty]
     private MonitoringDeviceViewModel? _selectedDevice;
+
+    // 表格行和波形选择框共用这个选中点；不改变其他点的采集。
+    [ObservableProperty]
+    private MonitoringReadingViewModel? _selectedReading;
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(RefreshDevicesCommand))]
@@ -63,16 +63,10 @@ public partial class MonitoringViewModel : PageViewModel
     private bool _isStoppingSampling;
 
     [ObservableProperty]
-    private string _pageMessage = "进入页面会自动加载配置，但不会自动勾选或启动设备。";
-
-    [ObservableProperty]
-    private string _selectedAlarmCategory = "全部";
-
-    [ObservableProperty]
-    private bool _onlyCheckedDevices;
+    private string _pageMessage = string.Empty;
 
     /// <summary>
-    /// 接上共用管理器的通知，准备报警筛选和计时器；采集仍需手动开始。
+    /// 接上共用管理器的通知和计时器；采集仍需手动开始。
     /// </summary>
     public MonitoringViewModel(UserAccount currentUser, DeviceStore deviceStore,
         DeviceRuntimeManager deviceRuntimeManager) : base("实时监控")
@@ -88,11 +82,6 @@ public partial class MonitoringViewModel : PageViewModel
        
         DeviceRuntime.PropertyChanged += DeviceRuntime_PropertyChanged;
         DeviceRuntime.DeviceDeleted += DeviceRuntime_DeviceDeleted;
-
-        // 为本页单独做报警筛选，不影响其他页面；默认显示所有设备的报警。
-        AlarmRecords = new ListCollectionView((IList)DeviceRuntime.Alarms.Records);
-        AlarmRecords.Filter = MatchesAlarmFilter;
-        AlarmRecords.SortDescriptions.Add(new SortDescription(nameof(AlarmRecord.StartedAtLocal), ListSortDirection.Descending));
 
         // 每秒只更新“几秒前”的提示，不读取设备。
         _dataAgeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
@@ -129,7 +118,7 @@ public partial class MonitoringViewModel : PageViewModel
             // 断开旧行通知，清掉旧显示；不会停止正在采集的任务。
             SelectedDevice = null;
             DetachDeviceRows();
-            ClearReadingRows();
+            // 先保留原读数包装行；下面汇总时只移除真正不再显示的行。
             Devices.Clear();
             
             // 为每台设备创建显示行，有旧采集任务就接上它。
@@ -144,9 +133,8 @@ public partial class MonitoringViewModel : PageViewModel
             // 恢复高亮行，再统一更新读数汇总、说明和按钮。
             SelectedDevice = Devices.FirstOrDefault(row => row.Device.Id == selectedId) ?? Devices.FirstOrDefault();
             RefreshCheckedDevices();
-            PageMessage = Devices.Count == 0
-                ? "尚无设备配置。管理员可先到设备管理新增设备。"
-                : $"已加载 {Devices.Count} 台设备。勾选后可批量启停；停用设备可查看，但不会被启动。";
+            // 设备数量已在页头显示；正常加载不再追加操作说明。
+            PageMessage = Devices.Count == 0 ? "暂无设备配置。" : string.Empty;
         }
         catch (Exception ex)
         {
@@ -215,15 +203,13 @@ public partial class MonitoringViewModel : PageViewModel
 
     /// <summary>
     /// 由批量勾选、设备行变化、刷新设备和删除设备后的处理方法调用。
-    /// 勾选改完后，更新勾选说明、读数、报警筛选和按钮；不开始采集。
+    /// 勾选改完后，更新点位表和按钮；不开始采集。
     /// </summary>
     private void RefreshCheckedDevices()
     {
         // 先更新数据和显示，再让各按钮重新判断能否点击。
         OnPropertyChanged(nameof(CheckedDeviceCount));
-        OnPropertyChanged(nameof(SelectionDescription));
         RefreshReadingRows();
-        AlarmRecords.Refresh();
         NotifySamplingCommands();
         CheckAllDevicesCommand.NotifyCanExecuteChanged();
         ClearDeviceChecksCommand.NotifyCanExecuteChanged();
@@ -269,7 +255,7 @@ public partial class MonitoringViewModel : PageViewModel
         }
        
         PageMessage = $"已向 {started} 台设备发出启动请求；跳过 {checkedRows.Length - targets.Length} 台已运行、停用或正在删除的设备。"
-            + (failures.Count == 0 ? "实际结果请看读数和报警。" : $" 启动失败：{string.Join("；", failures)}");
+            + (failures.Count == 0 ? string.Empty : $" 启动失败：{string.Join("；", failures)}");
         // 重新判断按钮能否点击，不会再次执行启停。
         NotifySamplingCommands();
     }
@@ -306,7 +292,7 @@ public partial class MonitoringViewModel : PageViewModel
             }));
             // 退出时不再更新旧页面的提示。
             if (!_isShuttingDown)
-                PageMessage = $"已停止 {targets.Length - failures.Count} 台勾选设备；其他设备不受影响，读数保留最后结果。"
+                PageMessage = $"已停止 {targets.Length - failures.Count} 台设备。"
                     + (failures.Count == 0 ? string.Empty : $" 停止失败：{string.Join("；", failures)}");
         }
         // 无论成功还是失败，都解除“正在停止”的标记。
@@ -344,6 +330,8 @@ public partial class MonitoringViewModel : PageViewModel
     /// </summary>
     private void RefreshReadingRows()
     {
+        long? selectedDeviceId = SelectedReading?.DeviceId ?? _lastSelectedPoint?.DeviceId;
+        long? selectedPointId = SelectedReading?.Reading.Point.Id ?? _lastSelectedPoint?.PointId;
         // 只汇总勾选且已有任务的设备。
         MonitoringDeviceViewModel[] checkedRows = Devices.Where(row => row.IsChecked && row.Sampling is not null).ToArray();
         // desiredSessions 存这次需要显示的任务，方便和旧订阅比较。
@@ -371,9 +359,10 @@ public partial class MonitoringViewModel : PageViewModel
                 if (!_readingRows.TryGetValue(reading, out MonitoringReadingViewModel? row))
                 {
                     // 没有对应显示行才创建，补上设备名称，数值仍从原行取。
-                    row = new MonitoringReadingViewModel(deviceRow.Device, reading);
+                    row = new MonitoringReadingViewModel(deviceRow.Device, reading, DeviceRuntime.Alarms, deviceRow.Sampling);
                     _readingRows.Add(reading, row);
                 }
+                else row.UpdateDevice(deviceRow.Device);
                 desiredRows.Add(row);
             }
         }
@@ -384,9 +373,25 @@ public partial class MonitoringViewModel : PageViewModel
             _readingRows[reading].Dispose();
             _readingRows.Remove(reading);
         }
-        // 这里只换监控表的行，不清空采集任务中的读数或数据库历史。
-        Readings.Clear();
-        foreach (MonitoringReadingViewModel row in desiredRows) Readings.Add(row);
+        // 尽量保留原行和顺序，不用 Clear 让表格选中项反复丢失。
+        _isRefreshingReadingRows = true;
+        try
+        {
+            foreach (MonitoringReadingViewModel row in Readings.Where(item => !desiredRows.Contains(item)).ToArray())
+                Readings.Remove(row);
+            for (int index = 0; index < desiredRows.Count; index++)
+            {
+                MonitoringReadingViewModel row = desiredRows[index];
+                int oldIndex = Readings.IndexOf(row);
+                if (oldIndex < 0) Readings.Insert(index, row);
+                else if (oldIndex != index) Readings.Move(oldIndex, index);
+            }
+            // 重启会换成新的原读数行，但仍按设备和点位编号恢复选择。
+            SelectedReading = Readings.FirstOrDefault(row => row.DeviceId == selectedDeviceId && row.Reading.Point.Id == selectedPointId)
+                ?? Readings.FirstOrDefault();
+        }
+        finally { _isRefreshingReadingRows = false; }
+        Trend.Select(SelectedReading);
     }
 
     // 任务增删读数行时，稍后统一刷新汇总，避免连续 Add 时反复重建表格。
@@ -440,7 +445,7 @@ public partial class MonitoringViewModel : PageViewModel
             if (ReferenceEquals(SelectedDevice, row)) SelectedDevice = null;
         }
         RefreshCheckedDevices();
-        PageMessage = "已移除删除的设备；其他设备保持原来的采集状态，过去的记录可到历史记录查询。";
+        PageMessage = "设备已删除。";
     }
 
     /// <summary>
@@ -453,21 +458,11 @@ public partial class MonitoringViewModel : PageViewModel
         StopSamplingCommand.NotifyCanExecuteChanged();
     }
 
-    // 修改对应属性后，工具包生成的 setter 自动调用这里，刷新报警显示。
-    partial void OnSelectedAlarmCategoryChanged(string value) => AlarmRecords.Refresh();
-    // “仅看勾选”改变后，也自动刷新报警显示。
-    partial void OnOnlyCheckedDevicesChanged(bool value) => AlarmRecords.Refresh();
-
-    /// <summary>
-    /// 由 AlarmRecords 筛选表格中的报警时自动调用。
-    /// 按类别和“仅看勾选设备”判断一条报警是否显示，不删除记录。
-    /// </summary>
-    private bool MatchesAlarmFilter(object item)
+    // 由表格或波形选择框改变选中点时调用；只是切换曲线，不读取设备。
+    partial void OnSelectedReadingChanged(MonitoringReadingViewModel? value)
     {
-        if (item is not AlarmRecord alarm) return false;
-        if (SelectedAlarmCategory == "数值报警" && alarm.Category != AlarmCategory.Value) return false;
-        if (SelectedAlarmCategory == "采集异常" && alarm.Category != AlarmCategory.Acquisition) return false;
-        return !OnlyCheckedDevices || Devices.Any(row => row.IsChecked && row.Device.Id == alarm.DeviceId);
+        if (value is not null) _lastSelectedPoint = (value.DeviceId, value.Reading.Point.Id);
+        if (!_isRefreshingReadingRows) Trend.Select(value);
     }
 
     /// <summary>
@@ -505,6 +500,7 @@ public partial class MonitoringViewModel : PageViewModel
         _observedSessions.Clear();
         foreach (MonitoringReadingViewModel row in _readingRows.Values) row.Dispose();
         _readingRows.Clear();
+        SelectedReading = null;
         Readings.Clear();
     }
 
@@ -532,7 +528,6 @@ public partial class MonitoringViewModel : PageViewModel
         DeviceRuntime.DeviceDeleted -= DeviceRuntime_DeviceDeleted;
         DetachDeviceRows();
         ClearReadingRows();
-        // 筛选方法也引用本页，退出时一起断开。
-        AlarmRecords.Filter = null;
+        Trend.Dispose();
     }
 }

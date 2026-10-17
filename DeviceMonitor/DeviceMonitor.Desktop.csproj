@@ -6,11 +6,15 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+
+    <!-- 程序文件、任务栏等位置使用同一个项目图标。 -->
+    <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
 	<RootNamespace>DeviceMonitor</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <Resource Include="Assets\AppIcon.ico" />
   </ItemGroup>
 
   <ItemGroup>

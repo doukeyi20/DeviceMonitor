@@ -4,6 +4,7 @@
 <Window x:Class="DeviceMonitor.Views.PointWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Icon="{StaticResource ApplicationIcon}"
         xmlns:models="clr-namespace:DeviceMonitor.Core.Models;assembly=DeviceMonitor.Core"
         Title="{Binding WindowTitle}"
         Width="1000"
@@ -140,7 +141,7 @@
                                     <ComboBoxItem Content="输入寄存器（04）" Tag="{x:Static models:RegisterType.Input}" />
                                 </ComboBox>
                                 <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                                    <TextBlock Text="协议地址" Margin="0,0,12,0" VerticalAlignment="Center" />
+                                    <TextBlock Text="协议地址" ToolTip="0–65535，十进制；填写协议偏移地址，不直接填 4xxxx 编号。" Margin="0,0,12,0" VerticalAlignment="Center" />
                                     <TextBox Text="{Binding AddressText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                              Width="120" Height="38" VerticalContentAlignment="Center" />
                                 </StackPanel>
@@ -152,9 +153,6 @@
                                     <ComboBoxItem Content="Int16 · 有符号整数" Tag="{x:Static models:PointDataType.Int16}" />
                                 </ComboBox>
                                 <!-- 不自动猜地址：请按设备手册确认零起始协议地址。 -->
-                                <TextBlock Margin="0,10,0,0"
-                                           Text="协议地址填写 0–65535 的十进制整数，以设备手册为准；不要直接套用 4xxxx 编号。本阶段每个采集点读取一个 16 位寄存器。"
-                                           TextWrapping="Wrap" Style="{StaticResource SubtleTextStyle}" />
                             </StackPanel>
                         </Border>
 
@@ -179,9 +177,6 @@
                                                  Height="38" VerticalContentAlignment="Center" />
                                     </StackPanel>
                                 </Grid>
-                                <TextBlock Margin="0,10,0,0"
-                                           Text="留空不判断这一侧；两侧都留空，不做数值报警。只有连续采集读到有效值才判断上下限，单次测试不产生报警。"
-                                           TextWrapping="Wrap" Style="{StaticResource SubtleTextStyle}" />
                             </StackPanel>
                         </Border>
                     </StackPanel>
@@ -216,7 +211,7 @@
             </Grid.ColumnDefinitions>
             <!-- PageMessage 显示输入检查、保存或刷新的结果。 -->
             <TextBlock Text="{Binding PageMessage}" Margin="0,0,16,0" VerticalAlignment="Center"
-                       TextWrapping="Wrap" Style="{StaticResource SubtleTextStyle}" />
+                       TextWrapping="Wrap" Style="{StaticResource StatusMessageTextStyle}" />
             <!-- ShowDialog 打开的窗口可用 IsCancel 关闭，点击或按 Esc 都可以。 -->
             <Button Grid.Column="1" Content="关闭" IsCancel="True" Width="100" Height="36"
                     Style="{StaticResource SecondaryActionButtonStyle}" />

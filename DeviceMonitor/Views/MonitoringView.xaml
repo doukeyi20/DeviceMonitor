@@ -1,9 +1,10 @@
 <!--
-    数据源是 MonitoringViewModel；左侧勾选设备，右上看最新读数，右下看报警。
+    数据源是 MonitoringViewModel；左侧勾选设备，右上看读数和报警，右下看选中点位的波形。
 -->
 <UserControl x:Class="DeviceMonitor.Views.MonitoringView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:DeviceMonitor.Controls"
              Loaded="MonitoringView_Loaded"
              DataContextChanged="MonitoringView_DataContextChanged"
              FontFamily="Microsoft YaHei UI"
@@ -13,9 +14,9 @@
         <!-- 监控页面专用的表格样式。 -->
         <Style x:Key="MonitorTableStyle" TargetType="DataGrid"
                BasedOn="{StaticResource {x:Type DataGrid}}">
-            <Setter Property="RowHeight" Value="34" />
-            <Setter Property="ColumnHeaderHeight" Value="34" />
-            <Setter Property="FontSize" Value="12" />
+            <Setter Property="RowHeight" Value="36" />
+            <Setter Property="ColumnHeaderHeight" Value="36" />
+            <Setter Property="FontSize" Value="13" />
             <Setter Property="AutoGenerateColumns" Value="False" />
             <Setter Property="IsReadOnly" Value="True" />
             <Setter Property="CanUserAddRows" Value="False" />
@@ -30,37 +31,53 @@
                     <Style TargetType="DataGridColumnHeader"
                            BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
                         <Setter Property="Padding" Value="6,6" />
-                        <Setter Property="FontSize" Value="12" />
+                        <Setter Property="FontSize" Value="13" />
                     </Style>
                 </Setter.Value>
             </Setter>
         </Style>
         <Style x:Key="MonitorCellTextStyle" TargetType="TextBlock"
                BasedOn="{StaticResource {x:Type TextBlock}}">
-            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontSize" Value="13" />
             <Setter Property="Margin" Value="6,0" />
             <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=DataGridRow}}" />
             <Setter Property="TextTrimming" Value="CharacterEllipsis" />
             <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
         </Style>
-        <!-- 根据已有状态显示颜色，不在 XAML 中判断设备故障。 -->
-        <Style x:Key="MonitorQualityTextStyle" TargetType="TextBlock" BasedOn="{StaticResource MonitorCellTextStyle}">
+        <Style x:Key="MonitorReadingTextStyle" TargetType="TextBlock" BasedOn="{StaticResource MonitorCellTextStyle}">
+            <Setter Property="ToolTip" Value="{Binding DetailsText}" />
+        </Style>
+        <!-- 行对象已经算好当前状态；报警和读取异常都用红色突出。 -->
+        <Style x:Key="MonitorStatusTextStyle" TargetType="TextBlock" BasedOn="{StaticResource MonitorReadingTextStyle}">
             <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}" />
             <Style.Triggers>
-                <DataTrigger Binding="{Binding QualityText}" Value="成功">
-                    <Setter Property="Foreground" Value="#35705B" />
+                <DataTrigger Binding="{Binding IsAlert}" Value="True">
+                    <Setter Property="Foreground" Value="#B42318" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
                 </DataTrigger>
             </Style.Triggers>
         </Style>
-        <Style x:Key="MonitorAlarmStateStyle" TargetType="TextBlock" BasedOn="{StaticResource MonitorCellTextStyle}">
-            <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}" />
+        <Style x:Key="MonitorReadingRowStyle" TargetType="DataGridRow">
+            <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}" />
+            <Setter Property="ToolTip" Value="{Binding DetailsText}" />
             <Style.Triggers>
-                <DataTrigger Binding="{Binding StateText}" Value="未恢复">
-                    <Setter Property="Foreground" Value="#A04E49" />
-                    <Setter Property="FontWeight" Value="SemiBold" />
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#E7EDF2" />
+                </Trigger>
+                <DataTrigger Binding="{Binding IsAlert}" Value="True">
+                    <Setter Property="Background" Value="#FFF1F0" />
+                    <Setter Property="Foreground" Value="#B42318" />
                 </DataTrigger>
-                <DataTrigger Binding="{Binding StateText}" Value="已恢复">
-                    <Setter Property="Foreground" Value="#35705B" />
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="MonitorReadingCellStyle" TargetType="DataGridCell"
+               BasedOn="{StaticResource {x:Type DataGridCell}}">
+            <Style.Triggers>
+                <!-- 选中报警行后仍保留红色，方便一眼看出异常。 -->
+                <DataTrigger Binding="{Binding IsAlert}" Value="True">
+                    <Setter Property="Background" Value="#FFF1F0" />
+                    <Setter Property="Foreground" Value="#B42318" />
                 </DataTrigger>
             </Style.Triggers>
         </Style>
@@ -69,9 +86,8 @@
     <!-- 填满窗口高度；窗口太矮时整页可滚动，各表格也能单独滚动。 -->
     <ScrollViewer x:Name="PageScrollViewer" VerticalScrollBarVisibility="Auto"
                   HorizontalScrollBarVisibility="Disabled">
-        <Grid Height="{Binding ViewportHeight, ElementName=PageScrollViewer}" MinHeight="540">
+        <Grid Height="{Binding ViewportHeight, ElementName=PageScrollViewer}" MinHeight="650">
             <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
@@ -85,9 +101,6 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel>
                     <TextBlock Text="{Binding Title}" Style="{StaticResource PageTitleStyle}" />
-                    <TextBlock Margin="0,5,12,0" FontSize="12" TextWrapping="Wrap"
-                               Text="勾选设备后批量启停；每台设备读取全部已配置的采集点。"
-                               Foreground="{StaticResource SecondaryTextBrush}" />
                 </StackPanel>
                 <Border Grid.Column="1" VerticalAlignment="Center" Margin="12,0,0,0" Padding="12,8"
                         CornerRadius="8" Background="{StaticResource SoftSurfaceBrush}">
@@ -129,22 +142,13 @@
             </WrapPanel>
             </Border>
 
-            <Border Grid.Row="2" Margin="0,0,0,12" Padding="10,8"
-                    BorderBrush="{StaticResource BorderBrushNeutral}" BorderThickness="3,0,0,0"
-                    Background="{StaticResource SoftSurfaceBrush}" CornerRadius="0,6,6,0">
-                <!-- 勾选设备说明太长时单独滚动。 -->
-                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" MaxHeight="40">
-                    <TextBlock Text="{Binding SelectionDescription}" FontSize="12" FontWeight="SemiBold"
-                               TextWrapping="Wrap" />
-                </ScrollViewer>
-            </Border>
-
-            <!-- 左侧设备表，右侧上面是读数、下面是报警。 -->
-            <Grid x:Name="MonitoringWorkspace" Grid.Row="3">
+            <!-- 左侧选设备；右上每个点位一行，右下只画选中点位。 -->
+            <Grid x:Name="MonitoringWorkspace" Grid.Row="2">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="0.85*" MinWidth="200" MaxWidth="320" />
+                    <!-- 设备栏收窄，把空间留给读数和波形。 -->
+                    <ColumnDefinition Width="225" />
                     <ColumnDefinition Width="12" />
-                    <ColumnDefinition Width="2*" />
+                    <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
 
                 <Border Padding="10" Style="{StaticResource SectionCardStyle}"
@@ -160,11 +164,11 @@
                         <DataGrid x:Name="MonitoringDevicesGrid" Grid.Row="1"
                                   ItemsSource="{Binding Devices}"
                                   SelectedItem="{Binding SelectedDevice, Mode=TwoWay}"
-                                  Style="{StaticResource MonitorTableStyle}" RowHeight="110"
+                                  Style="{StaticResource MonitorTableStyle}" RowHeight="82"
                                   SelectionMode="Single" SelectionUnit="FullRow"
                                   ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                             <DataGrid.Columns>
-                                <DataGridTemplateColumn Header="勾选" Width="44" MinWidth="44">
+                                <DataGridTemplateColumn Header="" Width="36" MinWidth="36">
                                     <DataGridTemplateColumn.CellTemplate>
                                         <DataTemplate>
                                             <CheckBox IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
@@ -182,6 +186,7 @@
                                                     <ToolTip DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
                                                         <StackPanel MaxWidth="380">
                                                             <TextBlock Text="{Binding Device.Name}" FontWeight="SemiBold" />
+                                                            <TextBlock Margin="0,6,0,0" Text="{Binding ConnectionDetails}" TextWrapping="Wrap" />
                                                             <TextBlock Margin="0,6,0,0" Text="{Binding DataAgeText}" TextWrapping="Wrap" />
                                                             <TextBlock Margin="0,6,0,0" TextWrapping="Wrap"
                                                                        Text="{Binding Sampling.StatusText, TargetNullValue=尚未开始采集。, FallbackValue=尚未开始采集。}" />
@@ -193,9 +198,8 @@
                                                 <TextBlock Text="{Binding Device.Name}" FontSize="13" FontWeight="SemiBold"
                                                            TextTrimming="CharacterEllipsis" />
                                                 <TextBlock Margin="0,3,0,0" FontSize="11" TextTrimming="CharacterEllipsis"
-                                                           Foreground="{StaticResource SecondaryTextBrush}">
-                                                    <Run Text="{Binding Device.Host, Mode=OneWay}" /><Run Text=":" /><Run Text="{Binding Device.Port, Mode=OneWay}" />
-                                                </TextBlock>
+                                                           Foreground="{StaticResource SecondaryTextBrush}"
+                                                           Text="{Binding ConnectionSummary}" ToolTip="{Binding ConnectionDetails}" />
                                                 <TextBlock Margin="0,3,0,0" FontSize="11" TextTrimming="CharacterEllipsis">
                                                     <Run Text="{Binding EnabledText, Mode=OneWay}" /><Run Text=" · " /><Run Text="{Binding SamplingStateText, Mode=OneWay}" />
                                                     <TextBlock.Style>
@@ -209,39 +213,20 @@
                                                         </Style>
                                                     </TextBlock.Style>
                                                 </TextBlock>
-                                                <TextBlock Margin="0,3,0,0" Text="{Binding DataAgeText}" TextTrimming="CharacterEllipsis">
-                                                    <TextBlock.Style>
-                                                        <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
-                                                            <Setter Property="FontSize" Value="11" />
-                                                            <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}" />
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding IsDataStale}" Value="True">
-                                                                    <Setter Property="Foreground" Value="#9B682F" />
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </TextBlock.Style>
-                                                </TextBlock>
-                                                <TextBlock Margin="0,3,0,0" FontSize="11" TextTrimming="CharacterEllipsis"
-                                                           Text="{Binding Sampling.HistoryStatusText, TargetNullValue=开始后自动保存历史, FallbackValue=开始后自动保存历史}"
-                                                           Foreground="{StaticResource SecondaryTextBrush}" />
                                             </StackPanel>
                                         </DataTemplate>
                                     </DataGridTemplateColumn.CellTemplate>
                                 </DataGridTemplateColumn>
                             </DataGrid.Columns>
                         </DataGrid>
-                        <TextBlock Grid.Row="2" Margin="0,8,0,0" FontSize="11" TextWrapping="Wrap"
-                                   Text="取消勾选不会停止采集。悬停设备可看任务和保存提示。"
-                                   Foreground="{StaticResource SecondaryTextBrush}" />
                     </Grid>
                 </Border>
 
                 <Grid Grid.Column="2">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="1.15*" />
+                        <RowDefinition Height="0.9*" MinHeight="200" />
                         <RowDefinition Height="12" />
-                        <RowDefinition Height="1*" />
+                        <RowDefinition Height="1.1*" MinHeight="260" />
                     </Grid.RowDefinitions>
 
                     <Border Padding="12" Style="{StaticResource SectionCardStyle}">
@@ -249,22 +234,26 @@
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
-                            <TextBlock Text="最新采集读数" Style="{StaticResource SectionHeadingStyle}" Margin="0,0,0,10"
-                                       ToolTip="显示勾选设备的全部点位；停止后保留最后结果。这里不是历史记录列表。" />
-                            <!-- Readings 属性是集合，每项是 MonitoringReadingViewModel，包含device和pointviewmodel，补上设备名，数值仍从任务的原读数行取。 -->
+                            <DockPanel Margin="0,0,0,10">
+                                <TextBlock Text="最新读数与报警" Style="{StaticResource SectionHeadingStyle}"
+                                           ToolTip="每个点位一行，显示最新读数和当前报警；历史报警在历史记录页查看。" />
+                            </DockPanel>
+                            <!-- Readings 每项是一个点位的监控行；SelectedReading 决定下面画哪个点位。 -->
                             <DataGrid x:Name="MonitoringReadingsGrid" Grid.Row="1"
-                                      ItemsSource="{Binding Readings}" Style="{StaticResource MonitorTableStyle}">
+                                      ItemsSource="{Binding Readings}" SelectedItem="{Binding SelectedReading, Mode=TwoWay}"
+                                      Style="{StaticResource MonitorTableStyle}" SelectionMode="Single" SelectionUnit="FullRow"
+                                      RowStyle="{StaticResource MonitorReadingRowStyle}" CellStyle="{StaticResource MonitorReadingCellStyle}">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="设备" Binding="{Binding DeviceName}" Width="*" MinWidth="78" ElementStyle="{StaticResource MonitorCellTextStyle}" />
-                                    <DataGridTextColumn Header="采集点" Binding="{Binding PointName}" Width="*" MinWidth="85" ElementStyle="{StaticResource MonitorCellTextStyle}" />
-                                    <DataGridTextColumn Header="地址" Binding="{Binding Address}" Width="50" MinWidth="50" ElementStyle="{StaticResource MonitorCellTextStyle}" />
-                                    <DataGridTextColumn Header="读数" Binding="{Binding ValueText}" Width="68" MinWidth="68" ElementStyle="{StaticResource MonitorCellTextStyle}" />
-                                    <DataGridTextColumn Header="读取状态" Binding="{Binding QualityText}" Width="1.4*" MinWidth="90" ElementStyle="{StaticResource MonitorQualityTextStyle}" />
-                                    <DataGridTextColumn Header="读取时间" Binding="{Binding ReadTimeText}" Width="90" MinWidth="90" ElementStyle="{StaticResource MonitorCellTextStyle}" />
+                                    <DataGridTextColumn Header="设备" Binding="{Binding DeviceName}" Width="1*" MinWidth="90" ElementStyle="{StaticResource MonitorReadingTextStyle}" />
+                                    <DataGridTextColumn Header="点位" Binding="{Binding PointName}" Width="1.2*" MinWidth="110" ElementStyle="{StaticResource MonitorReadingTextStyle}" />
+                                    <DataGridTextColumn Header="读数" Binding="{Binding ValueText}" Width="90" MinWidth="90" ElementStyle="{StaticResource MonitorReadingTextStyle}" />
+                                    <DataGridTextColumn Header="状态" Binding="{Binding StatusText}" Width="1.4*" MinWidth="130" ElementStyle="{StaticResource MonitorStatusTextStyle}" />
+                                    <DataGridTextColumn Header="时间" Binding="{Binding ReadTimeText}" Width="82" MinWidth="82" ElementStyle="{StaticResource MonitorReadingTextStyle}" />
                                 </DataGrid.Columns>
                             </DataGrid>
-                            <TextBlock Grid.Row="1" Text="勾选设备并开始采集后，读数显示在这里。"
+                            <TextBlock Grid.Row="1" Text="暂无读数"
                                        FontSize="12" TextWrapping="Wrap" TextAlignment="Center"
                                        HorizontalAlignment="Center" VerticalAlignment="Center" Margin="18"
                                        IsHitTestVisible="False" Foreground="{StaticResource SecondaryTextBrush}">
@@ -279,6 +268,10 @@
                                     </Style>
                                 </TextBlock.Style>
                             </TextBlock>
+                            <TextBlock Style="{StaticResource StatusMessageTextStyle}" Grid.Row="2" Margin="0,7,0,0" FontSize="11" TextTrimming="CharacterEllipsis"
+                                       Text="{Binding DeviceRuntime.Alarms.PersistenceStatusText}"
+                                       ToolTip="{Binding DeviceRuntime.Alarms.PersistenceStatusText}"
+                                       Foreground="{StaticResource SecondaryTextBrush}" />
                         </Grid>
                     </Border>
 
@@ -289,46 +282,33 @@
                                 <RowDefinition Height="*" />
                                 <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
-                            <WrapPanel Margin="0,0,0,4">
-                                <TextBlock Text="报警与异常" Style="{StaticResource SectionHeadingStyle}"
-                                           VerticalAlignment="Center" Margin="0,0,12,6"
-                                           ToolTip="默认查看所有设备本次运行的最近报警；数值越限和采集异常分开分类，手动停止不当作设备故障。" />
-                                <ComboBox ItemsSource="{Binding AlarmCategories}"
-                                          SelectedItem="{Binding SelectedAlarmCategory, Mode=TwoWay}"
-                                          Width="105" Height="28" FontSize="12" Margin="0,0,12,6" />
-                                <CheckBox Content="仅看勾选" ToolTip="只显示当前勾选设备的报警"
-                                          IsChecked="{Binding OnlyCheckedDevices, Mode=TwoWay}"
-                                          FontSize="12" VerticalAlignment="Center" Margin="0,0,0,6" />
-                            </WrapPanel>
-                            <!-- AlarmRecords属性，是集合，每项是一条 AlarmRecord，列显示发生时间、设备、原因和状态等属性。 -->
-                            <DataGrid x:Name="MonitoringAlarmsGrid" Grid.Row="1"
-                                      ItemsSource="{Binding AlarmRecords}" Style="{StaticResource MonitorTableStyle}">
-                                <DataGrid.Columns>
-                                    <DataGridTextColumn Header="发生时间" Binding="{Binding StartedAtLocal, StringFormat=HH:mm:ss}" Width="82" MinWidth="82">
-                                        <DataGridTextColumn.ElementStyle>
-                                            <Style TargetType="TextBlock" BasedOn="{StaticResource MonitorCellTextStyle}">
-                                                <Setter Property="ToolTip" Value="{Binding StartedAtLocal, StringFormat=yyyy-MM-dd HH:mm:ss}" />
-                                            </Style>
-                                        </DataGridTextColumn.ElementStyle>
-                                    </DataGridTextColumn>
-                                    <DataGridTextColumn Header="设备" Binding="{Binding DeviceName}" Width="*" MinWidth="70" ElementStyle="{StaticResource MonitorCellTextStyle}" />
-                                    <DataGridTextColumn Header="采集点" Binding="{Binding PointName}" Width="*" MinWidth="75" ElementStyle="{StaticResource MonitorCellTextStyle}" />
-                                    <DataGridTextColumn Header="类别" Binding="{Binding CategoryText}" Width="80" MinWidth="80" ElementStyle="{StaticResource MonitorCellTextStyle}" />
-                                    <DataGridTextColumn Header="状态" Binding="{Binding StateText}" Width="70" MinWidth="70" ElementStyle="{StaticResource MonitorAlarmStateStyle}" />
-                                    <DataGridTextColumn Header="说明" Binding="{Binding Message}" Width="2*" MinWidth="130" ElementStyle="{StaticResource MonitorCellTextStyle}" />
-                                    <DataGridTextColumn Header="次数" Binding="{Binding Occurrences}" Width="50" MinWidth="50" ElementStyle="{StaticResource MonitorCellTextStyle}" />
-                                </DataGrid.Columns>
-                            </DataGrid>
-                            <TextBlock Grid.Row="2" Margin="0,7,0,0" FontSize="11" TextTrimming="CharacterEllipsis"
-                                       Text="{Binding DeviceRuntime.Alarms.PersistenceStatusText}"
-                                       ToolTip="{Binding DeviceRuntime.Alarms.PersistenceStatusText}"
+                            <Grid Margin="0,0,0,10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="实时波形" Style="{StaticResource SectionHeadingStyle}"
+                                           VerticalAlignment="Center" ToolTip="一次只看一个点位，避免不同单位和数值范围挤在同一张图里。" />
+                                <!-- 下拉框和上面的选中行是同一个 SelectedReading，不限制点位数量。 -->
+                                <ComboBox Grid.Column="1" ItemsSource="{Binding Readings}"
+                                          SelectedItem="{Binding SelectedReading, Mode=TwoWay}"
+                                          DisplayMemberPath="DisplayName" MinWidth="180" MaxWidth="360"
+                                          HorizontalAlignment="Right" Height="32" FontSize="12" Margin="16,0,0,0"
+                                          ToolTip="选择设备和点位；图中显示该点位最近一段时间的读数。" />
+                            </Grid>
+                            <!-- Trend 保存当前选中点位的实时数据；图只负责把这些数据画出来。 -->
+                            <controls:LiveTrendChart Grid.Row="1" Samples="{Binding Trend.Samples}"
+                                                     AxisTitle="{Binding Trend.AxisTitle}" EndTime="{Binding Trend.EndTime}"
+                                                     WindowDuration="{Binding Trend.WindowDuration}" />
+                            <TextBlock Style="{StaticResource StatusMessageTextStyle}" Grid.Row="2" Margin="0,7,0,0" FontSize="11" TextTrimming="CharacterEllipsis"
+                                       Text="{Binding Trend.StatusText}" ToolTip="{Binding Trend.StatusText}"
                                        Foreground="{StaticResource SecondaryTextBrush}" />
                         </Grid>
                     </Border>
                 </Grid>
             </Grid>
 
-            <TextBlock Grid.Row="4" Margin="0,8,0,0" FontSize="11" Text="{Binding PageMessage}"
+            <TextBlock Style="{StaticResource StatusMessageTextStyle}" Grid.Row="3" Margin="0,8,0,0" FontSize="11" Text="{Binding PageMessage}"
                        TextTrimming="CharacterEllipsis" ToolTip="{Binding PageMessage}"
                        Foreground="{StaticResource SecondaryTextBrush}" />
         </Grid>

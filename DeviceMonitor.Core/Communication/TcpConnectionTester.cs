@@ -18,6 +18,8 @@ namespace DeviceMonitor.Core.Communication
         {
             // 先检查地址、端口和超时设置。
             ArgumentNullException.ThrowIfNull(device);
+            if (device.CommunicationMode != DeviceCommunicationMode.Tcp)
+                throw new ArgumentException("这里只测试 TCP 端口；RTU 请用读取一次验证。", nameof(device));
             ArgumentException.ThrowIfNullOrWhiteSpace(device.Host);
 
             if (device.Port < 1 || device.Port > 65535)

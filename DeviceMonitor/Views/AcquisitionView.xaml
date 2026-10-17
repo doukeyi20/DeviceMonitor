@@ -4,6 +4,7 @@
 <UserControl x:Class="DeviceMonitor.Views.AcquisitionView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:models="clr-namespace:DeviceMonitor.Models"
              Loaded="AcquisitionView_Loaded"
              Unloaded="AcquisitionView_Unloaded"
              DataContextChanged="AcquisitionView_DataContextChanged"
@@ -23,9 +24,6 @@
 
             <StackPanel Margin="0,0,0,6">
                 <TextBlock Text="{Binding Title}" Style="{StaticResource PageTitleStyle}" />
-                <TextBlock Margin="0,5,0,0" TextWrapping="Wrap"
-                           Text="配置采集点和单次测试；连续采集请到实时监控"
-                           Style="{StaticResource SubtleTextStyle}" />
             </StackPanel>
 
             <Border Grid.Row="1" Margin="0,0,0,8" Padding="10" Style="{StaticResource SectionCardStyle}">
@@ -45,7 +43,7 @@
                                 Height="34" Margin="0,0,16,6"
                                 Style="{StaticResource SecondaryActionButtonStyle}" />
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,6">
-                            <TextBlock Text="已加载的启用设备：" Style="{StaticResource SubtleTextStyle}" />
+                            <TextBlock Text="已启用：" Style="{StaticResource SubtleTextStyle}" />
                             <TextBlock Text="{Binding Devices.Count}" FontWeight="SemiBold" />
                             <TextBlock Text=" 台" Style="{StaticResource SubtleTextStyle}" />
                         </StackPanel>
@@ -67,14 +65,14 @@
                             <DataGrid.Columns>
                                 <DataGridTextColumn ElementStyle="{StaticResource TableCellTextStyle}" Header="编号" Binding="{Binding Id}" Width="*" MinWidth="60" />
                                 <DataGridTextColumn ElementStyle="{StaticResource TableCellTextStyle}" Header="设备名称" Binding="{Binding Name}" Width="2*" MinWidth="120" />
-                                <DataGridTextColumn ElementStyle="{StaticResource TableCellTextStyle}" Header="主机地址" Binding="{Binding Host}" Width="2*" MinWidth="140" />
-                                <DataGridTextColumn ElementStyle="{StaticResource TableCellTextStyle}" Header="端口" Binding="{Binding Port}" Width="*" MinWidth="65" />
-                                <DataGridTextColumn ElementStyle="{StaticResource TableCellTextStyle}" Header="Unit ID" Binding="{Binding UnitId}" Width="*" MinWidth="75" />
+                                <DataGridTextColumn ElementStyle="{StaticResource TableCellTextStyle}" Header="通信方式" Binding="{Binding CommunicationText}" Width="*" MinWidth="105" />
+                                <DataGridTextColumn ElementStyle="{StaticResource TableCellTextStyle}" Header="连接地址 / 参数" Binding="{Binding Endpoint}" Width="2*" MinWidth="180" />
+                                <DataGridTextColumn ElementStyle="{StaticResource TableCellTextStyle}" Header="站号/Unit ID" Binding="{Binding UnitId}" Width="115" MinWidth="115" />
                                 <DataGridTextColumn ElementStyle="{StaticResource TableCellTextStyle}" Header="采集间隔(ms)" Binding="{Binding SamplingIntervalMilliseconds}" Width="2*" MinWidth="120" />
                             </DataGrid.Columns>
                         </DataGrid>
                         <!-- 默认隐藏，Devices.Count 为 0 时显示。 -->
-                        <TextBlock Text="暂无已启用设备。请先到设备管理添加并启用设备，再刷新这里。"
+                        <TextBlock Text="暂无已启用设备"
                                    IsHitTestVisible="False" TextWrapping="Wrap" TextAlignment="Center"
                                    Margin="16,44,16,4" VerticalAlignment="Center"
                                    Foreground="{StaticResource SecondaryTextBrush}">
@@ -122,12 +120,53 @@
                                 Style="{StaticResource SecondaryActionButtonStyle}" />
                     </WrapPanel>
 
-                    <Border Grid.Row="2" Margin="0,0,0,6" Padding="10,6" Style="{StaticResource ToolbarCardStyle}">
-                        <StackPanel>
-                            <TextBlock Text="{Binding ReadResultText}" TextWrapping="Wrap" FontWeight="SemiBold" />
-                            <TextBlock Text="{Binding ReadGuardText}" Margin="0,2,0,0" TextWrapping="Wrap"
-                                       Style="{StaticResource SubtleTextStyle}" />
-                        </StackPanel>
+                    <!-- 本次测试的数值、状态、目标和时间分开显示；失败不沿用上次成功值。 -->
+                    <Border x:Name="SingleReadResultCard" Grid.Row="2" Margin="0,0,0,8" Padding="12,10"
+                            Style="{StaticResource ToolbarCardStyle}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="140" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,14,0">
+                                <TextBlock Text="本次读数 · 整数" Style="{StaticResource SubtleTextStyle}" FontSize="11" />
+                                <TextBlock x:Name="ReadValueDisplay" Text="{Binding ReadValueText}" FontSize="32"
+                                           FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding ReadValueText}" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1">
+                                <Grid Margin="0,0,0,5">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                    <Border x:Name="ReadStatusBadge" Padding="8,3" CornerRadius="5" Background="#E8ECF0">
+                                        <TextBlock Text="{Binding ReadStatusText}" FontSize="12" FontWeight="SemiBold">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                                    <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding ReadState}" Value="{x:Static models:SingleReadState.Reading}"><Setter Property="Foreground" Value="#24668A" /></DataTrigger>
+                                                        <DataTrigger Binding="{Binding ReadState}" Value="{x:Static models:SingleReadState.Succeeded}"><Setter Property="Foreground" Value="#27664E" /></DataTrigger>
+                                                        <DataTrigger Binding="{Binding ReadState}" Value="{x:Static models:SingleReadState.TimedOut}"><Setter Property="Foreground" Value="#955500" /></DataTrigger>
+                                                        <DataTrigger Binding="{Binding ReadState}" Value="{x:Static models:SingleReadState.Failed}"><Setter Property="Foreground" Value="#B42318" /></DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </Border>
+                                    <TextBlock Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="12,0,0,0"
+                                               Style="{StaticResource SubtleTextStyle}" FontSize="11">
+                                        <Run Text="读取时间  " /><Run x:Name="ReadTimeDisplay" Text="{Binding ReadTimeText, Mode=OneWay}" />
+                                    </TextBlock>
+                                </Grid>
+                                <TextBlock x:Name="ReadTargetDisplay" Text="{Binding ReadTargetText}" FontSize="13"
+                                           FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding ReadTargetText}" />
+                                <ScrollViewer MaxHeight="48" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="0,4,0,0">
+                                    <TextBlock x:Name="ReadDetailsDisplay" Text="{Binding ReadResultText}" TextWrapping="Wrap" FontSize="12"
+                                               Foreground="{StaticResource SecondaryTextBrush}" />
+                                </ScrollViewer>
+                            </StackPanel>
+                            <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding ReadGuardText}" Margin="0,7,0,0"
+                                       Style="{StaticResource StatusMessageTextStyle}" FontSize="11" />
+                        </Grid>
                     </Border>
 
                     <!-- Points 每项是 PointInfo 配置；选中写入 SelectedPoint，供单次测试使用。 -->
@@ -151,12 +190,12 @@
                         </DataGrid.Columns>
                     </DataGrid>
                     <TextBlock Grid.Row="4" Text="{Binding PointMessage}" Margin="0,6,0,0"
-                               TextWrapping="Wrap" Style="{StaticResource SubtleTextStyle}" />
+                               TextWrapping="Wrap" Style="{StaticResource StatusMessageTextStyle}" />
                 </Grid>
             </Border>
 
             <TextBlock Grid.Row="3" Text="{Binding PageMessage}" Margin="0,6,0,0"
-                       TextWrapping="Wrap" Style="{StaticResource SubtleTextStyle}" />
+                       TextWrapping="Wrap" Style="{StaticResource StatusMessageTextStyle}" />
         </Grid>
     </ScrollViewer>
 </UserControl>

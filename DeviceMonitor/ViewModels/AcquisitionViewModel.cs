@@ -12,6 +12,7 @@ using DeviceMonitor.Core.Diagnostics;
 using DeviceMonitor.Core.Models;
 using DeviceMonitor.Core.Persistence;
 using DeviceMonitor.Sampling;
+using DeviceMonitor.Models;
 
 namespace DeviceMonitor.ViewModels
 {
@@ -75,8 +76,8 @@ namespace DeviceMonitor.ViewModels
         public string ReadGuardText => SelectedDevice is not null && _deviceRuntimeManager.IsDeletingDevice(SelectedDevice.Id)
             ? "这台设备正在删除，暂时不能配置或测试，请选择其他设备。"
             : SelectedDevice is not null && _deviceRuntimeManager.IsRunning(SelectedDevice.Id)
-            ? "此设备正在连续采集，请先到实时监控停止，再测试单个点。"
-            : "单次测试只读选中点，不启动连续采集，也不保存历史记录。";
+            ? "此设备正在采集或停止收尾，请等停止完成后再修改点位或测试单个点。"
+            : string.Empty;
 
         private bool _isLoadingPoints; // 正在查点位配置，暂时不能测试未加载好的点。
         public bool IsLoadingPoints
@@ -114,8 +115,34 @@ namespace DeviceMonitor.ViewModels
             private set => SetProperty(ref _pointMessage, value);
         }
 
-        // 单次测试区域显示的数值、时间或错误原因。
-        private string _readResultText = "尚未读取。选设备和采集点后，点击“读取一次”。";
+        // 单次测试卡片的显示数据。目标和时间跟着本次结果走，不能拿当前选择拼旧读数。
+        private SingleReadState _readState = SingleReadState.NotRead;
+        public SingleReadState ReadState
+        {
+            get => _readState;
+            private set
+            {
+                if (SetProperty(ref _readState, value)) OnPropertyChanged(nameof(ReadStatusText));
+            }
+        }
+        public string ReadStatusText => ReadState switch
+        {
+            SingleReadState.Reading => "读取中",
+            SingleReadState.Succeeded => "读取成功",
+            SingleReadState.TimedOut => "读取超时",
+            SingleReadState.Failed => "读取失败",
+            SingleReadState.Canceled => "已取消",
+            _ => "尚未读取"
+        };
+        private string _readValueText = "—";
+        public string ReadValueText { get => _readValueText; private set => SetProperty(ref _readValueText, value); }
+        private string _readTimeText = "—";
+        public string ReadTimeText { get => _readTimeText; private set => SetProperty(ref _readTimeText, value); }
+        private string _readTargetText = "请选择设备和点位";
+        public string ReadTargetText { get => _readTargetText; private set => SetProperty(ref _readTargetText, value); }
+
+        // 卡片下面的简短说明：成功时显示类型和原始值，失败时显示真实原因。
+        private string _readResultText = string.Empty;
         public string ReadResultText
         {
             get => _readResultText;
@@ -157,7 +184,7 @@ namespace DeviceMonitor.ViewModels
                     "只有已启用的管理员可以进入采集管理。");
             }
 
-            // 监控页启停设备后，本页重新判断单次测试能不能点，不显示采集数量。
+            // 监控页启停设备后，本页重新判断配置和单次测试按钮能不能点。
             _deviceRuntimeManager.PropertyChanged += DeviceRuntimeManager_PropertyChanged;
             _deviceRuntimeManager.DeviceDeleted += DeviceRuntimeManager_DeviceDeleted;
         }
@@ -204,7 +231,7 @@ namespace DeviceMonitor.ViewModels
 
                 PageMessage = Devices.Count == 0
                     ? "暂无已启用设备，请先在设备管理中启用设备。"
-                    : $"已加载 {Devices.Count} 台已启用设备，设备配置已刷新。";
+                    : $"已加载 {Devices.Count} 台已启用设备。";
             }
             catch (Exception ex)
             {
@@ -238,6 +265,24 @@ namespace DeviceMonitor.ViewModels
             _pointLoadTask = isClosing ? Task.CompletedTask : StartPointLoadAsync(value);
         }
 
+        /// <summary>表格切换点位时自动调用，避免把上一个点的成功值挂到新点下面。</summary>
+        partial void OnSelectedPointChanged(PointInfo? value)
+        {
+            if (!IsReading) ResetSingleReadResult();
+        }
+
+        /// <summary>切换点位或刷新配置时调用；只重置显示，不读取设备或删除历史。</summary>
+        private void ResetSingleReadResult()
+        {
+            ReadState = SingleReadState.NotRead;
+            ReadValueText = "—";
+            ReadTimeText = "—";
+            ReadTargetText = SelectedDevice is null ? "请选择设备和点位"
+                : SelectedPoint is null ? $"{SelectedDevice.Name} · 请选择一个点位"
+                : $"{SelectedDevice.Name} / {SelectedPoint.Name} · 地址 {SelectedPoint.Address}";
+            ReadResultText = string.Empty;
+        }
+
         /// <summary>
         /// 由 OnSelectedDeviceChanged 和 RefreshPointsAsync 调用。
         /// 启动点位查询，并记住任务，关窗时统一等完。
@@ -266,7 +311,7 @@ namespace DeviceMonitor.ViewModels
             int loadVersion = ++_pointLoadVersion;
             IsLoadingPoints = true;
             // 重置单次测试区域的提示。
-            ReadResultText = "尚未读取。请选择一个采集点，再点击“读取一次”。";
+            if (!IsReading) ResetSingleReadResult();
             
             try
             {
@@ -301,7 +346,7 @@ namespace DeviceMonitor.ViewModels
 
                 PointMessage = Points.Count == 0
                     ? $"“{device.Name}”尚无采集点，请点击“管理采集点”添加配置。"
-                    : $"“{device.Name}”已加载 {Points.Count} 个采集点，请选择要读取的点位。";
+                    : $"“{device.Name}”已加载 {Points.Count} 个采集点。";
             }
             catch (Exception ex)
             {
@@ -365,7 +410,8 @@ namespace DeviceMonitor.ViewModels
             return _currentUser.Role == UserRole.Administrator
                 && _currentUser.IsEnabled
                 && CanChoosePoint
-                && SelectedDevice is { IsEnabled: true };
+                && SelectedDevice is { IsEnabled: true }
+                && !_deviceRuntimeManager.IsRunning(SelectedDevice.Id);
         }
 
         /// <summary>
@@ -377,6 +423,10 @@ namespace DeviceMonitor.ViewModels
             ArgumentNullException.ThrowIfNull(device);
             if (_deviceRuntimeManager.IsDeletingDevice(device.Id))
                 throw new InvalidOperationException("这台设备正在删除，不能再打开它的采集点配置。");
+            if (_deviceRuntimeManager.IsShuttingDown || _isShuttingDown)
+                throw new InvalidOperationException("主窗口正在关闭，不能再打开采集点配置。");
+            if (_deviceRuntimeManager.IsRunning(device.Id))
+                throw new InvalidOperationException("请先到实时监控页停止这台设备，等停止完成后再修改采集点。");
             if (_currentUser.Role != UserRole.Administrator ||
                 !_currentUser.IsEnabled || !device.IsEnabled)
             {
@@ -384,7 +434,7 @@ namespace DeviceMonitor.ViewModels
             }
 
             // 只新建窗口数据源，不新建数据库；device 决定管理哪台设备的点位。
-            return new PointViewModel(_currentUser, _deviceStore, device);
+            return new PointViewModel(_currentUser, _deviceStore, device, _deviceRuntimeManager);
         }
 
 
@@ -404,6 +454,10 @@ namespace DeviceMonitor.ViewModels
 
             // 标记测试开始，期间不能更换操作目标。
             IsReading = true;
+            ReadState = SingleReadState.Reading;
+            ReadValueText = "—";
+            ReadTimeText = "—";
+            ReadTargetText = $"{device.Name} / {point.Name} · 地址 {point.Address}";
             ReadResultText = $"正在准备读取“{device.Name} / {point.Name}”…";
             try
             {
@@ -415,6 +469,7 @@ namespace DeviceMonitor.ViewModels
                 if (_deviceRuntimeManager.IsDeletingDevice(device.Id))
                     throw new InvalidOperationException("这台设备正在删除，本次测试不再开始。");
                 ReadResultText = $"正在读取“{config.Device.Name} / {config.Point.Name}”（地址 {config.Point.Address}）…";
+                ReadTargetText = $"{config.Device.Name} / {config.Point.Name} · 地址 {config.Point.Address}";
                 PageMessage = "正在等待设备响应，可以点击“取消读取”。";
 
                 // 设备提供连接地址，点位提供寄存器地址和类型；读取器负责通信。
@@ -422,33 +477,38 @@ namespace DeviceMonitor.ViewModels
                     config.Device, config.Point, cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
 
-                // 读取成功，把数值、类型和时间拼成文字显示在测试区域。
-                ReadResultText =
-                    $"{config.Device.Name} / {result.Point.Name}（编号 {result.Point.Id}，地址 {result.Point.Address}）：" +
-                    $"{result.Value} [{result.Point.DataType}]；原始值 0x{result.RawValue:X4}；" +
-                    $"时间 {result.ReadAt.ToLocalTime():HH:mm:ss.fff}。";
-                PageMessage = "单次读取完成，临时连接已关闭；未启动连续采集，也未保存历史记录。";
+                // 只改显示：数值突出、时间独立，原始值保留作调试；不换算单位或倍率。
+                ReadValueText = result.Value.ToString();
+                ReadTimeText = result.ReadAt.ToLocalTime().ToString("HH:mm:ss.fff");
+                ReadResultText = $"整数 {result.Value} · {result.Point.DataType} · 原始值 0x{result.RawValue:X4}";
+                ReadState = SingleReadState.Succeeded;
+                PageMessage = "读取完成。";
             }
             // 收到取消信号后，读取抛出取消异常，走这里显示取消结果。
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 ReadResultText = "本次读取已取消，没有新的读数。";
-                PageMessage = "读取已取消，临时连接已关闭。";
+                ReadState = SingleReadState.Canceled;
+                PageMessage = "读取已取消，未保存历史记录。";
             }
             catch (TimeoutException ex)
             {
                 AppLog.Warning("单次测试读取超时", exception: ex);
-                ReadResultText = "本次读取超时，没有有效读数。";
-                PageMessage = ex.Message;
+                ReadResultText = ex.Message;
+                ReadState = SingleReadState.TimedOut;
+                PageMessage = "本次读取超时，没有有效读数，也未保存历史记录。";
             }
             catch (Exception ex)
             {
                 AppLog.Warning("单次测试读取失败", exception: ex);
-                ReadResultText = "本次读取失败，没有有效读数。";
-                PageMessage = $"读取失败：{ex.Message}";
+                ReadResultText = ex.Message;
+                ReadState = SingleReadState.Failed;
+                PageMessage = "本次读取失败，没有有效读数，也未保存历史记录。";
             }
             finally
             {
+                // 单次测试不长期占住 COM；其他正在采集的设备不受影响。
+                await _pointReader.CloseAsync();
                 IsReading = false;
             }
         }

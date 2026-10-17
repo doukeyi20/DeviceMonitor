@@ -48,6 +48,7 @@ public partial class HistoryView : UserControl
         if (DataContext is HistoryViewModel viewModel)
         {
             _subscribedViewModel = viewModel;
+            // 订阅界面请求事件，导出和趋势窗口都在后台处理。
             viewModel.ExportPathRequested += ChooseExportPath;
             viewModel.TrendRequested += OpenTrendWindow;
         }

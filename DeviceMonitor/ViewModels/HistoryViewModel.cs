@@ -70,10 +70,10 @@ public sealed partial class HistoryViewModel : PageViewModel
     public string RecordSummary => $"本页 {Records.Count} 条 / 匹配 {_totalRecords} 条";
     public string PageDescription => $"第 {CurrentPage} / {TotalPages} 页 · 每页 {PageSize} 条";
     public string FilterStatusText => FiltersChanged
-        ? "条件已修改，请点击查询；当前表格仍是上次结果，暂不能翻页或导出。"
-        : "翻页和导出使用本次已查询的结果；新采集的数据请点击刷新。";
+        ? "筛选条件已更改，请重新查询。"
+        : string.Empty;
 
-    private string _pageMessage = "进入页面后自动查询。可按设备、点位名称和本机时间筛选。";
+    private string _pageMessage = string.Empty;
     public string PageMessage
     {
         get => _pageMessage;
@@ -106,8 +106,9 @@ public sealed partial class HistoryViewModel : PageViewModel
         if (!CanRefreshRecords()) return;
         try
         {
-            // 先检查并固定条件，再后台查询第一页。
+            // 先检查并固定要查询的条件，得到查询条件对象，再后台查询第一页。
             HistoryFilter filter = BuildFilter();
+
             await LoadPageAsync(filter, 1, null, refreshDeviceOptions: true);
         }
         catch (Exception ex)
@@ -129,7 +130,10 @@ public sealed partial class HistoryViewModel : PageViewModel
     /// </summary>
     private HistoryFilter BuildFilter()
     {
+        // 如果查询条件没有时间范围，就只按设备和点位名称筛选。
         if (!UseTimeFilter) return new HistoryFilter(SelectedDevice?.DeviceId, PointNameFilter);
+
+        // 如果有，就先调用时间工具类把本机时间和输入的时分秒解析成 UTC 范围，再装成查询条件。
         var range = HistoryQueryTime.ReadRange(StartDate, StartTimeText, EndDate, EndTimeText);
         return new HistoryFilter(SelectedDevice?.DeviceId, PointNameFilter, range.StartUtc, range.EndUtcExclusive);
     }
@@ -151,7 +155,10 @@ public sealed partial class HistoryViewModel : PageViewModel
             var result = await Task.Run(() =>
             {
                 var options = refreshDeviceOptions ? _historyStore.GetDeviceOptions(_currentUser) : null;
+
+                // 真正查找历史记录，返回的是一个HistoryPage 对象
                 var data = _historyStore.GetPage(_currentUser, filter, page, PageSize, snapshotId);
+                
                 return (Options: options, Data: data);
             });
             // 退出后不再把结果填回旧页面。
@@ -164,6 +171,7 @@ public sealed partial class HistoryViewModel : PageViewModel
                 {
                     DeviceOptions.Clear();
                     DeviceOptions.Add(_allDevices);
+
                     foreach (HistoryDeviceOption option in result.Options) DeviceOptions.Add(option);
                     SelectedDevice = filter.DeviceId.HasValue
                         ? DeviceOptions.FirstOrDefault(item => item.DeviceId == filter.DeviceId) : _allDevices;
@@ -189,7 +197,7 @@ public sealed partial class HistoryViewModel : PageViewModel
             _currentPage = _totalRecords == 0 ? 0 : result.Data.PageNumber;
             _hasLoadedRecords = true;
             FiltersChanged = filterVersion != _filterVersion;
-            PageMessage = _totalRecords == 0 ? "当前条件下没有历史记录。可调整条件或等待采集成功保存后再查询。"
+            PageMessage = _totalRecords == 0 ? "没有匹配的历史记录。"
                 : $"查询成功，匹配 {_totalRecords} 条，当前显示第 {_currentPage} 页；最新读数在前。";
         }
         catch (Exception ex)

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using System.IO.Ports;
 
 namespace DeviceMonitor.Core.Models
 {
@@ -14,13 +15,19 @@ namespace DeviceMonitor.Core.Models
         // 设备名称，用于在列表中识别设备。
         public string Name { get; set; } = string.Empty;
 
+        public DeviceCommunicationMode CommunicationMode { get; set; } = DeviceCommunicationMode.Tcp;
+        public string SerialPortName { get; set; } = string.Empty; // RTU 才填写，例如 COM3。
+        public int BaudRate { get; set; } = 4800;
+        public Parity Parity { get; set; } = Parity.None;
+        public StopBits StopBits { get; set; } = StopBits.One; // 这次数据位固定为 8。
+
         // 设备的 IP 地址或主机名。
         public string Host { get; set; } = string.Empty;
 
         // TCP 端口，按照设备的实际配置填写。
         public int Port { get; set; }
 
-        // Modbus TCP 的设备标识，按照设备要求填写。
+        // TCP 是 Unit ID；RTU 是站号 1～247。两者都不是数据库设备 Id。
         public byte UnitId { get; set; }
 
         // 两轮采集之间的等待时间，单位：毫秒。

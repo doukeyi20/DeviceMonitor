@@ -7,10 +7,10 @@
         xmlns:vm="clr-namespace:DeviceMonitor.ViewModels"
         xmlns:views="clr-namespace:DeviceMonitor.Views"
         Title="{Binding WindowTitle}"
-        Width="1200"
-        Height="780"
-        MinWidth="900"
-        MinHeight="600"
+        Icon="{StaticResource ApplicationIcon}"
+        Width="1440"
+        Height="900"
+        ResizeMode="CanMinimize"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource PageBackgroundBrush}"
         FontFamily="Microsoft YaHei UI"
@@ -85,10 +85,6 @@
                     <TextBlock Text="{Binding WindowTitle}"
                                FontSize="19"
                                FontWeight="SemiBold" />
-                    <TextBlock Text="设备与账户工作台"
-                               Margin="0,2,0,0"
-                               FontSize="12"
-                               Foreground="{StaticResource SecondaryTextBrush}" />
                     </StackPanel>
                 </StackPanel>
 
@@ -119,13 +115,6 @@
                             <TextBlock Text="  ▾" Foreground="{StaticResource SecondaryTextBrush}" />
                         </StackPanel>
                     </Button>
-                    <!-- 命令发出退出请求，后台确认后停止任务、返回登录窗口。 -->
-                    <Button Content="退出登录"
-                            Command="{Binding LogoutCommand}"
-                            Margin="12,0,0,0"
-                            Padding="12,7"
-                            MinWidth="88"
-                            Style="{StaticResource SecondaryActionButtonStyle}" />
                 </StackPanel>
             </Grid>
         </Border>
@@ -135,10 +124,11 @@
                 Background="{StaticResource SurfaceBrush}"
                 BorderBrush="{StaticResource BorderBrushNeutral}"
                 BorderThickness="0,0,1,0">
-            <Grid>
+            <Grid x:Name="WorkspaceNavigation">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
                 <TextBlock Text="工作空间" Margin="22,22,0,8" FontSize="11"
                            Foreground="{StaticResource SecondaryTextBrush}" />
@@ -218,6 +208,13 @@
                     </Style>
                 </ListBox.ItemContainerStyle>
             </ListBox>
+                <!-- 固定在工作空间底部；原命令仍负责确认、停止任务和返回登录。 -->
+                <Border x:Name="WorkspaceFooter" Grid.Row="2" Margin="10,0,10,14" Padding="0,12,0,0"
+                        BorderBrush="{StaticResource BorderBrushNeutral}" BorderThickness="0,1,0,0">
+                    <Button x:Name="LogoutButton" Content="退出登录" Command="{Binding LogoutCommand}"
+                            HorizontalContentAlignment="Left" Padding="12,9" MinHeight="40"
+                            Foreground="#B42318" Style="{StaticResource SecondaryActionButtonStyle}" />
+                </Border>
             </Grid>
         </Border>
 
