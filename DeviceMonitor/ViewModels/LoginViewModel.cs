@@ -71,6 +71,7 @@ namespace DeviceMonitor.ViewModels
 
             try
             {
+                // 检查数据库中是否已有账户，决定是否开放首次管理员创建。
                 CanCreateFirstAdministrator = !await Task.Run(_userStore.HasAnyUser);
             }
             catch (Exception ex)

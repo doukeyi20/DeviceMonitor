@@ -418,7 +418,7 @@ internal static partial class Program
             Render(window, new Size(1240, 681), "alarms-filters-small");
             CheckHistoryFilters(Descendants<AlarmHistoryView>((DependencyObject)window.Content).Single(), "报警历史小工作区");
             Check(!Descendants<TextBlock>((DependencyObject)window.Content).Any(t => t.Text.Contains("正常采集不会生成报警")),
-                "报警页保留空结果状态，不显示重复教学段落");
+                "报警页保留空结果状态，不显示冗余说明");
 
             using var points = acquisition.CreatePointManagementViewModel(acquisition.Devices.First());
             await points.RefreshPointsCommand.ExecuteAsync(null);

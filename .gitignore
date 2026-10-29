@@ -16,3 +16,25 @@
 *.sqlite3
 .env
 .env.*
+
+# Runtime records and exports
+**/Logs/
+*.log
+*.csv
+*.db-journal
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Local drafts, backups, and generated artifacts
+docs/*-20??????.md
+.codex*/
+.agents/
+output/
+tmp/
+artifacts/
+*.bak
+*.backup
+*.bundle
+*.patch

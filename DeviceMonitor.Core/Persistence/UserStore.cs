@@ -29,6 +29,8 @@ public sealed class UserStore
         using (var db = _database.Create())
         {
             string name = userName.Trim();
+
+            // 只读取账户验证所需信息，不跟踪查询结果。
             row = db.Users.AsNoTracking().FirstOrDefault(x => x.UserName == name);
         }
 
@@ -43,7 +45,9 @@ public sealed class UserStore
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(userName);
         ArgumentException.ThrowIfNullOrWhiteSpace(password);
+
         ValidateNewPassword(password);
+
         var data = PasswordHasher.Hash(password);
         using var db = _database.Create();
         // 首次管理员检查和创建使用同一写事务。
@@ -60,6 +64,7 @@ public sealed class UserStore
             IsEnabled = true
         });
         db.SaveChanges();
+        // 提交首次管理员创建事务。
         transaction.Commit();
         return true;
     }
