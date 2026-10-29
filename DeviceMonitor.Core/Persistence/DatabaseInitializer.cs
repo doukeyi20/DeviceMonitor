@@ -1,25 +1,20 @@
+// 初始化数据库目录和连接，应用待执行的 EF 迁移。
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
 namespace DeviceMonitor.Core.Persistence;
 
-/// <summary>
-/// App.OnStartup 调用的数据库准备入口。
-/// 首次按 EF 迁移建库建表；以后只应用尚未执行的迁移，不清空业务数据。
-/// </summary>
 public class DatabaseInitializer
 {
     public string DatabasePath { get; }
 
-    // 程序启动和 EF 迁移工具共用同一路径，不把数据库建到两个不同的位置。
     public static string DefaultDatabasePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "DeviceMonitor", "device-monitor.db");
 
-    /// <summary>正常启动使用固定的应用数据库；构造时只保存路径，还没有建库。</summary>
     public DatabaseInitializer() => DatabasePath = DefaultDatabasePath;
 
-    /// <summary>独立检查程序可指定临时库；正常启动不会使用这个入口。</summary>
+    // 允许测试传入临时路径，避免检查程序访问正式数据库。
     public DatabaseInitializer(string databasePath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
@@ -28,17 +23,15 @@ public class DatabaseInitializer
         DatabasePath = Path.GetFullPath(databasePath);
     }
 
-    /// <summary>App.OnStartup 调用一次，成功后才创建 Store 并显示登录窗口。</summary>
+    /// <summary>应用待执行迁移，首次运行时创建数据库和表。</summary>
     public void Initialize()
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(DatabasePath)!); // 只准备目录，不是建表。
+        Directory.CreateDirectory(Path.GetDirectoryName(DatabasePath)!);
         var options = new DbContextOptionsBuilder<MonitorDbContext>()
             .UseSqlite(CreateConnectionString(DatabasePath)).Options;
-        using var db = new MonitorDbContext(options); // 到这里还没有建库建表。
+        using var db = new MonitorDbContext(options);
 
-        // 真正应用项目 Migrations 目录中的迁移。
-        // 没有库：创建库和全部业务表；有未执行的迁移：执行升级；没有新迁移：跳过。
-        // 这里不会生成迁移，也不会删除数据库或重复创建已经存在的表。
+        // 首次按迁移建库，以后只补执行尚未应用的迁移。
         db.Database.Migrate();
     }
 
@@ -47,7 +40,7 @@ public class DatabaseInitializer
         new SqliteConnectionStringBuilder
         {
             DataSource = Path.GetFullPath(databasePath),
-            Mode = SqliteOpenMode.ReadWriteCreate, // 应用首次迁移时，允许创建数据库文件。
+            Mode = SqliteOpenMode.ReadWriteCreate,
             ForeignKeys = true
         }.ToString();
 }

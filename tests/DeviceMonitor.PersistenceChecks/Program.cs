@@ -1,10 +1,10 @@
+// 验证项目功能及异常处理的回归检查。
 using DeviceMonitor.Core.Models;
 using DeviceMonitor.Core.Persistence;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using System.Globalization;
 
-// 只使用本次运行创建的临时数据库，不启动正式程序、不访问 AppData 的正式库。
 internal static class Program
 {
     private static int _checks;
@@ -16,6 +16,8 @@ internal static class Program
         string path = Path.Combine(folder, "ef-checks.db");
         try
         {
+            CheckEngineeringValues(folder);
+            CheckBatchPersistence(folder);
             Check(!File.Exists(path), "从空白路径开始首次迁移");
             new DatabaseInitializer(path).Initialize();
             Check(File.Exists(path), "Migrate 创建数据库文件");
@@ -74,7 +76,7 @@ internal static class Program
             {
                 connection.Open();
                 using var command = connection.CreateCommand();
-                // 模拟切换 EF 之前已保存的原版时间文字和历史记录。
+
                 command.CommandText = "INSERT INTO HistoryRecords (Id, DeviceId, DeviceName, PointId, PointName, Value, ReadAtUtc) VALUES (50,$d,'OldName',$p,'Humidity',100,$t)";
                 command.Parameters.AddWithValue("$d", device.Id);
                 command.Parameters.AddWithValue("$p", point.Id);
@@ -89,7 +91,7 @@ internal static class Program
             Check(page.Records[0].Value == -97 && page.Records[1].Value == 300, "按时间和编号倒序，保留负数");
             history.SaveRecord(worker, new(device.Id, "NewName", point.Id, "Humidity", 400, time.AddSeconds(3)));
             var oldPage = history.GetPage(admin!, new(), 2, 2, page.SnapshotId);
-            Check(oldPage.TotalRecords == 4 && oldPage.Records.Select(x => x.Value).SequenceEqual(new[] { 200, 100 }), "翻页排除后来新增读数");
+            Check(oldPage.TotalRecords == 4 && oldPage.Records.Select(x => x.Value).SequenceEqual(new double[] { 200, 100 }), "翻页排除后来新增读数");
             var range = history.GetPage(admin!, new HistoryFilter(startUtc: time.ToOffset(TimeSpan.FromHours(8)), endUtcExclusive: time.AddSeconds(2)));
             Check(range.TotalRecords == 3, "UTC 范围筛选，起点包含、终点不包含");
             Check(range.Records.Single(x => x.Value == 100).ReadAt == time, "EF 正确读取原有 O 格式时间，保留小数秒");
@@ -110,9 +112,21 @@ internal static class Program
             }
             Check(exported.Count == 6 && exported.Select(x => x.Id).Distinct().Count() == 6, "历史导出分批，不漏同时间记录也不重复");
 
-            var alarm = new AlarmRecord { DeviceId = device.Id, DeviceName = "AlarmOld", PointId = point.Id, PointName = "Humidity",
-                Kind = AlarmKind.HighLimit, State = AlarmState.Active, Message = "超限", Value = 900, Limit = 500,
-                StartedAt = time, LastSeenAt = time, Occurrences = 1 };
+            var alarm = new AlarmRecord
+            {
+                DeviceId = device.Id,
+                DeviceName = "AlarmOld",
+                PointId = point.Id,
+                PointName = "Humidity",
+                Kind = AlarmKind.HighLimit,
+                State = AlarmState.Active,
+                Message = "超限",
+                Value = 900,
+                Limit = 500,
+                StartedAt = time,
+                LastSeenAt = time,
+                Occurrences = 1
+            };
             alarms.SaveRecord(worker, alarm);
             long alarmId = alarms.GetRecentRecords(admin!).Single().Id;
             alarms.SaveRecord(worker, alarm with { DeviceName = "ShouldNotReplace", Value = 901, LastSeenAt = time.AddSeconds(1), Occurrences = 2 });
@@ -121,8 +135,16 @@ internal static class Program
             alarms.SaveRecord(worker, alarm with { State = AlarmState.Recovered, LastSeenAt = time.AddSeconds(1), EndedAt = time.AddSeconds(2), Occurrences = 2 });
             Check(alarms.GetRecentRecords(admin!).Single().EndedAt == time.AddSeconds(2), "报警恢复与可空结束时间还原");
             Throws<InvalidOperationException>(() => alarms.SaveRecord(worker, alarm with { PointId = point.Id + 999 }), "禁止复用事件编号覆盖其他点位");
-            var failure = new AlarmRecord { DeviceId = device.Id, DeviceName = "AlarmNew", Kind = AlarmKind.AcquisitionFailure,
-                State = AlarmState.Active, Message = "读取失败", StartedAt = time.AddSeconds(3), LastSeenAt = time.AddSeconds(3) };
+            var failure = new AlarmRecord
+            {
+                DeviceId = device.Id,
+                DeviceName = "AlarmNew",
+                Kind = AlarmKind.AcquisitionFailure,
+                State = AlarmState.Active,
+                Message = "读取失败",
+                StartedAt = time.AddSeconds(3),
+                LastSeenAt = time.AddSeconds(3)
+            };
             alarms.SaveRecord(worker, failure);
             Check(alarms.GetPage(admin!, new AlarmFilter(category: AlarmCategory.Value)).TotalRecords == 1, "报警数值类别筛选");
             Check(alarms.GetPage(admin!, new AlarmFilter(category: AlarmCategory.Acquisition)).Records.Single().PointId is null, "采集异常允许空点位、空数值");
@@ -146,8 +168,8 @@ internal static class Program
             var factory = new MonitorDbContextFactory(path);
             using (var db = factory.Create())
             {
-                Check(db.Database.GetAppliedMigrations().Count() == 1 &&
-                    db.Database.GetAppliedMigrations().Single().EndsWith("_InitialCreate"), "首次迁移已登记");
+                Check(db.Database.GetAppliedMigrations().Count() == 2 &&
+                    db.Database.GetAppliedMigrations().First().EndsWith("_InitialCreate"), "首次迁移和数值换算迁移均已登记");
                 Check(!db.Database.GetPendingMigrations().Any(), "没有尚未应用的迁移");
                 Check(!db.Database.HasPendingModelChanges(), "模型快照与当前表配置一致");
                 Check(db.Database.GenerateCreateScript().Contains("sqlite_sequence", StringComparison.OrdinalIgnoreCase) == false,
@@ -156,9 +178,11 @@ internal static class Program
                 string sql = db.History.Where(x => x.ReadAtUtc >= start).OrderByDescending(x => x.ReadAtUtc).Skip(1).Take(2).ToQueryString();
                 Check(sql.Contains("WHERE") && sql.Contains("LIMIT") && sql.Contains("OFFSET") && !sql.Contains("julianday"),
                     "时间条件和分页留在 SQL，未转换为全表内存查询");
-                string longOffsetSql = db.History.OrderBy(x => x.Id).SkipRows((long)int.MaxValue + 3).Take(1).ToQueryString();
-                Check(longOffsetSql.Contains("OFFSET"), "长偏移分页可以翻译成 SQL");
-                Check(!db.History.OrderBy(x => x.Id).SkipRows((long)int.MaxValue + 3).Take(1).Any(), "长偏移执行不溢出为负数");
+                Check(db.History.OrderBy(x => x.Id).Skip(1).Take(1).Count() == 1, "使用标准 LINQ Skip/Take 读取一页");
+                bool overflowRejected = false;
+                try { int offset = checked(int.MaxValue * db.History.Count()); }
+                catch (OverflowException) { overflowRejected = true; }
+                Check(overflowRejected, "超出普通分页整数范围时明确拒绝，不生成负偏移");
                 Check(db.History.AsNoTracking().Any(x => x.Value == 100), "新 Context 能继续查询已有数据");
             }
             bool[] duplicates = await Task.WhenAll(Enumerable.Range(0, 2).Select(_ => Task.Run(() => devices.TryAddDevice(admin!, Input("RaceName")))));
@@ -193,7 +217,7 @@ internal static class Program
                 command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE name = '__EFMigrationsHistory'";
                 Check(Convert.ToInt32(command.ExecuteScalar()) == 1, "EF 迁移历史表已创建");
                 command.CommandText = "SELECT COUNT(*) FROM __EFMigrationsHistory";
-                Check(Convert.ToInt32(command.ExecuteScalar()) == 1, "首次迁移只登记一次");
+                Check(Convert.ToInt32(command.ExecuteScalar()) == 2, "两次迁移各登记一次");
                 command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('Users','Devices','DevicePoints','HistoryRecords','AlarmRecords')";
                 Check(Convert.ToInt32(command.ExecuteScalar()) == 5, "首次迁移一次创建五张业务表");
                 command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN ('IX_Devices_RtuStation','IX_HistoryRecords_DeviceId_ReadAtUtc','IX_HistoryRecords_ReadAtUtc_Id','IX_AlarmRecords_StartedAtUtc_Id','IX_AlarmRecords_DeviceId_StartedAtUtc_Id')";
@@ -203,7 +227,7 @@ internal static class Program
             Check(users.CheckLogin("Admin", "Admin123") is not null && history.GetPage(admin!, new()).TotalRecords == 46,
                 "重新初始化不清空已有账户和历史");
             using (var db = factory.Create())
-                Check(db.Database.GetAppliedMigrations().Count() == 1, "重复启动不重复执行首次迁移");
+                Check(db.Database.GetAppliedMigrations().Count() == 2, "重复启动不重复执行已有迁移");
             Console.WriteLine($"ALL {_checks} EF PERSISTENCE CHECKS PASSED\nTemporary database: {path}");
             return 0;
         }
@@ -211,11 +235,135 @@ internal static class Program
         finally { SqliteConnection.ClearAllPools(); }
     }
 
+    private static void CheckBatchPersistence(string folder)
+    {
+        string path = Path.Combine(folder, "batch-atomic.db");
+        new DatabaseInitializer(path).Initialize();
+        var user = new UserAccount(1, "batch-check", UserRole.Administrator, true);
+        var history = new HistoryStore(path);
+        var alarms = new AlarmStore(path);
+        var now = DateTimeOffset.UtcNow;
+        HistoryRecord[] records = [new(1, "设备", 1, "点1", 10, now), new(1, "设备", 2, "点2", 20, now)];
+        Execute("CREATE TRIGGER fail_history BEFORE INSERT ON HistoryRecords WHEN NEW.PointId=2 BEGIN SELECT RAISE(ABORT,'test'); END;");
+        Throws<DbUpdateException>(() => history.SaveRecords(user, records), "批量历史中途数据库失败会抛出");
+        Check(history.GetPage(user, new()).TotalRecords == 0, "历史整批失败回滚，第一条也不会遗留");
+        Execute("DROP TRIGGER fail_history;");
+        history.SaveRecords(user, records);
+        Check(history.GetPage(user, new()).TotalRecords == 2, "一次提交保存全部读数历史");
+        AlarmRecord[] events = [Event(1), Event(2)];
+        Execute("CREATE TRIGGER fail_alarm BEFORE INSERT ON AlarmRecords WHEN NEW.PointId=2 BEGIN SELECT RAISE(ABORT,'test'); END;");
+        Throws<DbUpdateException>(() => alarms.SaveRecords(user, events), "批量报警中途数据库失败会抛出");
+        Check(alarms.GetPage(user, new()).TotalRecords == 0, "报警整批失败回滚，不留下半批记录");
+        Execute("DROP TRIGGER fail_alarm;");
+        alarms.SaveRecords(user, events);
+        alarms.SaveRecords(user, events.Select(e => e with
+        {
+            State = AlarmState.Recovered,
+            LastSeenAt = now.AddSeconds(1),
+            EndedAt = now.AddSeconds(1)
+        }).ToArray());
+        Check(alarms.GetPage(user, new()).Records.All(e => e.State == AlarmState.Recovered)
+            && alarms.GetPage(user, new()).TotalRecords == 2, "批量更新同事件不重复新增，正确记录恢复");
+        Throws<ArgumentException>(() => alarms.SaveRecords(user, new[] { events[0], events[0] }), "同批重复事件编号明确拒绝");
+
+        AlarmRecord Event(long point) => new()
+        {
+            EventId = Guid.NewGuid().ToString("N"),
+            DeviceId = 1,
+            DeviceName = "设备",
+            PointId = point,
+            PointName = "点" + point,
+            Kind = AlarmKind.HighLimit,
+            State = AlarmState.Active,
+            Value = 10,
+            Limit = 5,
+            Message = "超限",
+            StartedAt = now,
+            LastSeenAt = now,
+            Occurrences = 1
+        };
+        void Execute(string sql)
+        {
+            using var db = new SqliteConnection($"Data Source={path}");
+            db.Open();
+            using var cmd = db.CreateCommand(); cmd.CommandText = sql; cmd.ExecuteNonQuery();
+        }
+    }
+
+    private static void CheckEngineeringValues(string folder)
+    {
+        string path = Path.Combine(folder, "conversion-upgrade.db");
+        var options = new DbContextOptionsBuilder<MonitorDbContext>().UseSqlite(DatabaseInitializer.CreateConnectionString(path)).Options;
+        using (var db = new MonitorDbContext(options))
+        {
+            var migrator = Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>(db);
+            migrator.Migrate("20261016085148_InitialCreate");
+        }
+        var users = new UserStore(path);
+        users.TryCreateFirstAdministrator("conversion", "Admin123");
+        var user = users.CheckLogin("conversion", "Admin123")!;
+        var store = new DeviceStore(path);
+        store.TryAddDevice(user, Input("旧设备"));
+        var device = store.GetDevices(user).Single();
+        store.TrySetDeviceEnabled(user, device.Id, true);
+        string time = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+        using (var db = new MonitorDbContext(options))
+        {
+            db.Database.ExecuteSqlInterpolated($"INSERT INTO DevicePoints (Id, DeviceId, Name, RegisterType, Address, DataType, LowerLimit, UpperLimit) VALUES (1,{device.Id},'旧点位',3,0,0,NULL,600)");
+            db.Database.ExecuteSqlInterpolated($"INSERT INTO HistoryRecords (DeviceId,DeviceName,PointId,PointName,Value,ReadAtUtc) VALUES ({device.Id},'旧设备',1,'旧点位',486,{time})");
+            db.Database.ExecuteSqlInterpolated($"INSERT INTO AlarmRecords (EventId,DeviceId,DeviceName,PointId,PointName,Kind,State,Message,Value,LimitValue,StartedAtUtc,LastSeenAtUtc,Occurrences) VALUES ({Guid.NewGuid().ToString("N")},{device.Id},'旧设备',1,'旧点位',1,1,'旧报警',700,600,{time},{time},1)");
+        }
+        new DatabaseInitializer(path).Initialize();
+        var old = store.GetPoints(user, device.Id).Single();
+        Check(old.Scale == 1 && old.Offset == 0 && old.Unit == "" && old.UpperLimit == 600, "升级保留旧点位，默认不换算");
+        var history = new HistoryStore(path);
+        Check(history.GetRecentRecords(user).Single().Value == 486, "INTEGER 改 REAL 后旧历史数值不丢失");
+        Check(new AlarmStore(path).GetRecentRecords(user).Single().Value == 700, "升级保留旧报警数值");
+        Check(users.CheckLogin("conversion", "Admin123") is not null, "升级保留账户和设备");
+
+        var input = new PointInput
+        {
+            Name = "湿度",
+            RegisterType = RegisterType.Holding,
+            DataType = PointDataType.UInt16,
+            Scale = 0.1,
+            Offset = 0,
+            Unit = "%RH",
+            UpperLimit = 60.5
+        };
+        store.TryUpdatePoint(user, device.Id, old.Id, input);
+        var humidity = store.GetPoints(user, device.Id).Single();
+        var result = new PointReadResult(humidity, 486, 486, DateTimeOffset.UtcNow);
+        Check(result.DecodedValue == 486 && Math.Abs(result.Value - 48.6) < 1e-10 && result.ValueText == "48.6 %RH", "湿度原始整数与实际值分开，配置可往返保存");
+        var temperature = new PointInfo(2, device.Id, "温度", RegisterType.Holding, 1, PointDataType.Int16,
+            scale: 0.1, unit: "℃");
+        var negative = new PointReadResult(temperature, 0xFF9F, unchecked((short)0xFF9F), DateTimeOffset.UtcNow);
+        Check(negative.DecodedValue == -97 && negative.ValueText == "-9.7 ℃", "负温度先解释补码，再换算");
+        var offset = new PointInfo(3, device.Id, "偏移", RegisterType.Input, 2, PointDataType.UInt16, scale: -0.5, offset: 10);
+        Check(new PointReadResult(offset, 30, 30, result.ReadAt).Value == -5, "支持非零偏移和负倍率");
+        Throws<ArgumentException>(() => new PointInfo(4, device.Id, "无效", RegisterType.Holding, 0, PointDataType.UInt16, scale: double.NaN), "拒绝 NaN 倍率");
+        Throws<ArgumentException>(() => new PointInfo(4, device.Id, "无效", RegisterType.Holding, 0, PointDataType.UInt16, upperLimit: double.PositiveInfinity), "拒绝无穷大限值");
+        history.SaveRecord(user, new(device.Id, device.Name, humidity.Id, humidity.Name, result.Value, result.ReadAt, unit: humidity.Unit));
+        input.Scale = 1; input.Unit = "新单位"; store.TryUpdatePoint(user, device.Id, humidity.Id, input);
+        var saved = history.GetRecentRecords(user).First();
+        Check(saved.ValueText == "48.6 %RH", "修改点位后，旧历史仍保留当时的值和单位");
+        var page = history.GetPage(user, new());
+        Check(history.GetPointTrend(user, device.Id, humidity.Id, new(), page.SnapshotId, unit: "%RH").Records.Count == 1, "历史趋势不混画不同单位");
+        string csv = Path.Combine(folder, "engineering-values.csv");
+        new HistoryCsvExporter(history).Export(user, new(), page.SnapshotId, csv);
+        Check(File.ReadAllText(csv).Contains("\"48.6\",\"%RH\""), "CSV 分列导出实际值和单位");
+    }
+
     private static DeviceInput Input(string name) => new()
     {
-        Name = name, Host = "127.0.0.1", Port = 502, UnitId = 1,
-        SamplingIntervalMilliseconds = 100, ConnectTimeoutMilliseconds = 1000,
-        ReadTimeoutMilliseconds = 1000, WriteTimeoutMilliseconds = 1000
+        Name = name,
+        Host = "127.0.0.1",
+        Port = 502,
+        UnitId = 1,
+        SamplingIntervalMilliseconds = 100,
+        ConnectTimeoutMilliseconds = 1000,
+        ReadTimeoutMilliseconds = 1000,
+        WriteTimeoutMilliseconds = 1000
     };
 
     private static void Check(bool condition, string description)

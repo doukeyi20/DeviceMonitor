@@ -1,11 +1,11 @@
+// 管理设备配置、启用状态和 TCP 连接测试。
 using DeviceMonitor.Core.Models;
 using DeviceMonitor.Core.Persistence;
 using DeviceMonitor.Core.Communication;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using DeviceMonitor.Sampling;
 using System;
-using DeviceMonitor.Core.Diagnostics;
+using DeviceMonitor.Core;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
@@ -15,34 +15,31 @@ using System.Threading.Tasks;
 
 namespace DeviceMonitor.ViewModels
 {
-
-    /// <summary>
-    /// 设备管理页的数据源：列表刷新、新增/编辑/删除、启停配置和 TCP 端口测试。
-    /// </summary>
     public partial class DeviceManagementViewModel : PageViewModel
     {
         private readonly UserAccount _currentUser;
         private readonly DeviceStore _deviceStore;
-        // 主窗口共用的管理器，删除设备前通过它停止原采集任务。
-        private readonly DeviceRuntimeManager? _deviceRuntimeManager;
-        private Task? _stopOperationsTask; // 退出时的等待任务，重复调用也只收尾一次。
-        private bool _isStopping; // 已开始退出，不再允许新操作。
-        private long? _testingDeviceId; // 正在测试连接的设备编号；没在测试时为 null。
 
-        // 通信对象只负责连接测试；不需要数据库路径，也不操作设备表。
-        private readonly TcpConnectionTester _connectionTester = new();
+        private readonly DeviceTasks? _deviceTasks;
+        private Task? _stopOperationsTask;
+        private bool _isStopping;
 
-        // 表格把选择写到这里；选择变化后，各命令重新判断是否允许执行。
+        private long? _connectionTestDeviceId;
+        // 退出时等待已开始的数据库操作，避免关闭后回填旧页面。
+        private Task _databaseWork = Task.CompletedTask;
+        private bool _isLoadingOrSaving;
+
         [ObservableProperty]
         [NotifyCanExecuteChangedFor(nameof(EditDeviceCommand))]
         [NotifyCanExecuteChangedFor(nameof(EnableDeviceCommand))]
         [NotifyCanExecuteChangedFor(nameof(DisableDeviceCommand))]
         [NotifyCanExecuteChangedFor(nameof(TestConnectionCommand))]
         [NotifyCanExecuteChangedFor(nameof(DeleteDeviceCommand))]
-        [NotifyPropertyChangedFor(nameof(SelectedDeviceTitle), nameof(SelectedDeviceConnectionDetails), nameof(SelectedDeviceTimeoutDetails))]
+        [NotifyPropertyChangedFor(nameof(SelectedDeviceTitle), nameof(SelectedDeviceConnectionDetails), nameof(SelectedDeviceTimeoutDetails), nameof(IsTcpDeviceSelected))]
         private DeviceInfo? _selectedDevice;
 
-        // 表格选中一台设备后，下方只读详情直接显示已有配置，不再查询或连接设备。
+        public bool IsTcpDeviceSelected => SelectedDevice?.CommunicationMode == DeviceCommunicationMode.Tcp;
+
         public string SelectedDeviceTitle => SelectedDevice is null
             ? "设备详情" : $"{SelectedDevice.Name} · 配置编号 {SelectedDevice.Id}";
         public string SelectedDeviceConnectionDetails => SelectedDevice is null
@@ -58,9 +55,9 @@ namespace DeviceMonitor.ViewModels
 
         public event Action<DeviceInfo?>? DeviceEditorRequested;
         public event Action<string, string>? MessageRequested;
-        public event Action<DeviceConfirmationRequest>? ConfirmationRequested;
+        public event Action<ConfirmationRequest>? ConfirmationRequested;
 
-        private bool _isDeletingDevice; // 删除尚未完成时，限制重复操作并显示“删除中”。
+        private bool _isDeletingDevice;
         public bool IsDeletingDevice
         {
             get => _isDeletingDevice;
@@ -84,7 +81,7 @@ namespace DeviceMonitor.ViewModels
         }
 
         private bool _isTestingConnection;
-        // 状态只允许本类修改，所以保留手写的 private set。
+
         public bool IsTestingConnection
         {
             get => _isTestingConnection;
@@ -92,9 +89,9 @@ namespace DeviceMonitor.ViewModels
             {
                 if (SetProperty(ref _isTestingConnection, value))
                 {
-                    // 一个通知更新按钮文字，另一个通知更新命令是否可执行。
                     OnPropertyChanged(nameof(TestConnectionButtonText));
                     TestConnectionCommand.NotifyCanExecuteChanged();
+                    DeleteDeviceCommand.NotifyCanExecuteChanged();
                 }
             }
         }
@@ -109,61 +106,68 @@ namespace DeviceMonitor.ViewModels
             private set => SetProperty(ref _connectionTestMessage, value);
         }
 
-        // 设备表绑定这里，每项是一个 DeviceInfo；选择的那项写入 SelectedDevice。
         public ObservableCollection<DeviceInfo> Devices { get; } = new();
 
-        /// <summary>
-        /// 接住用户、数据库对象和共用管理器，加载设备列表。
-        /// </summary>
         public DeviceManagementViewModel(UserAccount currentUser, DeviceStore deviceStore,
-            DeviceRuntimeManager? deviceRuntimeManager = null) : base("设备管理")
+    DeviceTasks? deviceTasks = null) : base("设备管理")
         {
             _currentUser = currentUser
                             ?? throw new ArgumentNullException(nameof(currentUser));
             _deviceStore = deviceStore
                 ?? throw new ArgumentNullException(nameof(deviceStore));
-            _deviceRuntimeManager = deviceRuntimeManager;
+            _deviceTasks = deviceTasks;
 
             if (_currentUser.Role != UserRole.Administrator || !_currentUser.IsEnabled)
             {
                 throw new UnauthorizedAccessException("只有已启用的管理员可以管理设备。");
             }
 
-            if (_deviceRuntimeManager is not null)
-                _deviceRuntimeManager.PropertyChanged += DeviceRuntimeManager_PropertyChanged;
-
-            // 页面对象创建时，先读取数据库中已有的设备。
-            RefreshDevices();
+            if (_deviceTasks is not null)
+                _deviceTasks.PropertyChanged += DeviceTasks_PropertyChanged;
         }
 
-        /// <summary>
-        /// 由 RefreshDevicesCommand 调用；本类构造方法也会调用一次。
-        /// 刷新设备配置列表，不测试连接，也不启动采集。
-        /// </summary>
+        /// <summary>刷新设备配置列表，不测试连接，也不启动采集。</summary>
         [RelayCommand(CanExecute = nameof(CanManageDevices))]
-        public void RefreshDevices()
+        public async Task RefreshDevicesAsync()
         {
             if (!CanManageDevices())
                 return;
 
             try
             {
-                LoadDevices();
+                _isLoadingOrSaving = true;
+                NotifyDeviceCommands();
+
+                await LoadDevicesAsync();
                 PageMessage = $"已刷新 {Devices.Count} 台设备。";
             }
             catch (Exception ex)
             {
                 PageMessage = $"刷新设备失败：{ex.Message}。原列表已保留，请点击“刷新设备”重试。";
             }
+
+            finally
+            {
+                _isLoadingOrSaving = false;
+                NotifyDeviceCommands();
+            }
         }
 
-        // 刷新按钮和写入后的刷新共用这里；先查成功，再动界面集合。
-        // 由 RefreshDevices 和 RefreshDevicesAfterOperation 调用。
-        private void LoadDevices()
+        private async Task LoadDevicesAsync(string? selectName = null)
         {
-            // 先查询成功，再替换界面列表；查询失败时不清空原列表。
-            var latestDevices = _deviceStore.GetDevices(_currentUser);
+            var loading = Task.Run(() => _deviceStore.GetDevices(_currentUser));
+
+            _databaseWork = loading;
+
+            // 等查询成功后再替换集合，失败时保留原列表。
+            var latestDevices = await loading;
+
+            if (_isStopping)
+                return;
+
+            // 刷新按编号保留选择；新增、删除后选择实际存在的记录。
             long? selectedId = SelectedDevice?.Id;
+            int selectedIndex = SelectedDevice is null ? 0 : Devices.IndexOf(SelectedDevice);
 
             Devices.Clear();
             foreach (DeviceInfo device in latestDevices)
@@ -171,129 +175,118 @@ namespace DeviceMonitor.ViewModels
                 Devices.Add(device);
             }
 
-            // Clear 会让表格取消选择，所以提前保存编号，再选中刷新后的新对象。
-            // 新对象带着数据库最新的启用状态，命令条件也会随选择通知重新判断。
-            SelectedDevice = selectedId.HasValue
-                ? Devices.FirstOrDefault(device => device.Id == selectedId.Value)
-                : null;
+            SelectedDevice = (selectName is null ? null : Devices.FirstOrDefault(
+                device => string.Equals(device.Name, selectName, StringComparison.OrdinalIgnoreCase)))
+                ?? Devices.FirstOrDefault(device => device.Id == selectedId)
+                ?? Devices.ElementAtOrDefault(Math.Clamp(selectedIndex, 0, Math.Max(0, Devices.Count - 1)));
         }
 
-        /// <summary>
-        /// 由 AddDeviceCommand 调用。
-        /// 请求打开新增设备表单，传 null 表示新增。
-        /// </summary>
+        /// <summary>请求打开新增设备表单，传 null 表示新增。</summary>
         [RelayCommand(CanExecute = nameof(CanManageDevices))]
         private void AddDevice()
         {
-            // CanExecute 控制按钮；这里的判断保护代码直接执行命令的情况。
             if (CanManageDevices())
-                // 让 DeviceManagementView.OpenDeviceEditor 打开空白表单，null 表示新增。
+
                 DeviceEditorRequested?.Invoke(null);
         }
 
-        /// <summary>
-        /// 由 DeviceEditorViewModel.Save 在新增设备时调用。
-        /// 保存新增设备，成功后刷新列表；刷新失败单独提示。
-        /// </summary>
-        public bool TryAddDevice(DeviceInput input)
+        /// <summary>保存新增设备，成功后刷新列表；刷新失败单独提示。</summary>
+        public async Task<bool> TryAddDeviceAsync(DeviceInput input)
         {
             ArgumentNullException.ThrowIfNull(input);
             if (!CanManageDevices())
                 return false;
 
-            // 当前登录用户由这个 ViewModel 保存，界面不必再传一次。
-            bool added = _deviceStore.TryAddDevice(_currentUser, input);
+            _isLoadingOrSaving = true;
+            NotifyDeviceCommands();
 
-            if (added)
+            try
             {
-                RefreshDevicesAfterOperation($"设备“{input.Name}”已保存。");
-            }
+                var saving = Task.Run(() => _deviceStore.TryAddDevice(_currentUser, input));
+                _databaseWork = saving;
 
-            return added; // false 表示设备名称重复。
+                bool added = await saving;
+
+                // 区分写入失败与写入成功后的刷新失败。
+                if (added && !_isStopping)
+                    await RefreshDevicesAfterOperationAsync($"设备“{input.Name}”已保存。", input.Name.Trim());
+
+                return added;
+            }
+            finally
+            {
+                _isLoadingOrSaving = false;
+                NotifyDeviceCommands();
+            }
         }
 
-        /// <summary>
-        /// 由 EditDeviceCommand 调用。
-        /// 请求打开选中设备的编辑表单。
-        /// </summary>
+        /// <summary>请求打开选中设备的编辑表单。</summary>
         [RelayCommand(CanExecute = nameof(CanEditDevice))]
         private void EditDevice()
         {
             DeviceInfo? device = SelectedDevice;
             if (CanEditDevice() && device is not null)
-                // 让 DeviceManagementView.OpenDeviceEditor 打开带原配置的表单，传 device 表示编辑。
+
                 DeviceEditorRequested?.Invoke(device);
         }
 
-        // 先停止这台设备，才能修改它的连接参数。
-        // 由 EditDeviceCommand 判断按钮能不能点时调用。
         private bool CanEditDevice() =>
             CanManageDevices() && SelectedDevice is not null
             && CanChangeDeviceConfiguration(SelectedDevice.Id);
 
-        /// <summary>
-        /// 由 DeviceEditorViewModel.Save 在编辑设备时调用。
-        /// 按原编号修改设备配置，成功后刷新列表，不新增另一台设备。
-        /// </summary>
-        public bool TryUpdateDevice(long deviceId, DeviceInput input)
+        /// <summary>按原编号修改设备配置，成功后刷新列表，不新增另一台设备。</summary>
+        public async Task<bool> TryUpdateDeviceAsync(long deviceId, DeviceInput input)
         {
             ArgumentNullException.ThrowIfNull(input);
             if (!CanManageDevices())
                 return false;
 
-            // 表单打开后也可能开始了采集，保存前再检查一次。
             EnsureDeviceConfigurationCanChange(deviceId);
 
-            // 当前用户和数据库操作对象已由构造函数保存，窗口只需传设备编号与新配置。
-            bool updated = _deviceStore.TryUpdateDevice(_currentUser, deviceId, input);
-
-            if (updated)
+            _isLoadingOrSaving = true;
+            NotifyDeviceCommands();
+            try
             {
-                RefreshDevicesAfterOperation($"设备“{input.Name}”的配置已保存。");
+                var saving = Task.Run(() => _deviceStore.TryUpdateDevice(_currentUser, deviceId, input));
+                _databaseWork = saving;
+
+                bool updated = await saving;
+
+                if (updated && !_isStopping)
+                    await RefreshDevicesAfterOperationAsync($"设备“{input.Name}”的配置已保存。");
+                return updated;
             }
-
-            return updated;
+            finally
+            {
+                _isLoadingOrSaving = false;
+                NotifyDeviceCommands();
+            }
         }
 
-        /// <summary>
-        /// 由 EnableDeviceCommand 调用。
-        /// 将选中设备设为启用，传 true。
-        /// </summary>
+        /// <summary>将选中设备设为启用，传 true。</summary>
         [RelayCommand(CanExecute = nameof(CanEnableDevice))]
-        private void EnableDevice()
+        private async Task EnableDeviceAsync()
         {
-            // true 表示启用。
-            ChangeSelectedDeviceStatus(true);
+            await ChangeSelectedDeviceStatusAsync(true);
         }
 
-        // 有权限且设备目前停用，才能启用。
-        // 由 EnableDeviceCommand 判断按钮能不能点时调用。
         private bool CanEnableDevice() =>
             CanManageDevices() && SelectedDevice is { IsEnabled: false }
             && CanChangeDeviceConfiguration(SelectedDevice.Id);
 
-        /// <summary>
-        /// 由 DisableDeviceCommand 调用。
-        /// 将选中设备设为停用，传 false。
-        /// </summary>
+        /// <summary>将选中设备的配置设为停用，传 false；不会代替“停止采集”。</summary>
         [RelayCommand(CanExecute = nameof(CanDisableDevice))]
-        private void DisableDevice()
+        private async Task DisableDeviceAsync()
         {
-            // false 表示停用。
-            ChangeSelectedDeviceStatus(false);
+            await ChangeSelectedDeviceStatusAsync(false);
         }
 
-        // 设备已停止且目前启用，才能停用；正在收尾时也要等完。
-        // 由 DisableDeviceCommand 判断按钮能不能点时调用。
         private bool CanDisableDevice() =>
             CanManageDevices() && SelectedDevice is { IsEnabled: true }
             && CanChangeDeviceConfiguration(SelectedDevice.Id);
 
-        /// <summary>
-        /// 由 EnableDevice 和 DisableDevice 调用。
-        /// 保存选中设备的启停设置，true 是启用，false 是停用；停用前先确认。
-        /// </summary>
-        private void ChangeSelectedDeviceStatus(bool enabled)
+        /// <summary>保存选中设备的启停设置，true 是启用，false 是停用；停用前先确认。</summary>
+        private async Task ChangeSelectedDeviceStatusAsync(bool enabled)
         {
             DeviceInfo? device = SelectedDevice;
             if (!CanManageDevices() || device is null || device.IsEnabled == enabled)
@@ -303,74 +296,75 @@ namespace DeviceMonitor.ViewModels
             try
             {
                 EnsureDeviceConfigurationCanChange(device.Id);
-                // 如果是停用，先弹出确认框；启用不需要确认。
+
                 if (!enabled)
                 {
-                    var confirmation = new DeviceConfirmationRequest(
+                    var confirmation = new ConfirmationRequest(
                         $"确定停用“{device.Name}”吗？\n\n" +
                         "停用后不能再开始采集；以后需要使用时，可以重新启用。", "停用设备");
-                    
-                    // 让 DeviceManagementView.ConfirmAction 弹框，把选择写回 confirmation.Confirmed。
+
                     ConfirmationRequested?.Invoke(confirmation);
 
                     if (!confirmation.Confirmed || !CanManageDevices())
                         return;
                 }
 
-                // 此方法会同时设置成功/未改变提示和刷新警告；
-                TrySetDeviceEnabled(device.Id, enabled);
+                await TrySetDeviceEnabledAsync(device.Id, enabled);
             }
             catch (Exception ex)
             {
-                // 调用 DeviceManagementView.xaml.cs 的 ShowMessage：显示启用/停用失败的原因。
                 MessageRequested?.Invoke($"{action}设备时发生错误：{ex.Message}", "操作失败");
             }
         }
 
-        /// <summary>
-        /// 由 ChangeSelectedDeviceStatus 调用。
-        /// 保存设备启停设置并刷新列表，不直接启动或停止采集任务。
-        /// </summary>
-        public bool TrySetDeviceEnabled(long deviceId, bool enabled)
+        /// <summary>保存设备启停设置并刷新列表，不直接启动或停止采集任务。</summary>
+        public async Task<bool> TrySetDeviceEnabledAsync(long deviceId, bool enabled)
         {
             if (!CanManageDevices())
                 return false;
             EnsureDeviceConfigurationCanChange(deviceId);
             string target = Devices.FirstOrDefault(device => device.Id == deviceId)?.Name
                 ?? $"编号 {deviceId}";
-            bool updated = _deviceStore.TrySetDeviceEnabled(
-                _currentUser, deviceId, enabled);
 
-            // 即使设备已经是目标状态，也重新读取，避免显示旧数据。
-            string resultMessage = updated
-                ? enabled
-                    ? $"已启用“{target}”。"
-                    : $"已停用“{target}”。"
-                : $"设备不存在，或已经处于{(enabled ? "启用" : "停用")}状态。";
-            RefreshDevicesAfterOperation(resultMessage);
+            _isLoadingOrSaving = true;
+            NotifyDeviceCommands();
+            try
+            {
+                var saving = Task.Run(() => _deviceStore.TrySetDeviceEnabled(_currentUser, deviceId, enabled));
+                _databaseWork = saving;
+                bool updated = await saving;
 
-            return updated;
+                string resultMessage = updated
+                    ? enabled
+                        ? $"已启用“{target}”。"
+                        : $"已停用“{target}”。"
+                    : $"设备不存在，或已经处于{(enabled ? "启用" : "停用")}状态。";
+
+                if (!_isStopping)
+                    await RefreshDevicesAfterOperationAsync(resultMessage);
+
+                return updated;
+            }
+            finally
+            {
+                _isLoadingOrSaving = false;
+                NotifyDeviceCommands();
+            }
         }
 
-        /// <summary>
-        /// 由 DeleteDeviceCommand 调用。
-        /// 确认后，先结束本设备的连接测试和采集，再删除设备及点位配置。
-        /// 历史读数和报警保留。
-        /// </summary>
+        /// <summary>用户先手动停止采集或测试；确认后只删除设备及点位配置，不代做停止。</summary>
         [RelayCommand(CanExecute = nameof(CanDeleteDevice))]
         private async Task DeleteDeviceAsync()
         {
-            // 先记住点击的是哪一台；等待期间即使表格选择变化，也不能删错设备。
             DeviceInfo? device = SelectedDevice;
-            if (device is null || !CanDeleteDevice() || _deviceRuntimeManager is null)
+            if (device is null || !CanDeleteDevice() || _deviceTasks is null)
                 return;
 
-            var confirmation = new DeviceConfirmationRequest(
+            var confirmation = new ConfirmationRequest(
                 $"确定删除设备“{device.Name}”（编号 {device.Id}）吗？\n\n" +
-                "会先停止这台设备的采集，再删除设备及其全部采集点配置。\n" +
+                "会删除设备及其全部采集点配置。\n" +
                 "已有历史读数和报警历史会保留。此操作不能撤销。", "删除设备");
-            
-            // 让 DeviceManagementView.ConfirmAction 弹出删除确认框，结果写回 confirmation.Confirmed。
+
             ConfirmationRequested?.Invoke(confirmation);
 
             if (!confirmation.Confirmed || !CanDeleteDevice())
@@ -379,21 +373,16 @@ namespace DeviceMonitor.ViewModels
             IsDeletingDevice = true;
             try
             {
-                PageMessage = $"正在停止“{device.Name}”的任务并删除配置…";
+                PageMessage = $"正在删除“{device.Name}”的配置…";
 
-                // 判断当前正在测试连接的设备是否就是要删除的设备，如果是，则取消连接测试。
-                if (_testingDeviceId == device.Id)
-                    await CancelConnectionTestAsync();
-
-                // 删除涉及采集，所以交给管理器先停任务，再删配置；历史保留。
-                bool deleted = await _deviceRuntimeManager.DeleteDeviceAsync(device.Id);
-                RefreshDevicesAfterOperation(deleted
+                bool deleted = await _deviceTasks.DeleteDeviceAsync(device.Id);
+                await RefreshDevicesAfterOperationAsync(deleted
                     ? $"已删除“{device.Name}”及其采集点配置；历史读数和报警历史已保留。"
                     : $"“{device.Name}”已不存在；历史记录仍保留。");
             }
             catch (Exception ex)
             {
-                PageMessage = $"删除“{device.Name}”失败：{ex.Message}。请刷新确认配置；已停止的采集不会自动重启。";
+                PageMessage = $"删除“{device.Name}”失败：{ex.Message}。请刷新确认配置。";
             }
             finally
             {
@@ -401,32 +390,26 @@ namespace DeviceMonitor.ViewModels
             }
         }
 
-        /// <summary>
-        /// 由 DeleteDeviceCommand 判断按钮能不能点时调用。
-        /// 有权限、选中设备且有共用管理器，才能删除。
-        /// </summary>
+        /// <summary>目标没有采集、单点测试或 TCP 端口测试，才允许删除；不影响其他设备运行。</summary>
         private bool CanDeleteDevice() => CanManageDevices() && SelectedDevice is not null
-            && _deviceRuntimeManager is not null
-            && !_deviceRuntimeManager.IsDeletingDevice(SelectedDevice.Id);
+            && _deviceTasks is not null
+            && !_deviceTasks.IsDeletingDevice(SelectedDevice.Id)
+            && !_deviceTasks.IsRunning(SelectedDevice.Id)
+            && _deviceTasks.SingleReadDeviceId != SelectedDevice.Id
+            && _connectionTestDeviceId != SelectedDevice.Id;
 
-
-
-        /// <summary>
-        /// 由 TestConnectionCommand 调用。
-        /// 测试选中设备的 TCP 端口，显示结果，不验证 Modbus 协议。
-        /// </summary>
+        /// <summary>测试选中设备的 TCP 端口，显示结果，不验证 Modbus 协议。</summary>
         [RelayCommand(CanExecute = nameof(CanTestConnection), IncludeCancelCommand = true)]
         private async Task TestConnectionAsync(CancellationToken cancellationToken)
         {
-            // 先抓取本次目标；等待连接时即使切换选择，也不改变本次测试对象。
             DeviceInfo? device = SelectedDevice;
             if (device is null || !CanTestConnection())
             {
                 return;
             }
 
+            _connectionTestDeviceId = device.Id;
             IsTestingConnection = true;
-            _testingDeviceId = device.Id;
             string target = $"{device.Name}（{device.Host}:{device.Port}）";
 
             try
@@ -434,11 +417,9 @@ namespace DeviceMonitor.ViewModels
                 ConnectionTestMessage = $"正在测试 {target}，连接超时：" +
                     $"{device.ConnectTimeoutMilliseconds} ms…";
 
-                // 异步等待连接，不堵住界面；cancellationToken 由工具包命令提供，不用手动传。
-                await _connectionTester.TestAsync(device, cancellationToken);
-                
-                // 记入日志
-                AppLog.Info("TCP 测试连接成功", $"DeviceId={device.Id}");
+                await TcpConnectionTester.TestAsync(device, cancellationToken);
+
+                AppLog.Info("TCP 测试成功", $"设备={device.Id}");
 
                 ConnectionTestMessage = $"TCP 连接成功：{target}。测试连接已关闭。" +
                     "这只说明该端口可连接，尚未验证 Modbus 通信。";
@@ -449,14 +430,14 @@ namespace DeviceMonitor.ViewModels
             }
             catch (TimeoutException ex)
             {
-                AppLog.Warning("TCP 测试连接超时", $"DeviceId={device.Id}", ex);
+                AppLog.Warning("TCP 测试超时", $"设备={device.Id}", ex);
                 ConnectionTestMessage = $"TCP 连接超时：{target}。" +
                     $"在 {device.ConnectTimeoutMilliseconds} ms 内未能建立连接，" +
                     "请检查地址、端口、网络和防火墙。";
             }
             catch (SocketException ex)
             {
-                AppLog.Warning("TCP 测试连接失败", $"DeviceId={device.Id}; SocketError={ex.SocketErrorCode}", ex);
+                AppLog.Warning("TCP 测试失败", $"设备={device.Id}", ex);
                 string reason = ex.SocketErrorCode switch
                 {
                     SocketError.ConnectionRefused => "连接被拒绝，请检查对方是否已启动服务、监听端口是否正确。",
@@ -470,33 +451,25 @@ namespace DeviceMonitor.ViewModels
             }
             catch (ArgumentException ex)
             {
-                AppLog.Warning("TCP 测试配置错误", $"DeviceId={device.Id}", ex);
+                AppLog.Warning("TCP 参数错误", $"设备={device.Id}", ex);
                 ConnectionTestMessage = $"设备连接配置不正确：{ex.Message}";
             }
             catch (Exception ex)
             {
-                AppLog.Error("TCP 测试异常", $"DeviceId={device.Id}", ex);
+                AppLog.Error("TCP 测试异常", $"设备={device.Id}", ex);
                 ConnectionTestMessage = $"测试 {target} 时发生错误：{ex.Message}";
             }
             finally
             {
-                // 无论成功还是失败，都结束“测试中”状态，让按钮恢复可用。
-                _testingDeviceId = null;
+                _connectionTestDeviceId = null;
                 IsTestingConnection = false;
             }
         }
 
-        // 停用设备也可以手动测试端口；停用配置不等于不能测试连接。
-        // 有权限、已选设备且没有正在进行的测试，才能测试连接。
-        // 由 TestConnectionCommand 判断按钮能不能点时调用。
         private bool CanTestConnection() =>
             CanManageDevices() && SelectedDevice?.CommunicationMode == DeviceCommunicationMode.Tcp && !IsTestingConnection;
 
-
-        /// <summary>
-        /// 由 DeleteDeviceAsync 和 StopOperationsCoreAsync 调用。
-        /// 取消连接测试并等它结束；普通取消按钮直接用生成的取消命令。
-        /// </summary>
+        /// <summary>删除不再自动取消测试。</summary>
         private async Task CancelConnectionTestAsync()
         {
             TestConnectionCommand.Cancel();
@@ -504,13 +477,11 @@ namespace DeviceMonitor.ViewModels
                 await testing;
         }
 
-        // 数据库操作完成后，更新列表和提示
-        // 由新增、编辑、启停设置和删除成功后的方法调用。
-        private void RefreshDevicesAfterOperation(string resultMessage)
+        private async Task RefreshDevicesAfterOperationAsync(string resultMessage, string? selectName = null)
         {
             try
             {
-                LoadDevices();
+                await LoadDevicesAsync(selectName);
                 PageMessage = resultMessage;
             }
             catch (Exception ex)
@@ -520,41 +491,32 @@ namespace DeviceMonitor.ViewModels
             }
         }
 
-        /// <summary>
-        /// 由 RefreshDevicesCommand、AddDeviceCommand 判断按钮能不能点时调用。
-        /// 共用操作条件：账户是启用的管理员，且没在关窗或删除设备。
-        /// </summary>
+        /// <summary>账户权限已在构造时验证；这里只检查之后会变化的关窗、删除状态。</summary>
         private bool CanManageDevices() =>
-            _currentUser.Role == UserRole.Administrator && _currentUser.IsEnabled
-            && !_isStopping && !IsDeletingDevice
-            && _deviceRuntimeManager?.IsShuttingDown != true;
+            !_isStopping && !IsDeletingDevice && !_isLoadingOrSaving
+            && _deviceTasks?.IsShuttingDown != true;
 
-        // 编辑、启停设置共用这个检查；删除另走“先停再删”的流程。
         private bool CanChangeDeviceConfiguration(long deviceId) =>
-            _deviceRuntimeManager is null
-            || (!_deviceRuntimeManager.IsShuttingDown
-                && !_deviceRuntimeManager.IsDeletingDevice(deviceId)
-                && !_deviceRuntimeManager.IsRunning(deviceId));
+            _deviceTasks is null
+            || (!_deviceTasks.IsShuttingDown
+                && !_deviceTasks.IsDeletingDevice(deviceId)
+                && !_deviceTasks.IsRunning(deviceId));
 
-        // 保存入口也要检查，不能只把界面按钮变灰。
         private void EnsureDeviceConfigurationCanChange(long deviceId)
         {
             if (!CanChangeDeviceConfiguration(deviceId))
                 throw new InvalidOperationException("请先到实时监控页停止这台设备，等停止完成后再修改配置或停用。");
         }
 
-        // 监控页开始、停止或删除设备后，管理页的按钮也跟着更新。
-        private void DeviceRuntimeManager_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+        private void DeviceTasks_PropertyChanged(object? sender, PropertyChangedEventArgs e)
         {
-            if (e.PropertyName is nameof(DeviceRuntimeManager.ActiveSamplingCount)
-                or nameof(DeviceRuntimeManager.IsShuttingDown) or nameof(DeviceRuntimeManager.IsDeletingDevices))
+            if (e.PropertyName is nameof(DeviceTasks.ActiveSamplingCount)
+                or nameof(DeviceTasks.IsShuttingDown) or nameof(DeviceTasks.IsDeletingDevices)
+                or nameof(DeviceTasks.SingleReadDeviceId))
                 NotifyDeviceCommands();
         }
 
-        /// <summary>
-        /// 由 IsDeletingDevice 属性变化或 StopOperationsAsync 开始退出时调用。
-        /// 让有关按钮重新判断能不能点，不执行按钮操作。
-        /// </summary>
+        /// <summary>让有关按钮重新判断能不能点，不执行按钮操作。</summary>
         private void NotifyDeviceCommands()
         {
             RefreshDevicesCommand.NotifyCanExecuteChanged();
@@ -566,33 +528,37 @@ namespace DeviceMonitor.ViewModels
             TestConnectionCommand.NotifyCanExecuteChanged();
         }
 
-        /// <summary>
-        /// 由 MainViewModel.StopBackgroundWorkAsync 在退出前调用。
-        /// 退出时禁止新操作、取消测试并等待删除结束；重复调用共用同一次收尾。
-        /// </summary>
+        /// <summary>退出时禁止新操作、取消测试并等待删除结束；重复调用共用同一次收尾。</summary>
         public Task StopOperationsAsync()
         {
             if (_stopOperationsTask is not null)
                 return _stopOperationsTask;
             _isStopping = true;
-            if (_deviceRuntimeManager is not null)
-                _deviceRuntimeManager.PropertyChanged -= DeviceRuntimeManager_PropertyChanged;
+            if (_deviceTasks is not null)
+                _deviceTasks.PropertyChanged -= DeviceTasks_PropertyChanged;
             NotifyDeviceCommands();
             _stopOperationsTask = StopOperationsCoreAsync();
             return _stopOperationsTask;
         }
 
-        /// <summary>
-        /// 由 StopOperationsAsync 调用。
-        /// 等连接测试和设备删除真正结束。
-        /// </summary>
+        /// <summary>等连接测试和设备删除真正结束。</summary>
         private async Task StopOperationsCoreAsync()
         {
-            await CancelConnectionTestAsync();
-            if (DeleteDeviceCommand.ExecutionTask is { } deleting)
-                await deleting;
+            Task cancelTest = CancelConnectionTestAsync();
+            try
+            {
+                await _databaseWork;
+            }
+            catch (Exception)
+            {
+                /* 数据库调用方已经显示失败；这里只等它结束，不在退出时重复报错。 */
+            }
+
+            await Task.WhenAll(cancelTest,
+                RefreshDevicesCommand.ExecutionTask ?? Task.CompletedTask,
+                EnableDeviceCommand.ExecutionTask ?? Task.CompletedTask,
+                DisableDeviceCommand.ExecutionTask ?? Task.CompletedTask,
+                DeleteDeviceCommand.ExecutionTask ?? Task.CompletedTask);
         }
-
-
     }
 }

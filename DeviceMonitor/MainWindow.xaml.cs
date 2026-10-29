@@ -1,3 +1,4 @@
+// 处理主窗口弹窗、日志目录、退出登录和关闭收尾。
 using System;
 using System.ComponentModel;
 using System.Threading.Tasks;
@@ -7,7 +8,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows.Interop;
-using DeviceMonitor.Core.Diagnostics;
+using DeviceMonitor.Core;
 using DeviceMonitor.Core.Models;
 using DeviceMonitor.Core.Persistence;
 using DeviceMonitor.ViewModels;
@@ -15,26 +16,17 @@ using DeviceMonitor.Views;
 
 namespace DeviceMonitor;
 
-/// <summary>
-/// 主窗口的界面操作：窗口按钮、弹窗、打开日志目录、退出登录和关窗收尾。
-/// 页面和采集管理器由 MainViewModel 准备。
-/// </summary>
 public partial class MainWindow : Window
 {
-    // 返回登录窗口时继续用这三个对象：数据库没换，只是换了登录账户。
     private readonly UserStore _userStore;
     private readonly DeviceStore _deviceStore;
     private readonly HistoryStore _historyStore;
-    private readonly MainViewModel _viewModel; // 主窗口绑定的数据源。
-    private bool _isLeavingWindow; // 正在退出或关窗，防止重复发起收尾。
-    private bool _canClose; // 收尾结束后改为 true，下一次 Close 才真正关闭。
+    private readonly MainViewModel _viewModel;
+    private bool _isLeavingWindow;
+    private bool _canClose;
 
-    /// <summary>
-    /// 由 LoginWindow.OpenMainWindow 在登录成功后创建。
-    /// 登录成功后创建主窗口，创建数据源、订阅界面请求，并设置 DataContext。
-    /// </summary>
     public MainWindow(UserAccount currentUser, UserStore userStore, DeviceStore deviceStore,
-        HistoryStore historyStore)
+    HistoryStore historyStore)
     {
         _userStore = userStore ?? throw new ArgumentNullException(nameof(userStore));
         _deviceStore = deviceStore ?? throw new ArgumentNullException(nameof(deviceStore));
@@ -42,7 +34,6 @@ public partial class MainWindow : Window
         InitializeComponent();
         FitWindowToWorkArea();
 
-        // 创建页面数据和管理器，再把 ViewModel 的界面请求接到下面的方法。
         _viewModel = new MainViewModel(currentUser, userStore, deviceStore, historyStore);
         _viewModel.LogoutRequested += HandleLogoutRequested;
         _viewModel.PasswordEditorRequested += OpenPasswordEditor;
@@ -50,7 +41,6 @@ public partial class MainWindow : Window
         DataContext = _viewModel;
     }
 
-    // 构造方法调用：默认用大窗口；屏幕放不下时，只在打开前收小一次。
     private void FitWindowToWorkArea()
     {
         Rect workArea = SystemParameters.WorkArea;
@@ -58,30 +48,24 @@ public partial class MainWindow : Window
         Height = Math.Min(Height, workArea.Height - 24);
     }
 
-    /// <summary>
-    /// WPF 创建原生窗口后自动调用，不需要在构造方法里手动调用。
-    /// XAML 先用 CanMinimize 禁止拖边框；这里单独开放最大化、还原按钮。
-    /// WPF 的 ResizeMode 没有“能最大化但不能拖边框”的单独选项。
-    /// </summary>
+    /// <summary>保留最大化能力，禁用窗口边框拖动缩放。</summary>
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
         IntPtr handle = new WindowInteropHelper(this).Handle;
-        const int styleIndex = -16; // GWL_STYLE：窗口外框和标题栏按钮的设置。
-        const int maximizeButton = 0x00010000; // WS_MAXIMIZEBOX：显示最大化按钮。
-        const int sizingBorder = 0x00040000; // WS_THICKFRAME：允许拖动边框缩放。
+        const int styleIndex = -16;
+        const int maximizeButton = 0x00010000;
+        const int sizingBorder = 0x00040000;
         int style = GetWindowLong(handle, styleIndex);
         int fixedStyle = (style | maximizeButton) & ~sizingBorder;
         if (SetWindowLong(handle, styleIndex, fixedStyle) == 0)
             throw new Win32Exception(Marshal.GetLastWin32Error());
 
-        // 刷新标题栏和边框；不改变当前位置、大小或激活状态。
         const uint refreshFrameOnly = 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020;
         if (!SetWindowPos(handle, IntPtr.Zero, 0, 0, 0, 0, refreshFrameOnly))
             throw new Win32Exception(Marshal.GetLastWin32Error());
     }
 
-    // 点账户按钮时，展开它的菜单。
     private void AccountMenuButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is Button { ContextMenu: { } menu } button)
@@ -91,20 +75,14 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>
-    /// 由 MainViewModel 的 PasswordEditorRequested 事件调用。
-    /// 用传来的数据源打开密码窗口，关掉弹窗后再返回。
-    /// </summary>
+    /// <summary>用传来的数据源打开密码窗口，关掉弹窗后再返回。</summary>
     private void OpenPasswordEditor(PasswordEditViewModel viewModel)
     {
         var dialog = new PasswordWindow(viewModel) { Owner = this };
         dialog.ShowDialog();
     }
 
-    /// <summary>
-    /// 由 MainViewModel 的 LogsFolderRequested 事件调用。
-    /// 用资源管理器打开日志目录，失败就弹窗说明。
-    /// </summary>
+    /// <summary>用系统资源管理器打开日志目录，失败就弹窗说明。</summary>
     private void OpenLogsFolder()
     {
         try
@@ -112,7 +90,7 @@ public partial class MainWindow : Window
             string? directory = AppLog.DirectoryPath;
             if (directory is null)
                 throw new InvalidOperationException("运行日志尚未初始化。");
-            // 确保目录存在，再让系统打开它。
+
             Directory.CreateDirectory(directory);
             Process.Start(new ProcessStartInfo(directory) { UseShellExecute = true });
             if (AppLog.LastWriteError is { } error)
@@ -125,46 +103,40 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>
-    /// 由 MainViewModel 的 LogoutRequested 事件调用。
-    /// 确认退出登录后，等后台工作停止，再显示新登录窗口并关闭主窗口。
-    /// 事件处理方法用 async void，内部负责捕获异常。
-    /// </summary>
+    /// <summary>确认后先等后台工作结束，再打开一次登录窗口。</summary>
     private async void HandleLogoutRequested()
     {
-        // 从确认弹窗开始就标记正在退出，防止重复操作。
         if (_isLeavingWindow || _canClose)
             return;
         _isLeavingWindow = true;
-        LoginWindow? preparedLogin = null;
+        LoginWindow? login = null;
         try
         {
             MessageBoxResult answer = MessageBox.Show(this,
-                "退出登录会停止所有设备的采集，并等待正在保存、查询的操作结束。\n\n" +
-                "设备、采集点和历史记录不会删除。确定返回登录窗口吗？",
+                "退出登录会停止所有设备采集，并等待正在保存、查询的操作结束。\n\n确定返回登录窗口吗？",
                 "退出登录", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
             if (answer != MessageBoxResult.Yes)
-                return; // 取消时还没有停止任何任务，原来的采集可以继续。
+                return;
 
-            // 先准备登录窗口，创建失败时不影响原来的采集。
-            preparedLogin = new LoginWindow(_userStore, _deviceStore, _historyStore);
             IsEnabled = false;
-            await StopBackgroundWorkAndHandleAlarmsAsync("退出登录");
+            await StopBeforeExitAsync();
 
-            ShowLoginWindowOrExit(preparedLogin);
-            preparedLogin = null; // 已经交给应用显示，或者失败后已在下面的方法里关闭。
+            login = new LoginWindow(_userStore, _deviceStore, _historyStore);
+            Application.Current.MainWindow = login;
+            login.Show();
             _canClose = true;
             Close();
         }
         catch (Exception ex)
         {
             AppLog.Error("退出登录失败", $"UserId={_viewModel.CurrentUser.Id}", ex);
-            preparedLogin?.Close();
-            // 收尾失败就保留当前窗口，不带着旧任务切换账户。
-            MessageBox.Show(this,
-                $"未能完成退出登录：{ex.Message}\n\n" +
-                "当前窗口已保留。如果采集已经开始停止，不会自动恢复；请关闭程序后重新登录。",
-                "退出登录失败", MessageBoxButton.OK, MessageBoxImage.Error);
+
+            Application.Current.MainWindow = this;
+            login?.Close();
+            MessageBox.Show(this, $"未能返回登录窗口：{ex.Message}\n\n程序将退出，请重新启动后登录。",
+                "退出登录", MessageBoxButton.OK, MessageBoxImage.Error);
+            _canClose = true;
+            Close();
         }
         finally
         {
@@ -176,79 +148,29 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>
-    /// 由 HandleLogoutRequested 完成退出收尾后调用。
-    /// 先显示登录窗口，再允许旧主窗口关闭，避免程序提前退出。
-    /// </summary>
-    private void ShowLoginWindowOrExit(LoginWindow preparedLogin)
+    /// <summary>退出登录和关闭程序共用：等采集、保存、查询及导出结束。</summary>
+    private async Task StopBeforeExitAsync()
     {
-        LoginWindow? candidate = preparedLogin;
-        while (true)
-        {
-            try
-            {
-                candidate ??= new LoginWindow(_userStore, _deviceStore, _historyStore);
-                // 新登录窗口不属于旧主窗口，避免跟着旧窗口一起关闭。
-                Application.Current.MainWindow = candidate;
-                candidate.Show();
-                return;
-            }
-            catch (Exception ex)
-            {
-                Application.Current.MainWindow = this;
-                candidate?.Close();
-                candidate = null;
-
-                // 采集已停止，打开登录窗口失败后，只能重试或退出。
-                MessageBoxResult retry = MessageBox.Show(this,
-                    $"登录窗口未能打开：{ex.Message}\n\n" +
-                    "采集已经停止。选择“是”重试打开登录窗口；选择“否”退出程序。",
-                    "返回登录窗口失败", MessageBoxButton.YesNo, MessageBoxImage.Error, MessageBoxResult.Yes);
-                if (retry != MessageBoxResult.Yes)
-                    return;
-            }
-        }
-    }
-
-    /// <summary>
-    /// 由 HandleLogoutRequested 或 OnClosing 在退出前调用。
-    /// 等后台工作停止；还有未保存报警时，询问重试还是放弃。
-    /// </summary>
-    private async Task StopBackgroundWorkAndHandleAlarmsAsync(string actionText)
-    {
-        // 先等所有任务收尾，再检查报警是否全部保存。
+        // 先等待采集、保存和查询收尾，再检查是否仍有报警未保存。
         await _viewModel.StopBackgroundWorkAsync();
-        var alarms = _viewModel.DeviceRuntime.Alarms;
-        while (alarms.PendingSaveCount > 0)
-        {
-            MessageBoxResult answer = MessageBox.Show(this,
-                $"还有 {alarms.PendingSaveCount} 条报警记录未保存。\n\n" +
-                $"选择“是”：重试保存。\n选择“否”：放弃这些未保存的记录并继续{actionText}。\n\n" +
-                alarms.PersistenceStatusText,
-                "报警记录尚未保存", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.Yes);
-            if (answer != MessageBoxResult.Yes)
-                break;
-            // 只重试保存，不重新采集。
-            await alarms.FlushAsync();
-        }
+        var alarms = _viewModel.DeviceTasks.Alarms;
+        if (alarms.PendingSaveCount == 0 && alarms.DroppedUpdateCount == 0)
+            return;
 
-        // 超过待保存上限而丢掉的更新无法补回，要明确提醒。
-        if (alarms.DroppedUpdateCount > 0)
-            MessageBox.Show(this,
-                $"数据库长时间无法保存，曾超过待保存上限，有 {alarms.DroppedUpdateCount} 次报警更新未能保留。\n" +
-                "这些更新无法通过重试找回，请检查数据库是否可写。",
-                "报警保存提醒", MessageBoxButton.OK, MessageBoxImage.Warning);
+        MessageBox.Show(this,
+            $"还有 {alarms.PendingSaveCount} 条报警未保存，另有 {alarms.DroppedUpdateCount} 次更新未能保留。\n\n" +
+            "将继续退出当前主窗口；未保存的部分不会自动补回，请检查数据库是否可写。",
+            "报警保存提醒", MessageBoxButton.OK, MessageBoxImage.Warning);
     }
 
-    /// <summary>
-    /// 点关闭时先拦住窗口，等后台工作收尾，再真正关闭。
-    /// </summary>
+    /// <summary>点关闭先拦住这次关窗，等后台正常收尾，再发起真正关闭。</summary>
     protected override async void OnClosing(CancelEventArgs e)
     {
         base.OnClosing(e);
         if (e.Cancel || _canClose)
             return;
-        e.Cancel = true; // 这次先不关，收尾后再调用 Close。
+        // 拦截首次关闭，完成异步收尾后由第二次 Close 真正退出。
+        e.Cancel = true;
         if (_isLeavingWindow)
             return;
 
@@ -256,34 +178,23 @@ public partial class MainWindow : Window
         IsEnabled = false;
         try
         {
-            await StopBackgroundWorkAndHandleAlarmsAsync("退出程序");
-            _canClose = true;
+            await StopBeforeExitAsync();
         }
         catch (Exception ex)
         {
-            // 收尾出错就询问是否仍要退出，不让异常直接导致崩溃。
-            _canClose = MessageBox.Show(this,
-                $"等待后台操作结束时出错：{ex.Message}\n\n" +
-                "无法确认全部操作已结束。仍要退出程序吗？",
-                "关闭程序失败", MessageBoxButton.YesNo, MessageBoxImage.Warning,
-                MessageBoxResult.No) == MessageBoxResult.Yes;
+            AppLog.Error("退出收尾失败", $"UserId={_viewModel.CurrentUser.Id}", ex);
+            MessageBox.Show(this, $"退出收尾时出错：{ex.Message}\n\n程序将退出，详情已记入运行日志。",
+                "退出程序", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally
         {
-            if (_canClose)
-                // 等本次关闭事件返回后，再发起真正关闭。
-                _ = Dispatcher.BeginInvoke(new Action(Close));
-            else
-            {
-                _isLeavingWindow = false;
-                IsEnabled = true;
-            }
+            _canClose = true;
+
+            _ = Dispatcher.BeginInvoke(new Action(Close));
         }
     }
 
-    /// <summary>
-    /// 真正关闭后解除事件订阅，再写一条关窗日志。
-    /// </summary>
+    /// <summary>真正关闭后解除事件订阅，再写一条关窗日志。</summary>
     protected override void OnClosed(EventArgs e)
     {
         _viewModel.LogoutRequested -= HandleLogoutRequested;
@@ -293,7 +204,6 @@ public partial class MainWindow : Window
         base.OnClosed(e);
     }
 
-    // 仅由 OnSourceInitialized 调用 Windows 的窗口接口；窗口样式本身是 32 位数值。
     [DllImport("user32.dll", EntryPoint = "GetWindowLongW", SetLastError = true)]
     private static extern int GetWindowLong(IntPtr handle, int index);
 

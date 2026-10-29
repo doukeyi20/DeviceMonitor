@@ -1,3 +1,4 @@
+// 管理监控页设备勾选、批量启停、读数汇总和曲线选择。
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -10,45 +11,39 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using DeviceMonitor.Core.Models;
 using DeviceMonitor.Core.Persistence;
-using DeviceMonitor.Sampling;
 
 namespace DeviceMonitor.ViewModels;
 
-/// <summary>
-/// 实时监控页面的数据：勾选设备后批量启停，每个点显示最新读数、当前报警和实时波形。
-/// 本类管页面操作，DeviceRuntimeManager 管任务，DeviceSamplingViewModel 真正循环采集。
-/// </summary>
 public partial class MonitoringViewModel : PageViewModel
 {
     private readonly UserAccount _currentUser;
     private readonly DeviceStore _deviceStore;
-    private readonly DispatcherTimer _dataAgeTimer; // 每秒更新“多久没读到新数据”的提示。
+    private readonly DispatcherTimer _dataAgeTimer;
     private readonly Dispatcher _dispatcher = Dispatcher.CurrentDispatcher;
-    private DispatcherOperation? _readingRefreshOperation; // 已排队的汇总刷新，避免连续增删行时重复刷新。
-    private readonly HashSet<DeviceSamplingViewModel> _observedSessions = new(); // 当前已订阅读数行变化的任务。
-    // 原读数行 → 监控显示行；显示行补上设备名称，仍读取原对象的数值。
-    private readonly Dictionary<PointReadingViewModel, MonitoringReadingViewModel> _readingRows = new();
-    private bool _isShuttingDown; // 退出后不再给旧页面回填数据。
-    private bool _isChangingChecks; // 批量改勾选时，等全部改完再统一汇总。
-    private bool _isRefreshingReadingRows; // 更新行名单时先保留曲线，等恢复选中行后再切换。
-    private (long DeviceId, long PointId)? _lastSelectedPoint; // 重启加载期间暂时没行，也能记住原来看的点。
-    private int _deviceListVersion; // 删除设备后递增，让删除前启动的旧查询作废。
+    // 合并短时间内的读数列表刷新请求，避免重复向 UI 队列提交操作。
+    private DispatcherOperation? _readingRefreshOperation;
+    // 只订阅当前任务一次；任务删除或页面退出时配对解除。
+    private readonly HashSet<DeviceSamplingViewModel> _observedSessions = new();
+    private bool _isShuttingDown;
+    private bool _isChangingChecks;
+    private bool _isRefreshingReadingRows;
+    // 列表重建时按设备和点位编号恢复曲线选择。
+    private (long DeviceId, long PointId)? _lastSelectedPoint;
+    private int _deviceRemovalVersion;
 
-    public DeviceRuntimeManager DeviceRuntime { get; } // 主窗口传来的共用管理器。
-    // 左侧设备表、右侧点位表分别绑定这两个集合。
+    public DeviceTasks DeviceTasks
+    {
+        get;
+    }
+
     public ObservableCollection<MonitoringDeviceViewModel> Devices { get; } = new();
-    public ObservableCollection<MonitoringReadingViewModel> Readings { get; } = new();
-    public LiveTrendViewModel Trend { get; } = new(); // 下方波形只看选中的一个点，不混合不同量纲。
-    public int ActiveSamplingCount => DeviceRuntime.ActiveSamplingCount;
-    public int CheckedDeviceCount => Devices.Count(row => row.IsChecked);
+    // 显示名单引用任务原有的点位对象，不复制读数或转发一套属性。
+    public ObservableCollection<PointMonitorViewModel> Readings { get; } = new();
+    public LiveTrendViewModel Trend { get; } = new();
+    public int ActiveSamplingCount => DeviceTasks.ActiveSamplingCount;
 
-    // 鼠标高亮的行；批量启停仍看 IsChecked，不看这里。
     [ObservableProperty]
-    private MonitoringDeviceViewModel? _selectedDevice;
-
-    // 表格行和波形选择框共用这个选中点；不改变其他点的采集。
-    [ObservableProperty]
-    private MonitoringReadingViewModel? _selectedReading;
+    private PointMonitorViewModel? _selectedReading;
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(RefreshDevicesCommand))]
@@ -60,369 +55,335 @@ public partial class MonitoringViewModel : PageViewModel
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(StartSamplingCommand))]
     [NotifyCanExecuteChangedFor(nameof(StopSamplingCommand))]
+    [NotifyCanExecuteChangedFor(nameof(StopAllSamplingCommand))]
     private bool _isStoppingSampling;
 
     [ObservableProperty]
     private string _pageMessage = string.Empty;
 
-    /// <summary>
-    /// 接上共用管理器的通知和计时器；采集仍需手动开始。
-    /// </summary>
+    public bool HasReadings => Readings.Count > 0;
+
     public MonitoringViewModel(UserAccount currentUser, DeviceStore deviceStore,
-        DeviceRuntimeManager deviceRuntimeManager) : base("实时监控")
+    DeviceTasks deviceTasks) : base("实时监控")
     {
         _currentUser = currentUser ?? throw new ArgumentNullException(nameof(currentUser));
         _deviceStore = deviceStore ?? throw new ArgumentNullException(nameof(deviceStore));
-        DeviceRuntime = deviceRuntimeManager ?? throw new ArgumentNullException(nameof(deviceRuntimeManager));
-       
+        DeviceTasks = deviceTasks ?? throw new ArgumentNullException(nameof(deviceTasks));
+
         if (!_currentUser.IsEnabled)
             throw new UnauthorizedAccessException("当前账户不能查看实时监控。");
 
-        ((INotifyCollectionChanged)DeviceRuntime.Sessions).CollectionChanged += Sessions_CollectionChanged;
-       
-        DeviceRuntime.PropertyChanged += DeviceRuntime_PropertyChanged;
-        DeviceRuntime.DeviceDeleted += DeviceRuntime_DeviceDeleted;
+        ((INotifyCollectionChanged)DeviceTasks.Sessions).CollectionChanged += Sessions_CollectionChanged;
 
-        // 每秒只更新“几秒前”的提示，不读取设备。
+        DeviceTasks.PropertyChanged += DeviceTasks_PropertyChanged;
+        DeviceTasks.DeviceDeleted += DeviceTasks_DeviceDeleted;
+
         _dataAgeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _dataAgeTimer.Tick += DataAgeTimer_Tick;
         _dataAgeTimer.Start();
     }
 
-    /// <summary>
-    /// 由 RefreshDevicesCommand 调用；MonitoringView_Loaded 也会执行此命令。
-    /// 加载全部设备配置，按编号保留原勾选；新设备不勾选，也不自动开始采集。
-    /// </summary>
+    /// <summary>加载全部设备配置，按编号保留原勾选；新设备不勾选，也不自动开始采集。</summary>
     [RelayCommand(CanExecute = nameof(CanRefreshDevices))]
     private async Task RefreshDevicesAsync()
     {
-        if (!CanRefreshDevices()) return;
+        if (!CanRefreshDevices())
+            return;
 
-        // 标记正在刷新，并记下版本，等查询回来时判断结果是否过期。
         IsRefreshing = true;
-        int listVersion = _deviceListVersion;
+        int removalVersionAtStart = _deviceRemovalVersion;
         PageMessage = "正在加载设备配置…";
 
         try
         {
-            // 后台查询，避免界面卡住。
             var latest = await Task.Run(() => _deviceStore.GetDevices(_currentUser));
-            // 退出了或期间删过设备，就丢弃这次旧结果。
-            if (_isShuttingDown || DeviceRuntime.IsShuttingDown || listVersion != _deviceListVersion) return;
 
-            // 记住原勾选和高亮行，刷新后按设备编号恢复。
-            long? selectedId = SelectedDevice?.Device.Id;
+            if (_isShuttingDown || DeviceTasks.IsShuttingDown || removalVersionAtStart != _deviceRemovalVersion)
+                return;
 
             HashSet<long> checkedIds = Devices.Where(row => row.IsChecked).Select(row => row.Device.Id).ToHashSet();
-            
-            // 断开旧行通知，清掉旧显示；不会停止正在采集的任务。
-            SelectedDevice = null;
+
             DetachDeviceRows();
-            // 先保留原读数包装行；下面汇总时只移除真正不再显示的行。
+
             Devices.Clear();
-            
-            // 为每台设备创建显示行，有旧采集任务就接上它。
+
             foreach (DeviceInfo device in latest)
             {
-                DeviceSamplingViewModel? session = DeviceRuntime.Sessions.FirstOrDefault(item => item.DeviceId == device.Id);
+                DeviceSamplingViewModel? session = DeviceTasks.Sessions.FirstOrDefault(item => item.DeviceId == device.Id);
                 var row = new MonitoringDeviceViewModel(device, session) { IsChecked = checkedIds.Contains(device.Id) };
                 row.PropertyChanged += DeviceRow_PropertyChanged;
                 Devices.Add(row);
             }
 
-            // 恢复高亮行，再统一更新读数汇总、说明和按钮。
-            SelectedDevice = Devices.FirstOrDefault(row => row.Device.Id == selectedId) ?? Devices.FirstOrDefault();
             RefreshCheckedDevices();
-            // 设备数量已在页头显示；正常加载不再追加操作说明。
+
             PageMessage = Devices.Count == 0 ? "暂无设备配置。" : string.Empty;
         }
         catch (Exception ex)
         {
-            if (!_isShuttingDown && !DeviceRuntime.IsShuttingDown)
+            if (!_isShuttingDown && !DeviceTasks.IsShuttingDown)
                 PageMessage = $"加载设备失败：{ex.Message}。保留原来的列表。";
         }
-        finally { IsRefreshing = false; }
+        finally
+        {
+            IsRefreshing = false;
+        }
     }
 
+    private bool CanRefreshDevices() => !_isShuttingDown && !DeviceTasks.IsShuttingDown && !IsRefreshing;
 
-    // 未退出且没在刷新时，刷新按钮才能点。
-    // 由 RefreshDevicesCommand 判断按钮能不能点时调用。
-    private bool CanRefreshDevices() => !_isShuttingDown && !DeviceRuntime.IsShuttingDown && !IsRefreshing;
-
-    
-    /// <summary>
-    /// 由 CheckAllDevicesCommand 调用。
-    /// 全部勾选按钮的命令
-    /// </summary>
+    /// <summary>全部勾选按钮的命令</summary>
     [RelayCommand(CanExecute = nameof(CanChangeChecks))]
     private void CheckAllDevices() => ChangeAllChecks(true);
 
-
-    /// <summary>
-    /// 由 ClearDeviceChecksCommand 调用。
-    /// 清除勾选按钮的命令
-    /// </summary>
+    /// <summary>清除勾选按钮的命令</summary>
     [RelayCommand(CanExecute = nameof(CanChangeChecks))]
     private void ClearDeviceChecks() => ChangeAllChecks(false);
 
+    private bool CanChangeChecks() => !_isShuttingDown && !DeviceTasks.IsShuttingDown && !IsRefreshing && Devices.Count > 0;
 
-    // 有设备、没在刷新或退出时，才允许全选和清空勾选。
-    // 由 CheckAllDevicesCommand、ClearDeviceChecksCommand 判断按钮能不能点时调用。
-    private bool CanChangeChecks() => !_isShuttingDown && !DeviceRuntime.IsShuttingDown && !IsRefreshing && Devices.Count > 0;
-    
-   /// <summary>
-   /// 由 CheckAllDevices 和 ClearDeviceChecks 调用。
-   /// 批量勾选或清除勾选
-   /// </summary>
+    /// <summary>批量勾选或清除勾选</summary>
     private void ChangeAllChecks(bool isChecked)
     {
-        if (!CanChangeChecks()) return;
-        // 批量改完再汇总一次，避免每改一行都重建读数表。
+        if (!CanChangeChecks())
+            return;
+
         _isChangingChecks = true;
         try
         {
-            foreach (MonitoringDeviceViewModel row in Devices) row.IsChecked = isChecked;
+            foreach (MonitoringDeviceViewModel row in Devices)
+                row.IsChecked = isChecked;
         }
-        finally { _isChangingChecks = false; }
+        finally
+        {
+            _isChangingChecks = false;
+        }
         RefreshCheckedDevices();
     }
 
-
-    /// <summary>
-    /// 由设备显示行 MonitoringDeviceViewModel 的 PropertyChanged 事件调用。
-    /// 设备行变化时，勾选变化刷新汇总，任务状态变化刷新按钮。
-    /// </summary>
+    /// <summary>设备行变化时，勾选变化刷新汇总，任务状态变化刷新按钮。</summary>
     private void DeviceRow_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (_isShuttingDown) return;
+        if (_isShuttingDown)
+            return;
         if (e.PropertyName == nameof(MonitoringDeviceViewModel.IsChecked) && !_isChangingChecks)
             RefreshCheckedDevices();
         else if (e.PropertyName is nameof(MonitoringDeviceViewModel.Sampling) or nameof(MonitoringDeviceViewModel.SamplingStateText))
             NotifySamplingCommands();
     }
 
-    /// <summary>
-    /// 由批量勾选、设备行变化、刷新设备和删除设备后的处理方法调用。
-    /// 勾选改完后，更新点位表和按钮；不开始采集。
-    /// </summary>
+    /// <summary>勾选改完后，更新点位表和按钮；不开始采集。</summary>
     private void RefreshCheckedDevices()
     {
-        // 先更新数据和显示，再让各按钮重新判断能否点击。
-        OnPropertyChanged(nameof(CheckedDeviceCount));
         RefreshReadingRows();
         NotifySamplingCommands();
         CheckAllDevicesCommand.NotifyCanExecuteChanged();
         ClearDeviceChecksCommand.NotifyCanExecuteChanged();
     }
 
-    /// <summary>
-    /// 由 StartSamplingCommand 调用。
-    /// 把勾选且允许启动的设备交给 DeviceRuntimeManager，再由各自的任务开始循环采集。
-    /// </summary>
+    /// <summary>把勾选且允许启动的设备交给 DeviceTasks，再由各自的任务开始循环采集。</summary>
     [RelayCommand(CanExecute = nameof(CanStartSampling))]
     private void StartSampling()
     {
-        // ToArray 固定本次勾选名单，后面改勾选也不影响本次操作。
         MonitoringDeviceViewModel[] checkedRows = Devices.Where(row => row.IsChecked).ToArray();
 
-        // 没勾选或当前不允许启动，就直接返回。
-        if (checkedRows.Length == 0) { PageMessage = "请先在设备表中勾选要启动的设备。"; return; }
-        if (!CanStartSampling()) return;
+        if (checkedRows.Length == 0)
+        {
+            PageMessage = "请先在设备表中勾选要启动的设备。";
+            return;
+        }
+        if (!CanStartSampling())
+            return;
 
-        // 只启动已启用、未运行且不在删除的设备。
-        // Sampling 为 null 表示还没创建任务，也可以启动。
         MonitoringDeviceViewModel[] targets = checkedRows.Where(row => row.Device.IsEnabled
-            && row.Sampling?.IsRunning != true && !DeviceRuntime.IsDeletingDevice(row.Device.Id)).ToArray();
+            && row.Sampling?.IsRunning != true && !DeviceTasks.IsDeletingDevice(row.Device.Id)).ToArray();
 
-        // 逐台发启动请求，分别统计成功发出的请求和当场失败的原因。
         int started = 0;
         var failures = new List<string>();
-        
+
         foreach (MonitoringDeviceViewModel row in targets)
         {
-            try 
-            { 
-                // 传设备编号，让管理器找到或新建对应任务并启动，不是转换设备对象。
-                DeviceRuntime.Start(row.Device.Id);
-                // 请求发出不代表设备已经连接成功。
-                started++; 
+            try
+            {
+                DeviceTasks.Start(row.Device.Id);
+
+                started++;
             }
-            catch (Exception ex) 
-            { 
-                // 一台失败先记下，后面的设备仍继续尝试。
-                failures.Add($"{row.Device.Name}：{ex.Message}"); 
+            catch (Exception ex)
+            {
+                failures.Add($"{row.Device.Name}：{ex.Message}");
             }
         }
-       
+
         PageMessage = $"已向 {started} 台设备发出启动请求；跳过 {checkedRows.Length - targets.Length} 台已运行、停用或正在删除的设备。"
             + (failures.Count == 0 ? string.Empty : $" 启动失败：{string.Join("；", failures)}");
-        // 重新判断按钮能否点击，不会再次执行启停。
+
         NotifySamplingCommands();
     }
 
-    // 至少有一台勾选设备能启动，且当前允许操作，开始按钮才可点。
-    // 由 StartSamplingCommand 判断按钮能不能点时调用。
     private bool CanStartSampling() => CanControlSampling() && !IsRefreshing && !IsStoppingSampling
         && Devices.Any(row => row.IsChecked && row.Device.IsEnabled && row.Sampling?.IsRunning != true
-            && !DeviceRuntime.IsDeletingDevice(row.Device.Id));
+            && !DeviceTasks.IsDeletingDevice(row.Device.Id));
 
-    /// <summary>
-    /// 由 StopSamplingCommand 调用。
-    /// 同时请求停止勾选设备，再等它们各自完成读取和保存收尾。
-    /// </summary>
+    /// <summary>同时请求停止勾选设备，再等它们各自完成读取和保存收尾。</summary>
     [RelayCommand(CanExecute = nameof(CanStopSampling))]
     private async Task StopSamplingAsync()
     {
-        if (!Devices.Any(row => row.IsChecked)) { PageMessage = "请先勾选要停止的设备。"; return; }
-        if (!CanStopSampling()) return;
+        if (!Devices.Any(row => row.IsChecked))
+        {
+            PageMessage = "请先勾选要停止的设备。";
+            return;
+        }
+        if (!CanStopSampling())
+            return;
 
-        // 固定本次要停止的名单，只取勾选且正在运行的设备。
-        MonitoringDeviceViewModel[] targets = Devices.Where(row => row.IsChecked && row.Sampling?.IsRunning == true).ToArray();
-        // 收尾期间禁止重复发起停止。
+        DeviceSamplingViewModel[] targets = Devices.Where(row => row.IsChecked && row.Sampling?.IsRunning == true)
+            .Select(row => row.Sampling!).ToArray();
+        await StopTasksAsync(targets);
+    }
+
+    /// <summary>不看当前勾选，停止所有正在运行的设备；之后仍允许再次开始。</summary>
+    [RelayCommand(CanExecute = nameof(CanStopAllSampling))]
+    private async Task StopAllSamplingAsync()
+    {
+        if (!CanStopAllSampling())
+            return;
+        await StopTasksAsync(DeviceTasks.Sessions.Where(session => session.IsRunning).ToArray());
+    }
+
+    private bool CanStopAllSampling() => CanControlSampling() && !IsStoppingSampling
+        && DeviceTasks.ActiveSamplingCount > 0;
+
+    private async Task StopTasksAsync(IReadOnlyList<DeviceSamplingViewModel> targets)
+    {
         IsStoppingSampling = true;
         try
         {
             var failures = new List<string>();
-            // 每台都发停止请求，再一起等它们结束。
-            await Task.WhenAll(targets.Select(async row =>
+
+            await Task.WhenAll(targets.Select(async session =>
             {
-                // 按编号找到原任务，等待它的采集循环结束。
-                try { await DeviceRuntime.StopAsync(row.Device.Id); }
-                catch (Exception ex) { failures.Add($"{row.Device.Name}：{ex.Message}"); }
+                try
+                {
+                    await DeviceTasks.StopAsync(session.DeviceId);
+                }
+                catch (Exception ex)
+                {
+                    string name = Devices.FirstOrDefault(row => row.Device.Id == session.DeviceId)?.Device.Name
+                        ?? $"设备 #{session.DeviceId}";
+                    failures.Add($"{name}：{ex.Message}");
+                }
             }));
-            // 退出时不再更新旧页面的提示。
+
             if (!_isShuttingDown)
-                PageMessage = $"已停止 {targets.Length - failures.Count} 台设备。"
+                PageMessage = $"已停止 {targets.Count - failures.Count} 台设备。"
                     + (failures.Count == 0 ? string.Empty : $" 停止失败：{string.Join("；", failures)}");
         }
-        // 无论成功还是失败，都解除“正在停止”的标记。
-        finally { IsStoppingSampling = false; }
+
+        finally
+        {
+            IsStoppingSampling = false;
+        }
     }
 
-    // 刷新配置期间仍可停止已有任务，不必等查询完成。
-    // 由 StopSamplingCommand 判断按钮能不能点时调用。
     private bool CanStopSampling() => CanControlSampling() && !IsStoppingSampling
         && Devices.Any(row => row.IsChecked && row.Sampling?.IsRunning == true);
 
-    // 未退出且用户是已启用的管理员或操作员，才允许启停。
-    private bool CanControlSampling() => !_isShuttingDown && !DeviceRuntime.IsShuttingDown && _currentUser.IsEnabled
+    private bool CanControlSampling() => !_isShuttingDown && !DeviceTasks.IsShuttingDown && _currentUser.IsEnabled
         && _currentUser.Role is UserRole.Administrator or UserRole.Operator;
 
-    /// <summary>
-    /// 由 DeviceRuntime.Sessions 的 CollectionChanged 事件调用。
-    /// 管理器的任务集合变化后，按设备编号给显示行接上任务，再刷新读数。
-    /// </summary>
+    /// <summary>设备任务的任务集合变化后，按设备编号给显示行接上任务，再刷新读数。</summary>
     private void Sessions_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
-        if (_isShuttingDown) return;
-        // 用相同的设备 Id 对上号，AttachSampling 保存原任务的引用。
+        if (_isShuttingDown)
+            return;
+
         foreach (MonitoringDeviceViewModel row in Devices)
-            row.AttachSampling(DeviceRuntime.Sessions.FirstOrDefault(item => item.DeviceId == row.Device.Id));
-        // 更新右侧显示，不在这里读取设备。
+            row.AttachSampling(DeviceTasks.Sessions.FirstOrDefault(item => item.DeviceId == row.Device.Id));
+
         RefreshReadingRows();
         NotifySamplingCommands();
     }
 
-    /// <summary>
-    /// 由 RefreshCheckedDevices、Sessions_CollectionChanged 和排队的读数刷新调用。
-    /// 从勾选设备的采集任务中取出读数行，补上设备名称后放进右侧表格。
-    /// 能复用的显示行继续用，不再显示的行解除订阅。
-    /// </summary>
+    /// <summary>从勾选设备的采集任务中取出读数行，补上设备名称后放进右侧表格。</summary>
     private void RefreshReadingRows()
     {
         long? selectedDeviceId = SelectedReading?.DeviceId ?? _lastSelectedPoint?.DeviceId;
-        long? selectedPointId = SelectedReading?.Reading.Point.Id ?? _lastSelectedPoint?.PointId;
-        // 只汇总勾选且已有任务的设备。
+        long? selectedPointId = SelectedReading?.Point.Id ?? _lastSelectedPoint?.PointId;
+
         MonitoringDeviceViewModel[] checkedRows = Devices.Where(row => row.IsChecked && row.Sampling is not null).ToArray();
-        // desiredSessions 存这次需要显示的任务，方便和旧订阅比较。
+
         HashSet<DeviceSamplingViewModel> desiredSessions = checkedRows.Select(row => row.Sampling!).ToHashSet();
 
-        // 不再显示的任务断开通知，新显示的任务接上通知；都不改变采集启停。
         foreach (DeviceSamplingViewModel session in _observedSessions.Where(item => !desiredSessions.Contains(item)).ToArray())
         {
             session.Readings.CollectionChanged -= SessionReadings_CollectionChanged;
             _observedSessions.Remove(session);
         }
-        // Add 返回 true 才是新任务，避免重复订阅。
-        foreach (DeviceSamplingViewModel session in desiredSessions)
-            if (_observedSessions.Add(session)) session.Readings.CollectionChanged += SessionReadings_CollectionChanged;
 
-        // desiredRows 是右表的新名单，desiredReadings 用来判断哪些旧行该清掉。
-        var desiredRows = new List<MonitoringReadingViewModel>();
-        var desiredReadings = new HashSet<PointReadingViewModel>();
+        foreach (DeviceSamplingViewModel session in desiredSessions)
+            if (_observedSessions.Add(session))
+                session.Readings.CollectionChanged += SessionReadings_CollectionChanged;
+
+        var desiredRows = new List<PointMonitorViewModel>();
         foreach (MonitoringDeviceViewModel deviceRow in checkedRows)
         {
-            foreach (PointReadingViewModel reading in deviceRow.Sampling!.Readings)
+            foreach (PointMonitorViewModel reading in deviceRow.Sampling!.Readings)
             {
-                // reading 是任务里的原读数行。
-                desiredReadings.Add(reading);
-                if (!_readingRows.TryGetValue(reading, out MonitoringReadingViewModel? row))
-                {
-                    // 没有对应显示行才创建，补上设备名称，数值仍从原行取。
-                    row = new MonitoringReadingViewModel(deviceRow.Device, reading, DeviceRuntime.Alarms, deviceRow.Sampling);
-                    _readingRows.Add(reading, row);
-                }
-                else row.UpdateDevice(deviceRow.Device);
-                desiredRows.Add(row);
+                reading.UpdateDevice(deviceRow.Device);
+                desiredRows.Add(reading);
             }
         }
 
-        // 清掉不再显示的行及订阅，再替换右侧显示名单。
-        foreach (PointReadingViewModel reading in _readingRows.Keys.Where(item => !desiredReadings.Contains(item)).ToArray())
-        {
-            _readingRows[reading].Dispose();
-            _readingRows.Remove(reading);
-        }
-        // 尽量保留原行和顺序，不用 Clear 让表格选中项反复丢失。
         _isRefreshingReadingRows = true;
         try
         {
-            foreach (MonitoringReadingViewModel row in Readings.Where(item => !desiredRows.Contains(item)).ToArray())
+            foreach (PointMonitorViewModel row in Readings.Where(item => !desiredRows.Contains(item)).ToArray())
                 Readings.Remove(row);
             for (int index = 0; index < desiredRows.Count; index++)
             {
-                MonitoringReadingViewModel row = desiredRows[index];
+                PointMonitorViewModel row = desiredRows[index];
                 int oldIndex = Readings.IndexOf(row);
-                if (oldIndex < 0) Readings.Insert(index, row);
-                else if (oldIndex != index) Readings.Move(oldIndex, index);
+                if (oldIndex < 0)
+                    Readings.Insert(index, row);
+                else if (oldIndex != index)
+                    Readings.Move(oldIndex, index);
             }
-            // 重启会换成新的原读数行，但仍按设备和点位编号恢复选择。
-            SelectedReading = Readings.FirstOrDefault(row => row.DeviceId == selectedDeviceId && row.Reading.Point.Id == selectedPointId)
+
+            SelectedReading = Readings.FirstOrDefault(row => row.DeviceId == selectedDeviceId && row.Point.Id == selectedPointId)
                 ?? Readings.FirstOrDefault();
         }
-        finally { _isRefreshingReadingRows = false; }
+        finally
+        {
+            _isRefreshingReadingRows = false;
+        }
+        OnPropertyChanged(nameof(HasReadings));
         Trend.Select(SelectedReading);
     }
 
-    // 任务增删读数行时，稍后统一刷新汇总，避免连续 Add 时反复重建表格。
-    // 由设备采集任务 Readings 的 CollectionChanged 事件调用。
     private void SessionReadings_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
-        // 已退出或已经排过刷新，就不用再排一次。
         if (_isShuttingDown || _readingRefreshOperation is not null)
             return;
 
-        // 等当前这批 Clear/Add 完成，再在界面线程汇总一次。
         _readingRefreshOperation = _dispatcher.BeginInvoke(DispatcherPriority.DataBind, new Action(() =>
         {
-            // 清掉排队标记，下一次变化还能再次刷新。
             _readingRefreshOperation = null;
-            // 等待期间可能退出了，退出后不再回填数据。
+
             if (!_isShuttingDown)
                 RefreshReadingRows();
         }));
     }
 
-    /// <summary>
-    /// 由 DeviceRuntime 的 PropertyChanged 事件调用。
-    /// 管理器状态变了，更新运行台数和按钮是否可点。
-    /// </summary>
-    private void DeviceRuntime_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    /// <summary>设备任务状态变了，更新运行台数和按钮是否可点。</summary>
+    private void DeviceTasks_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(DeviceRuntimeManager.ActiveSamplingCount)) OnPropertyChanged(nameof(ActiveSamplingCount));
-        if (e.PropertyName is nameof(DeviceRuntimeManager.ActiveSamplingCount) or nameof(DeviceRuntimeManager.IsShuttingDown)
-            or nameof(DeviceRuntimeManager.IsDeletingDevices)) NotifySamplingCommands();
-        if (e.PropertyName == nameof(DeviceRuntimeManager.IsShuttingDown))
+        if (e.PropertyName == nameof(DeviceTasks.ActiveSamplingCount))
+            OnPropertyChanged(nameof(ActiveSamplingCount));
+        if (e.PropertyName is nameof(DeviceTasks.ActiveSamplingCount) or nameof(DeviceTasks.IsShuttingDown)
+            or nameof(DeviceTasks.IsDeletingDevices))
+            NotifySamplingCommands();
+        if (e.PropertyName == nameof(DeviceTasks.IsShuttingDown))
         {
             RefreshDevicesCommand.NotifyCanExecuteChanged();
             CheckAllDevicesCommand.NotifyCanExecuteChanged();
@@ -430,55 +391,49 @@ public partial class MonitoringViewModel : PageViewModel
         }
     }
 
-    // 收到删除通知后，移除这台设备的显示行和读数，不影响其他设备。
-    // 由 DeviceRuntime 的 DeviceDeleted 事件调用。
-    private void DeviceRuntime_DeviceDeleted(long deviceId)
+    private void DeviceTasks_DeviceDeleted(long deviceId)
     {
-        if (_isShuttingDown) return;
-        _deviceListVersion++; // 让删除前发出的旧查询作废，避免把已删除设备放回来。
+        if (_isShuttingDown)
+            return;
+        _deviceRemovalVersion++;
         MonitoringDeviceViewModel? row = Devices.FirstOrDefault(item => item.Device.Id == deviceId);
         if (row is not null)
         {
             row.PropertyChanged -= DeviceRow_PropertyChanged;
             row.DetachSampling();
             Devices.Remove(row);
-            if (ReferenceEquals(SelectedDevice, row)) SelectedDevice = null;
         }
         RefreshCheckedDevices();
         PageMessage = "设备已删除。";
     }
 
-    /// <summary>
-    /// 由勾选变化、开始采集、任务变化和退出时的处理方法调用。
-    /// 让开始、停止按钮重新检查能否点击；不执行启停操作。
-    /// </summary>
+    /// <summary>让开始、停止按钮重新检查能否点击；不执行启停操作。</summary>
     private void NotifySamplingCommands()
     {
         StartSamplingCommand.NotifyCanExecuteChanged();
         StopSamplingCommand.NotifyCanExecuteChanged();
+        StopAllSamplingCommand.NotifyCanExecuteChanged();
     }
 
-    // 由表格或波形选择框改变选中点时调用；只是切换曲线，不读取设备。
-    partial void OnSelectedReadingChanged(MonitoringReadingViewModel? value)
+    partial void OnSelectedReadingChanged(PointMonitorViewModel? value)
     {
-        if (value is not null) _lastSelectedPoint = (value.DeviceId, value.Reading.Point.Id);
-        if (!_isRefreshingReadingRows) Trend.Select(value);
+        if (value is not null)
+            _lastSelectedPoint = (value.DeviceId, value.Point.Id);
+        if (!_isRefreshingReadingRows)
+            Trend.Select(value);
     }
 
-    /// <summary>
-    /// 由 _dataAgeTimer 定时器每秒调用。
-    /// 每秒更新设备行的“几秒前”提示，不读取设备。
-    /// </summary>
+    /// <summary>每秒更新设备行的“几秒前”提示，不读取设备。</summary>
     private void DataAgeTimer_Tick(object? sender, EventArgs e)
     {
-        if (_isShuttingDown || DeviceRuntime.IsShuttingDown) return;
+        if (_isShuttingDown || DeviceTasks.IsShuttingDown)
+            return;
         DateTimeOffset now = DateTimeOffset.UtcNow;
-        foreach (MonitoringDeviceViewModel row in Devices) row.UpdateDataAge(now);
+        foreach (MonitoringDeviceViewModel row in Devices)
+            row.UpdateDataAge(now);
     }
 
-    /// <summary>
-    /// 解除旧设备行的通知订阅，不停止采集任务。
-    /// </summary>
+    /// <summary>解除旧设备行的通知订阅，不停止采集任务。</summary>
     private void DetachDeviceRows()
     {
         foreach (MonitoringDeviceViewModel row in Devices)
@@ -488,30 +443,22 @@ public partial class MonitoringViewModel : PageViewModel
         }
     }
 
-    /// <summary>
-    /// 取消待执行的刷新，解除读数通知，清掉显示行；不删除数据库历史。
-    /// </summary>
+    /// <summary>取消待执行的刷新，解除读数通知，清掉显示行；不删除数据库历史。</summary>
     private void ClearReadingRows()
     {
-        // 先取消旧刷新，再断开订阅并清空显示。
         _readingRefreshOperation?.Abort();
         _readingRefreshOperation = null;
-        foreach (DeviceSamplingViewModel session in _observedSessions) session.Readings.CollectionChanged -= SessionReadings_CollectionChanged;
+        foreach (DeviceSamplingViewModel session in _observedSessions)
+            session.Readings.CollectionChanged -= SessionReadings_CollectionChanged;
         _observedSessions.Clear();
-        foreach (MonitoringReadingViewModel row in _readingRows.Values) row.Dispose();
-        _readingRows.Clear();
         SelectedReading = null;
         Readings.Clear();
+        OnPropertyChanged(nameof(HasReadings));
     }
 
-    /// <summary>
-    /// 由 MainViewModel.StopBackgroundWorkAsync 在退出前调用。
-    /// 退出时等本页操作结束，再解除计时器和事件订阅。
-    /// 普通切换页面不调用，采集仍会继续。
-    /// </summary>
+    /// <summary>退出时等本页操作结束，再解除计时器和事件订阅。</summary>
     public async Task StopOperationsAsync()
     {
-        // 先禁止新操作，停掉提示计时器。
         _isShuttingDown = true;
         _dataAgeTimer.Stop();
         _dataAgeTimer.Tick -= DataAgeTimer_Tick;
@@ -520,12 +467,12 @@ public partial class MonitoringViewModel : PageViewModel
         ClearDeviceChecksCommand.NotifyCanExecuteChanged();
         NotifySamplingCommands();
 
-        // 等已经发起的刷新和停止结束，再拆掉本页的通知。
         await Task.WhenAll(RefreshDevicesCommand.ExecutionTask ?? Task.CompletedTask,
-            StopSamplingCommand.ExecutionTask ?? Task.CompletedTask);
-        ((INotifyCollectionChanged)DeviceRuntime.Sessions).CollectionChanged -= Sessions_CollectionChanged;
-        DeviceRuntime.PropertyChanged -= DeviceRuntime_PropertyChanged;
-        DeviceRuntime.DeviceDeleted -= DeviceRuntime_DeviceDeleted;
+            StopSamplingCommand.ExecutionTask ?? Task.CompletedTask,
+            StopAllSamplingCommand.ExecutionTask ?? Task.CompletedTask);
+        ((INotifyCollectionChanged)DeviceTasks.Sessions).CollectionChanged -= Sessions_CollectionChanged;
+        DeviceTasks.PropertyChanged -= DeviceTasks_PropertyChanged;
+        DeviceTasks.DeviceDeleted -= DeviceTasks_DeviceDeleted;
         DetachDeviceRows();
         ClearReadingRows();
         Trend.Dispose();

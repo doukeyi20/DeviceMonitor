@@ -1,6 +1,6 @@
-﻿<!--
-    数据源是后台创建的 LoginViewModel；用户名通过绑定传入，密码由后台按 x:Name 取控件的值。
--->
+
+
+<!-- 登录与首次管理员创建；密码由窗口事件按需读取。 -->
 <Window x:Class="DeviceMonitor.Views.LoginWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -16,24 +16,23 @@
         Foreground="{StaticResource PrimaryTextBrush}">
 
     <Window.Resources>
-        <!-- bool 为 true 就显示，为 false 就隐藏且不占位置。 -->
+
         <BooleanToVisibilityConverter x:Key="BooleanToVisibility" />
     </Window.Resources>
 
-    <Border Margin="22" Padding="28" CornerRadius="14"
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+    <Border Margin="22" Padding="28" CornerRadius="14" IsEnabled="{Binding CanEdit}"
             Style="{StaticResource SectionCardStyle}">
         <Border.Effect>
             <DropShadowEffect Color="#222A32" BlurRadius="18" ShadowDepth="2" Opacity="0.07" />
         </Border.Effect>
 
-        <!-- 两套表单占同一个位置，每次只显示其中一套 -->
         <Grid>
 
-            <!-- 登录表单 -->
             <StackPanel x:Name="LoginPanel"
                         Visibility="{Binding IsLoginVisible, Converter={StaticResource BooleanToVisibility}}"
                         VerticalAlignment="Center">
-                <!-- 登录区标题和标记。 -->
+
                 <Grid Margin="0,0,0,28">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="58" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                     <Border Width="44" Height="44" HorizontalAlignment="Left" VerticalAlignment="Center"
@@ -62,7 +61,6 @@
                         Style="{StaticResource PrimaryActionButtonStyle}"
                         Height="42" />
 
-                <!-- 只有数据库中没有用户时，后续才会显示这个入口 -->
                 <Button x:Name="FirstAdminButton"
                         Content="首次使用？创建管理员账号"
                         Command="{Binding ShowAdminSetupCommand}"
@@ -71,11 +69,10 @@
                         Margin="0,14,0,0" />
             </StackPanel>
 
-            <!-- 首次创建管理员表单 -->
             <StackPanel x:Name="AdminSetupPanel"
                         Visibility="{Binding IsAdminSetupVisible, Converter={StaticResource BooleanToVisibility}}"
                         VerticalAlignment="Center">
-                <!-- 创建管理员区标题和标记。 -->
+
                 <Grid Margin="0,0,0,22">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="58" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                     <Border Width="44" Height="44" HorizontalAlignment="Left" VerticalAlignment="Center"
@@ -117,4 +114,5 @@
 
         </Grid>
     </Border>
+    </ScrollViewer>
 </Window>

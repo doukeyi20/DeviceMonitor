@@ -1,244 +1,397 @@
-using System.Buffers.Binary;
+// 使用 NModbus 批量读取寄存器，复用连接并转换点位数值。
+using System.IO.Ports;
 using System.Net.Sockets;
-using System.Collections.Concurrent;
 using DeviceMonitor.Core.Models;
+using NModbus;
+using NModbus.Serial;
 
-namespace DeviceMonitor.Core.Communication
+namespace DeviceMonitor.Core.Communication;
+
+/// <summary>连续采集在循环外创建一次，在循环中反复 ReadAsync，结束时 DisposeAsync。</summary>
+public sealed class ModbusPointReader : IAsyncDisposable
 {
+    // 固定本次运行的设备和点位配置，不随页面选择改变。
+    private readonly DeviceInfo _device;
+    private readonly PointInfo[] _points;
 
-    /// <summary>
-    /// 连接设备，用 Modbus 03/04 读取一个 16 位寄存器，返回 PointReadResult。
-    /// 单次测试和连续采集共用；这里只读一次，不循环、不保存历史。
-    /// </summary>
-    public sealed class ModbusPointReader
+    private readonly ushort _startAddress;
+    private readonly ushort _registerCount;
+    // 读取与释放互斥，避免收发尚未结束就关闭连接。
+    private readonly SemaphoreSlim _readAndDisposeLock = new(1, 1);
+    private readonly SerialConnection? _sharedSerial;
+    private TcpClient? _tcpClient;
+    private IModbusMaster? _tcpMaster;
+    private bool _disposed;
+
+    // 同 COM 共用主站；登记表保护引用计数，实际收发另用串口许可排队。
+    private static readonly object SerialConnectionsLock = new();
+    private static readonly Dictionary<string, SerialConnection> SerialConnectionsByPort = new(StringComparer.OrdinalIgnoreCase);
+
+    public ModbusPointReader(DeviceInfo device, IReadOnlyList<PointInfo> points)
+    : this(device, points, CreateRtuMaster)
     {
-        // 这个读取器实际用过哪些串口；结束时只退出自己的使用，不关闭别人的采集。
-        private readonly ConcurrentDictionary<string, byte> _serialPorts = new(StringComparer.OrdinalIgnoreCase);
-
-        /// <summary>
-        /// 由 AcquisitionViewModel.ReadOnceAsync 或 DeviceSamplingViewModel.RunAsync 调用。
-        /// 根据设备配置连接，发送点位读取请求，收到并检查响应后返回数值。
-        /// TCP 每次独立连接；RTU 同一 COM 口排队共用。显示、报警和历史由调用方处理。
-        /// </summary>
-        public async Task<PointReadResult> ReadAsync(
-            DeviceInfo device, PointInfo point, CancellationToken cancellationToken = default)
-        {
-            // 先检查配置，以及点位是否属于这台设备，不合法就不发网络请求。
-            ArgumentNullException.ThrowIfNull(device);
-            ArgumentNullException.ThrowIfNull(point);
-            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(device.Id);
-            if (device.ConnectTimeoutMilliseconds <= 0 ||
-                device.ReadTimeoutMilliseconds <= 0 || device.WriteTimeoutMilliseconds <= 0)
-                throw new ArgumentException("连接、读取、写入超时都必须大于 0。", nameof(device));
-            if (!device.IsEnabled)
-                throw new InvalidOperationException("设备已停用，不能读取。");
-            if (point.DeviceId != device.Id)
-                throw new ArgumentException("采集点不属于当前设备。", nameof(point));
-            if (!Enum.IsDefined(point.RegisterType) || !Enum.IsDefined(point.DataType))
-                throw new ArgumentException("暂不支持这个采集点的寄存器类型或数据类型。", nameof(point));
-            cancellationToken.ThrowIfCancellationRequested();
-
-            // RTU 只换掉收发字节的方式，点位、返回对象和后续采集流程仍沿用原来的。
-            if (device.CommunicationMode == DeviceCommunicationMode.Rtu)
-            {
-                SerialConnectionSettings.Validate(device.SerialPortName, device.BaudRate,
-                    device.Parity, device.StopBits, device.UnitId);
-                _serialPorts.TryAdd(SerialConnectionSettings.NormalizePortName(device.SerialPortName), 0);
-                ushort raw = await ModbusRtuTransport.ReadAsync(this, device, point, cancellationToken).ConfigureAwait(false);
-                return BuildResult(point, raw, cancellationToken);
-            }
-            if (device.CommunicationMode != DeviceCommunicationMode.Tcp)
-                throw new ArgumentException("不支持这个连接方式。", nameof(device));
-            ArgumentException.ThrowIfNullOrWhiteSpace(device.Host);
-            if (device.Port is < 1 or > 65535)
-                throw new ArgumentOutOfRangeException(nameof(device.Port), "端口必须在 1 到 65535 之间。");
-
-            // 每次读取独立创建连接，using 保证成功、失败或取消后都关闭。
-            using TcpClient client = new() { NoDelay = true };
-            try
-            {
-                // 连上设备，再取出用于收发字节的网络流。
-                await ConnectAsync(client, device, cancellationToken).ConfigureAwait(false);
-                using NetworkStream stream = client.GetStream();
-
-                // 每条连接只发一次请求，所以报文编号固定用 1；它不是数据库设备编号。
-                const ushort transactionId = 1;
-                // 寄存器类型决定用 03 还是 04，Address 决定读哪个位置。
-                byte functionCode = (byte)point.RegisterType;
-                byte[] request = CreateRequest(transactionId, device.UnitId, functionCode, point.Address);
-                // request 是待发送的字节，调用发送方法才真正发到设备。
-                await SendRequestAsync(stream, request, device, cancellationToken).ConfigureAwait(false);
-                // 收齐并检查响应，取出一个 16 位原始值。
-                ushort rawValue = await ReadResponseAsync(
-                    stream, device, transactionId, functionCode, cancellationToken).ConfigureAwait(false);
-
-                return BuildResult(point, rawValue, cancellationToken);
-            }
-            catch (Exception ex) when (cancellationToken.IsCancellationRequested)
-            {
-                // 停止时网络也可能抛其他异常，统一按取消处理，不误报故障。
-                throw new OperationCanceledException("本次读取已取消。", ex, cancellationToken);
-            }
-        }
-
-        /// <summary>采集循环的 finally、单次读取的 finally 调用，退出本读取器占用的串口。</summary>
-        public async Task CloseAsync()
-        {
-            foreach (string port in _serialPorts.Keys)
-            {
-                await ModbusRtuTransport.ReleaseAsync(port, this).ConfigureAwait(false);
-                _serialPorts.TryRemove(port, out _);
-            }
-        }
-
-        /// <summary>两种连接读到原始值后都调用这里，按点位类型解释整数并附上时间。</summary>
-        private static PointReadResult BuildResult(PointInfo point, ushort raw, CancellationToken token)
-        {
-            token.ThrowIfCancellationRequested();
-            int value = point.DataType == PointDataType.Int16 ? unchecked((short)raw) : raw;
-            return new PointReadResult(point, raw, value, DateTimeOffset.UtcNow);
-        }
-
-        /// <summary>
-        /// 由本类 ReadAsync 调用。
-        /// 按设备地址和端口建立连接，同时处理手动取消和连接超时。
-        /// </summary>
-        private static async Task ConnectAsync(
-            TcpClient client, DeviceInfo device, CancellationToken cancellationToken)
-        {
-            // 手动取消或超时，任一发生都结束等待。
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            // 超时只取消本次连接，不会取消整台设备的采集循环。
-            timeout.CancelAfter(device.ConnectTimeoutMilliseconds);
-            try
-            {
-                await client.ConnectAsync(device.Host.Trim(), device.Port, timeout.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
-            {
-                // 没收到手动停止信号，说明是连接超时。
-                throw new TimeoutException($"连接设备超时（{device.ConnectTimeoutMilliseconds} ms）。", ex);
-            }
-        }
-
-        /// <summary>
-        /// 由本类 ReadAsync 调用。
-        /// 按 Modbus TCP 格式，把报文编号、Unit ID、功能码和地址组装成请求字节。
-        /// </summary>
-        private static byte[] CreateRequest(ushort transactionId, byte unitId, byte functionCode, ushort address)
-        {
-            // 共 12 字节：前 7 字节是报文头，后面是功能码、地址和读取数量。
-            byte[] request = new byte[12];
-            BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(0, 2), transactionId);
-            BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(2, 2), 0); // 协议编号：Modbus 为 0。
-            BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(4, 2), 6); // 后面还剩 6 字节。
-            // Unit ID 是协议中的目标编号，不是数据库设备 Id。
-            request[6] = unitId;
-            request[7] = functionCode;
-            BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(8, 2), address);
-            BinaryPrimitives.WriteUInt16BigEndian(request.AsSpan(10, 2), 1); // 本次只读取一个寄存器。
-            return request;
-        }
-
-        /// <summary>
-        /// 由本类 ReadAsync 调用。
-        /// 把请求字节发给设备；这里的“写入”是发读取请求，不是修改寄存器。
-        /// </summary>
-        private static async Task SendRequestAsync(
-            NetworkStream stream, byte[] request, DeviceInfo device, CancellationToken cancellationToken)
-        {
-            // 为本次发送单独计时，同时监听手动停止。
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(device.WriteTimeoutMilliseconds);
-            try
-            {
-                // 异步发送要传入超时 token，不能只设置 WriteTimeout 属性。
-                await stream.WriteAsync(request.AsMemory(), timeout.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
-            {
-                throw new TimeoutException($"发送读取请求超时（{device.WriteTimeoutMilliseconds} ms）。", ex);
-            }
-        }
-
-        /// <summary>
-        /// 由本类 ReadAsync 调用。
-        /// 收齐并检查响应，取出一个 16 位原始值；有无符号的转换由 ReadAsync 处理。
-        /// </summary>
-        private static async Task<ushort> ReadResponseAsync(
-            NetworkStream stream, DeviceInfo device, ushort transactionId,
-            byte functionCode, CancellationToken cancellationToken)
-        {
-            // 报文头和正文共用一次超时，分几次收到也不会重新计时。
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(device.ReadTimeoutMilliseconds);
-            try
-            {
-                // 先收固定的 7 字节报文头，再根据其中的长度收正文。
-                byte[] header = new byte[7];
-                // TCP 可能分几次送来，ReadExactlyAsync 会一直读到指定字节数收齐。
-                await stream.ReadExactlyAsync(header.AsMemory(), timeout.Token).ConfigureAwait(false);
-
-                // 核对报文编号、协议编号和 Unit ID，确认是本次请求的响应。
-                if (BinaryPrimitives.ReadUInt16BigEndian(header.AsSpan(0, 2)) != transactionId)
-                    throw new InvalidDataException("响应报文编号与请求不一致，不能把它当成本次读数。");
-                if (BinaryPrimitives.ReadUInt16BigEndian(header.AsSpan(2, 2)) != 0)
-                    throw new InvalidDataException("响应不是有效的 Modbus TCP 报文。");
-                if (header[6] != device.UnitId)
-                    throw new InvalidDataException("响应的 Unit ID 与设备配置不一致，请检查 Unit ID。");
-
-                ushort length = BinaryPrimitives.ReadUInt16BigEndian(header.AsSpan(4, 2));
-
-                // 长度含头里已收到的 Unit ID；先检查范围，再按剩余长度创建正文数组。
-                if (length is < 2 or > 254)
-                    throw new InvalidDataException("响应报文长度不正确。");
-                byte[] body = new byte[length - 1];
-                // 扣掉 Unit ID 的 1 字节，其余全部收到 body 中。
-                await stream.ReadExactlyAsync(body.AsMemory(), timeout.Token).ConfigureAwait(false);
-
-                // 功能码带 0x80 表示设备返回错误，后一个字节是错误编号。
-                if (body[0] == (functionCode | 0x80))
-                {
-                    if (body.Length != 2)
-                        throw new InvalidDataException("设备返回的异常报文长度不正确。");
-                    throw new InvalidOperationException(
-                        $"设备返回 Modbus 异常 0x{body[1]:X2}：{DescribeException(body[1])}。");
-                }
-                if (body[0] != functionCode)
-                    throw new InvalidDataException("响应功能码与请求不一致。");
-                // 正常正文应是：功能码、字节数 2、两个数值字节。
-                if (body.Length != 4 || body[1] != 2)
-                    throw new InvalidDataException("响应数据长度不正确，本次应返回一个 16 位寄存器。");
-
-                // 数值从下标 2 开始，高位字节在前，按这个顺序还原整数。
-                return BinaryPrimitives.ReadUInt16BigEndian(body.AsSpan(2, 2));
-            }
-            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
-            {
-                throw new TimeoutException($"等待设备响应超时（{device.ReadTimeoutMilliseconds} ms）。", ex);
-            }
-            catch (EndOfStreamException ex)
-            {
-                throw new IOException("设备提前关闭了连接，未收到完整的 Modbus 响应。", ex);
-            }
-        }
-
-        /// <summary>
-        /// 由 ReadResponseAsync 收到设备返回的错误编号时调用。
-        /// 把设备返回的错误编号换成能看懂的原因。
-        /// </summary>
-        private static string DescribeException(byte code) => code switch
-        {
-            0x01 => "设备不支持这个读取功能",
-            0x02 => "寄存器地址不可用，请核对地址和寄存器类型",
-            0x03 => "设备不接受请求中的参数",
-            0x04 => "设备处理请求时出错",
-            0x05 => "设备已接受请求，但尚未处理完成",
-            0x06 => "设备正忙",
-            0x08 => "设备存储校验出错",
-            0x0A => "网关通路不可用",
-            0x0B => "网关后的设备没有响应",
-            _ => "设备拒绝了本次读取"
-        };
     }
+
+    internal ModbusPointReader(DeviceInfo device, IReadOnlyList<PointInfo> points,
+        Func<DeviceInfo, IModbusMaster> createRtuMaster)
+    {
+        // 在建立连接前检查批量读取范围，错误配置不进入重连循环。
+        (_startAddress, _registerCount) = ValidateReadRange(device, points);
+        _device = device;
+        _points = points.ToArray();
+
+        if (device.CommunicationMode == DeviceCommunicationMode.Rtu)
+        {
+            SerialConnectionSettings.Validate(device.SerialPortName, device.BaudRate, device.Parity, device.StopBits, device.UnitId);
+            _sharedSerial = AttachSerial(device, createRtuMaster);
+        }
+        else if (device.CommunicationMode == DeviceCommunicationMode.Tcp)
+            TcpConnectionTester.Validate(device);
+        else
+            throw new ArgumentException("不支持这个连接方式。", nameof(device));
+    }
+
+    /// <summary>读取一批点位；复用现有连接，通信失败后清理连接。</summary>
+    public async Task<IReadOnlyList<PointReadResult>> ReadAsync(CancellationToken token = default)
+    {
+        // 等待本对象上一次操作结束；排队可取消，取得许可后由 finally 释放。
+        await _readAndDisposeLock.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            token.ThrowIfCancellationRequested();
+
+            // TCP、RTU 先统一返回原始寄存器数组，后面共用换算逻辑。
+            ushort[] registers;
+
+            if (_sharedSerial is not null)
+                registers = await ReadRtuAsync(token).ConfigureAwait(false);
+            else
+            {
+                try
+                {
+                    await ConnectAsync(token).ConfigureAwait(false);
+
+                    // 同步收发开始后等待库调用结束，再响应取消。
+                    registers = await Task.Run(() => ReadRegisters(_tcpMaster!, token)).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (IsConnectionFailure(ex))
+                {
+                    // 丢弃故障连接，是否继续读取由调用方决定。
+                    CloseTcp();
+                    throw;
+                }
+            }
+
+            token.ThrowIfCancellationRequested();
+
+            // 同批点使用相同时间；按协议地址定位，不依赖页面中的排列顺序。
+            DateTimeOffset readAt = DateTimeOffset.UtcNow;
+            var results = new PointReadResult[_points.Length];
+
+            for (int i = 0; i < _points.Length; i++)
+            {
+                PointInfo point = _points[i];
+
+                int registerIndex = point.Address - _startAddress;
+                results[i] = BuildResult(point, registers[registerIndex], readAt);
+            }
+
+            return results;
+        }
+
+        // 用户停止优先按取消返回，避免同时显示通信故障。
+        catch (Exception ex) when (token.IsCancellationRequested)
+        {
+            throw new OperationCanceledException("本次读取已取消。", ex, token);
+        }
+        catch (IOException ex) when (ex.InnerException is SocketException { SocketErrorCode: SocketError.TimedOut })
+        {
+            throw new TimeoutException("等待设备响应超时，请检查供电、接线和通信参数。", ex);
+        }
+        finally
+        {
+            _readAndDisposeLock.Release();
+        }
+    }
+
+    /// <summary>区分可重试的通信故障、暂时设备错误与配置错误。</summary>
+    public static bool CanRetry(Exception exception) => IsConnectionFailure(exception)
+        || exception is ModbusDeviceException { IsConfigurationError: false };
+
+    // 恢复分类不等于已经确认物理断线。
+
+    private static bool IsConnectionFailure(Exception exception) =>
+        exception is IOException or InvalidDataException or SocketException or TimeoutException or FormatException or UnauthorizedAccessException;
+
+    /// <summary>校验点位类型及地址连续性，返回批量读取范围。</summary>
+    internal static (ushort StartAddress, ushort Count) ValidateReadRange(DeviceInfo device, IReadOnlyList<PointInfo> points)
+    {
+        ArgumentNullException.ThrowIfNull(device);
+        ArgumentNullException.ThrowIfNull(points);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(device.Id);
+        if (!device.IsEnabled)
+            throw new InvalidOperationException("设备已停用，不能读取。");
+        if (device.ConnectTimeoutMilliseconds <= 0 || device.ReadTimeoutMilliseconds <= 0 || device.WriteTimeoutMilliseconds <= 0)
+            throw new ArgumentException("连接、读取、写入超时都必须大于 0。", nameof(device));
+        if (points.Count is < 1 or > 125)
+            throw new ArgumentException("连续采集需要 1～125 个点，每个点占一个 16 位寄存器。", nameof(points));
+
+        // 排序仅用于校验连续地址，不改变调用方的点位顺序。
+        PointInfo[] ordered = points.OrderBy(point => point.Address).ToArray();
+        RegisterType type = ordered[0].RegisterType;
+        ushort startAddress = ordered[0].Address;
+
+        for (int i = 0; i < ordered.Length; i++)
+        {
+            PointInfo point = ordered[i];
+            if (point.DeviceId != device.Id)
+                throw new ArgumentException("采集点不属于当前设备。", nameof(points));
+            if (!Enum.IsDefined(point.RegisterType) || !Enum.IsDefined(point.DataType))
+                throw new ArgumentException("暂不支持这个采集点的寄存器类型或数据类型。", nameof(points));
+            if (point.RegisterType != type)
+                throw new ArgumentException("连续采集要求全部点使用同一种寄存器类型（03 或 04）；单点测试仍可分别读取。", nameof(points));
+            if (point.Address != startAddress + i)
+                throw new ArgumentException("连续采集要求点位地址连续且不重复；请调整点位配置，单点测试仍可分别读取。", nameof(points));
+        }
+
+        return (startAddress, (ushort)points.Count);
+    }
+
+    /// <summary>首次读取或故障清理后建立 TCP 连接。</summary>
+    private async Task ConnectAsync(CancellationToken token)
+    {
+        if (_tcpMaster is not null)
+            return;
+
+        // 连接成功后移交给字段；失败仅释放本次临时连接。
+        var tcp = new TcpClient { NoDelay = true };
+
+        try
+        {
+            await TcpConnectionTester.ConnectAsync(tcp, _device, token).ConfigureAwait(false);
+
+            _tcpMaster = new ModbusFactory().CreateMaster(tcp);
+            _tcpClient = tcp;
+        }
+        catch
+        {
+            tcp.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>设置库的超时及重试参数，读取并校验寄存器结果。</summary>
+    private ushort[] ReadRegisters(IModbusMaster master, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+
+        // 持有同口许可后设置本设备的读写超时。
+        master.Transport.ReadTimeout = _device.ReadTimeoutMilliseconds;
+        master.Transport.WriteTimeout = _device.WriteTimeoutMilliseconds;
+
+        // 库不重发，避免与外层轮询叠加重试。
+        master.Transport.Retries = 0;
+        master.Transport.SlaveBusyUsesRetryCount = true;
+        master.Transport.WaitToRetryMilliseconds = 0;
+
+        ushort[] registers;
+        try
+        {
+            // 功能码由配置决定，组帧、收齐和基础协议校验交给库。
+            registers = _points[0].RegisterType == RegisterType.Holding
+                ? master.ReadHoldingRegisters(_device.UnitId, _startAddress, _registerCount)
+                : master.ReadInputRegisters(_device.UnitId, _startAddress, _registerCount);
+        }
+        catch (SlaveException ex)
+        {
+            // 先核对站号和异常功能码，再解释设备错误码。
+
+            if (ex.SlaveAddress != _device.UnitId || ex.FunctionCode != ((byte)_points[0].RegisterType | 0x80))
+                throw new InvalidDataException("响应站号或功能码与请求不符。", ex);
+
+            throw new ModbusDeviceException(ex);
+        }
+        catch (NotImplementedException ex) when (
+            ex.TargetSite?.DeclaringType?.Assembly == typeof(ModbusFactory).Assembly)
+        {
+            // 仅转换库内部的未知功能码异常，不掩盖项目实现错误。
+            throw new InvalidDataException("设备响应包含不支持的功能码。", ex);
+        }
+
+        token.ThrowIfCancellationRequested();
+        // 整批数量不符时拒绝结果，不能把缺失寄存器当成零。
+        if (registers.Length != _registerCount)
+            throw new InvalidDataException("响应寄存器数量与本次请求不一致。");
+
+        return registers;
+    }
+
+    /// <summary>串行执行同 COM 的完整请求响应，并保留帧间空闲。</summary>
+    private async Task<ushort[]> ReadRtuAsync(CancellationToken token)
+    {
+        SerialConnection serial = _sharedSerial!;
+
+        // 同一总线上，一次完整请求响应必须结束后才允许下一站发送。
+        await serial.RequestLock.WaitAsync(token).ConfigureAwait(false);
+
+        try
+        {
+            return await Task.Run(() =>
+            {
+                token.ThrowIfCancellationRequested();
+
+                // 首次读取或故障清理后才打开串口，正常轮次继续复用。
+                serial.RtuMaster ??= serial.CreateMaster(_device);
+
+                return ReadRegisters(serial.RtuMaster, token);
+            }).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (IsConnectionFailure(ex))
+        {
+            DisposeMaster(ref serial.RtuMaster);
+            throw;
+        }
+        finally
+        {
+            try
+            {
+                // 按每字符 11 位保留帧间空闲；取消时也不跳过。
+                int gap = _device.BaudRate > 19200 ? 2 : (int)Math.Ceiling(3.5 * 11 * 1000 / _device.BaudRate);
+                await Task.Delay(gap).ConfigureAwait(false);
+            }
+            finally
+            {
+                serial.RequestLock.Release();
+            }
+        }
+    }
+
+    private static SerialConnection AttachSerial(DeviceInfo device, Func<DeviceInfo, IModbusMaster> createMaster)
+    {
+        string name = SerialConnectionSettings.NormalizePortName(device.SerialPortName);
+
+        lock (SerialConnectionsLock)
+        {
+            if (!SerialConnectionsByPort.TryGetValue(name, out SerialConnection? serial))
+            {
+                serial = new SerialConnection(device, createMaster);
+                SerialConnectionsByPort.Add(name, serial);
+            }
+            else if (serial.BaudRate != device.BaudRate || serial.Parity != device.Parity || serial.StopBits != device.StopBits)
+                throw new ArgumentException("同一 COM 口的设备必须使用相同的波特率、校验位和停止位。");
+
+            // 登记读取对象的使用次数，最后一个对象释放时才关闭共用串口。
+            serial.ReaderCount++;
+            return serial;
+        }
+    }
+
+    private static IModbusMaster CreateRtuMaster(DeviceInfo device)
+    {
+        var port = new SerialPort(SerialConnectionSettings.NormalizePortName(device.SerialPortName),
+            device.BaudRate, device.Parity, 8, device.StopBits)
+        {
+            Handshake = Handshake.None
+        };
+        try
+        {
+            port.Open();
+
+            return new ModbusFactory().CreateRtuMaster(new SerialPortAdapter(port));
+        }
+        catch
+        {
+            port.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>解释寄存器符号并按点位配置生成工程量结果。</summary>
+    private static PointReadResult BuildResult(PointInfo point, ushort raw, DateTimeOffset readAt)
+    {
+        // 保留原始位模式，先解释正负号，再由结果对象应用倍率与偏移。
+        int decoded = point.DataType == PointDataType.Int16 ? unchecked((short)raw) : raw;
+        return new PointReadResult(point, raw, decoded, readAt);
+    }
+
+    private void CloseTcp()
+    {
+        DisposeMaster(ref _tcpMaster);
+
+        _tcpClient?.Dispose();
+        _tcpClient = null;
+    }
+
+    private static void DisposeMaster(ref IModbusMaster? master)
+    {
+        IModbusMaster? old = master;
+        master = null; // 先清空引用，防止释放失败后复用坏连接。
+        try
+        {
+            old?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning("关闭 Modbus 连接失败", exception: ex);
+        }
+    }
+
+    /// <summary>等待当前读取结束，释放本对象及不再共用的连接。</summary>
+    public async ValueTask DisposeAsync()
+    {
+        await _readAndDisposeLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_disposed)
+                return;
+            _disposed = true;
+
+            CloseTcp();
+
+            if (_sharedSerial is not null)
+            {
+                lock (SerialConnectionsLock)
+                {
+                    if (--_sharedSerial.ReaderCount == 0)
+                    {
+                        DisposeMaster(ref _sharedSerial.RtuMaster);
+                        SerialConnectionsByPort.Remove(_sharedSerial.PortName);
+                    }
+                }
+            }
+        }
+        finally
+        {
+            _readAndDisposeLock.Release();
+        }
+    }
+
+    private sealed class SerialConnection(DeviceInfo device, Func<DeviceInfo, IModbusMaster> createMaster)
+    {
+        public string PortName { get; } = SerialConnectionSettings.NormalizePortName(device.SerialPortName);
+        public int BaudRate { get; } = device.BaudRate;
+        public Parity Parity { get; } = device.Parity;
+        public StopBits StopBits { get; } = device.StopBits;
+        public Func<DeviceInfo, IModbusMaster> CreateMaster { get; } = createMaster;
+        public SemaphoreSlim RequestLock { get; } = new(1, 1);
+        public IModbusMaster? RtuMaster;
+        public int ReaderCount;
+    }
+}
+
+/// <summary>ReadRegisters 核对站号和功能码后，把库的 SlaveException 转成这个异常，供 RunAsync 判断如何处理。</summary>
+public sealed class ModbusDeviceException(SlaveException original) : InvalidOperationException(
+    $"Modbus 异常 0x{original.SlaveExceptionCode:X2}：{Describe(original.SlaveExceptionCode)}。", original)
+{
+    public byte Code { get; } = original.SlaveExceptionCode;
+    public bool IsConfigurationError => Code is 1 or 2 or 3;
+    private static string Describe(byte code) => code switch
+    {
+        1 => "不支持这个读取功能，请检查寄存器类型",
+        2 => "寄存器地址不可用，请检查点位配置",
+        3 => "请求参数不正确，请检查读取配置",
+        6 => "设备正忙，稍后重试",
+        _ => "设备未能执行本次请求"
+    };
 }

@@ -1,3 +1,4 @@
+// 运行单台设备的采集循环，处理重试、停止、报警和历史保存。
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -7,32 +8,37 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using DeviceMonitor.Core.Communication;
 using DeviceMonitor.Core.Models;
 using DeviceMonitor.Core.Persistence;
-using DeviceMonitor.Sampling;
-using DeviceMonitor.Core.Diagnostics;
+using DeviceMonitor.Core;
 
 namespace DeviceMonitor.ViewModels;
 
-/// <summary>
-/// 一台设备的采集任务：开始时查一次配置，再循环读全部点位、更新显示和保存历史。
-/// </summary>
 public sealed class DeviceSamplingViewModel : ObservableObject
 {
+    // 保存本设备循环需要的业务对象，界面不直接持有通信连接。
     private readonly UserAccount _currentUser;
     private readonly DeviceStore _deviceStore;
     private readonly HistoryStore _historyStore;
-    private readonly AlarmTracker? _alarms;
-    private string _lastDeviceName;
-    private readonly ModbusPointReader _pointReader = new();
-    private CancellationTokenSource? _cancellation; // 给这一次运行发停止信号。
-    private Task _runningTask = Task.CompletedTask; // 整个采集循环的任务，不是某一个点的一次读取。
-    private string _lastSaveError = string.Empty;
+    private readonly AlarmMonitor? _alarms;
 
-    public long DeviceId { get; }
+    // 正常创建读取对象；回归检查可替换创建方法，避免访问真实设备。
+    private Func<DeviceInfo, IReadOnlyList<PointInfo>, ModbusPointReader> _createReader =
+        (device, points) => new ModbusPointReader(device, points);
 
-    // 每一项是一个点位的显示行，包含配置、最新数值、状态和时间。
-    public ObservableCollection<PointReadingViewModel> Readings { get; } = new();
+    // 取消源负责发停止信号，任务对象负责等待真正结束。
+    private CancellationTokenSource? _stopSource;
 
-    // 循环是否还在运行，不代表设备已经连接成功。
+    private Task _samplingTask = Task.CompletedTask;
+
+    // 历史保存故障单独显示，不与通信故障或重连状态混在一起。
+    private string _lastHistorySaveError = string.Empty;
+
+    public long DeviceId
+    {
+        get;
+    }
+
+    public ObservableCollection<PointMonitorViewModel> Readings { get; } = new();
+
     private bool _isRunning;
     public bool IsRunning
     {
@@ -40,7 +46,13 @@ public sealed class DeviceSamplingViewModel : ObservableObject
         private set => SetProperty(ref _isRunning, value);
     }
 
-    // 任意一个点最后读成功的时间，供监控计算数据多久没更新；不代表所有点都正常。
+    private bool _isStopping;
+    public bool IsStopping
+    {
+        get => _isStopping;
+        private set => SetProperty(ref _isStopping, value);
+    }
+
     private DateTimeOffset? _lastSuccessfulReadAt;
     public DateTimeOffset? LastSuccessfulReadAt
     {
@@ -55,7 +67,6 @@ public sealed class DeviceSamplingViewModel : ObservableObject
         private set => SetProperty(ref _statusText, value);
     }
 
-    // 所有点都尝试读过一次，才算完成一轮。
     private int _completedRounds;
     public int CompletedRounds
     {
@@ -63,7 +74,6 @@ public sealed class DeviceSamplingViewModel : ObservableObject
         private set => SetProperty(ref _completedRounds, value);
     }
 
-    // 只统计本次 Start 后保存的条数，重新开始会归零；数据库历史不清空。
     private int _savedRecords;
     public int SavedRecords
     {
@@ -75,7 +85,6 @@ public sealed class DeviceSamplingViewModel : ObservableObject
         }
     }
 
-    // 本次运行中，历史记录保存失败的条数。
     private int _saveFailures;
     public int SaveFailures
     {
@@ -87,267 +96,226 @@ public sealed class DeviceSamplingViewModel : ObservableObject
         }
     }
 
-    // 上面的条数变化会刷新这段说明；保存失败与设备读取失败分开显示。
     public string HistoryStatusText =>
         $"本次已保存 {SavedRecords} 条，保存失败 {SaveFailures} 条。" +
-        (string.IsNullOrEmpty(_lastSaveError) ? string.Empty : $" 最近一次保存失败：{_lastSaveError}");
+        (string.IsNullOrEmpty(_lastHistorySaveError) ? string.Empty : $" 最近一次保存失败：{_lastHistorySaveError}");
 
-    /// <summary>
-    /// 由 DeviceRuntimeManager.GetOrCreateSession 第一次为设备创建任务时调用。
-    /// 管理器第一次需要这台设备的任务时创建；这里只保存所需对象，不开始读取。
-    /// </summary>
     public DeviceSamplingViewModel(UserAccount currentUser, DeviceStore deviceStore,
-        HistoryStore historyStore, long deviceId, AlarmTracker? alarms = null)
+    HistoryStore historyStore, long deviceId, AlarmMonitor? alarms = null)
     {
         _currentUser = currentUser ?? throw new ArgumentNullException(nameof(currentUser));
         _deviceStore = deviceStore ?? throw new ArgumentNullException(nameof(deviceStore));
         _historyStore = historyStore ?? throw new ArgumentNullException(nameof(historyStore));
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(deviceId);
-        // 这个任务只负责此编号的设备，不随页面选中项改变。
+
         DeviceId = deviceId;
-        // 没查到名称前先用编号，查到配置后再替换。
-        _lastDeviceName = $"设备 #{deviceId}";
-        _alarms = alarms; // 多台设备共用管理器传来的报警对象，允许不传。
+        _alarms = alarms;
     }
 
-    /// <summary>
-    /// 由 DeviceRuntimeManager.Start 调用。
-    /// 重置本次显示和统计，启动 RunAsync 采集循环；正在运行时不重复启动。
-    /// </summary>
+    /// <summary>重置本次状态并启动采集循环。</summary>
     public void Start()
     {
         if (IsRunning)
-            return; // 同一台设备不能重复启动两份循环。
+            return;
 
-        // 为本次运行准备“停止开关”，StopAsync 会对它发出取消信号。
-        _cancellation = new CancellationTokenSource();
-        // 清掉上次的显示和统计，不删除数据库历史。
+        _stopSource = new CancellationTokenSource();
+
+        // 重新开始只清理本次显示和统计，不删除数据库历史。
         CompletedRounds = 0;
         LastSuccessfulReadAt = null;
-        _lastSaveError = string.Empty;
+        _lastHistorySaveError = string.Empty;
         SavedRecords = 0;
         SaveFailures = 0;
         OnPropertyChanged(nameof(HistoryStatusText));
+        StopReadingNotifications();
         Readings.Clear();
 
-        // 标记循环开始，此时还不一定读到了数据。
         IsRunning = true;
-        
-        AppLog.Info("开始设备采集", $"UserId={_currentUser.Id}; DeviceId={DeviceId}");
-        
-        // RunAsync 是真正的采集循环；记住返回的 Task，停止时用它等待收尾。
-        _runningTask = RunAsync(_cancellation.Token);
+        IsStopping = false;
+
+        AppLog.Info("开始采集", $"设备={DeviceId} 用户={_currentUser.Id}");
+
+        // 保存整段循环的任务，停止和退出时才能等待收尾。
+        _samplingTask = RunAsync(_stopSource.Token);
     }
 
-    /// <summary>
-    /// 由本类 Start 启动。
-    /// 采集循环的主方法。
-    /// 开始时加载配置；每轮逐点读取、检查报警、保存历史，再等一段时间继续。
-    /// 本次采集一直使用这份配置；要改设备或点位，先停止，再重新开始。
-    /// </summary>
+    /// <summary>按固定配置轮询，协调结果显示、报警、保存和故障重试。</summary>
     private async Task RunAsync(CancellationToken cancellationToken)
     {
+        string deviceName = $"设备 #{DeviceId}";
         try
         {
-            cancellationToken.ThrowIfCancellationRequested();
             StatusText = "正在加载本次采集要用的设备和点位配置…";
-
-            // 只在开始时查一次。config 里是配置，不是读到的数值。
+            // 开始时加载一次配置，后续轮询和故障重连都使用这份配置。
             var config = await Task.Run(LoadConfiguration, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
-            _lastDeviceName = config.Device.Name;
+            deviceName = config.Device.Name;
 
-            // 停止期间可能改过点位或上下限，开始时处理一次旧报警。
-            if (_alarms is not null)
-                await _alarms.ReconcileConfigurationAsync(config.Device, config.Points);
-            cancellationToken.ThrowIfCancellationRequested();
+            // 读取对象在循环外创建，正常轮次复用连接。
 
-            // 每个点建一行，本次采集不再比较配置或重建行。
-            PrepareRows(config.Points);
+            await using var reader = _createReader(config.Device, config.Points);
 
-            // 一轮接一轮采集，直到收到停止信号。
+            foreach (PointInfo point in config.Points)
+                Readings.Add(new PointMonitorViewModel(config.Device, point, _alarms, this));
+
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                // 只统计这一轮读成功的点数。
-                int succeeded = 0;
 
-                // 逐个读这台设备的全部点位，不是只读页面选中的点。
-                foreach (PointReadingViewModel row in Readings)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    // row 是一个点的显示行，先清掉旧值并显示“读取中”。
+                // 更新读取状态，但不清空上一轮显示，避免周期性闪烁。
+                foreach (PointMonitorViewModel row in Readings)
                     row.BeginRead();
-                    StatusText = $"正在采集“{config.Device.Name} / {row.Point.Name}”…";
-                    
-                    // 接住本次读取结果：点位、数值和读取时间。
-                    PointReadResult result;
-                    
-                    try
-                    {
-                        // Device 决定连哪台设备，Point 决定读哪个地址，token 用于停止。
-                        // 等这个点读完、处理并保存后，才读下一个点。
-                        result = await _pointReader.ReadAsync(
-                            config.Device, row.Point, cancellationToken);
+                StatusText = $"正在批量采集“{config.Device.Name}”的 {Readings.Count} 个点…";
 
-                        cancellationToken.ThrowIfCancellationRequested();
-                        
-                        // result的第一个作用，更新显示
-                        // 把结果填到这一行的数值、时间、状态属性中；实现更新显示。
-                        row.ShowResult(result);
-                        
-                        // 记录成功时间和点数；后面保存失败也不算读取失败。
-                        LastSuccessfulReadAt = result.ReadAt;
-                        succeeded++;
-                    }
-                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                    {
-                        // 主动停止不算故障，更新显示后把取消异常交给外层。
-                        row.ShowFailure("读取已取消");
-                        throw;
-                    }
-                    catch (Exception ex)
-                    {
-                        AppLog.Warning("采集点读取失败", $"DeviceId={DeviceId}; PointId={row.Point.Id}", ex,
-                            $"read-{DeviceId}-{row.Point.Id}");
-                        // 显示失败原因；跳过这个点，下一轮还会再试。
-                        row.ShowFailure($"失败：{ex.Message}");
-                        // 真正读取失败才记异常，主动停止不会走到这里。
-                        if (_alarms is not null)
-                            await _alarms.ReportPointFailureAsync(config.Device, row.Point, ex.Message);
-                        continue; // 没有有效读数，不保存这次历史。
-                    }
+                IReadOnlyList<PointReadResult> results;
 
-                    // 只有上面的读取成功，才走到这里。
-
-                    // result的第二个作用，检查报警
-                    // 有报警对象，就用这次读数检查报警。
-                    if (_alarms is not null)
-                        await _alarms.ReportReadingAsync(config.Device, result);
-
-                    // result的第三个作用，保存历史记录
-                    // 把这个点本次读到的值，保存成一条历史记录。
-                    await SaveReadingAsync(config.Device, result);
+                try
+                {
+                    results = await reader.ReadAsync(cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
                 }
 
-                // 所有点都尝试过了，本轮结束；个别点失败也计一轮。
+                // 停止请求退出整个循环，不作为故障重试。
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    foreach (PointMonitorViewModel row in Readings)
+                        row.ShowCanceled();
+
+                    throw;
+                }
+
+                // 仅通信故障和暂时设备错误等待重试，配置错误交给外层结束。
+                catch (Exception ex) when (ModbusPointReader.CanRetry(ex))
+                {
+                    AppLog.Warning("采集失败，稍后重试", $"设备={DeviceId}", ex, $"read-{DeviceId}");
+
+                    foreach (PointMonitorViewModel row in Readings)
+                        row.ShowFailure($"失败：{ex.Message}");
+
+                    if (_alarms is not null)
+                        await _alarms.ReportFailuresAsync(config.Device, config.Points, ex.Message);
+
+                    CompletedRounds++;
+
+                    // 失败后至少等待 1 秒，避免高频重连。
+                    int retryDelay = Math.Max(1000, config.Device.SamplingIntervalMilliseconds);
+                    StatusText = $"读取失败：{ex.Message} {retryDelay} ms 后重试。";
+                    await Task.Delay(retryDelay, cancellationToken);
+
+                    // 失败轮次不走成功处理，不保存假读数。
+                    continue;
+                }
+
+                // 显示、报警和历史共用同一批已换算结果。
+                for (int i = 0; i < results.Count; i++)
+                    Readings[i].ShowResult(results[i]);
+
+                LastSuccessfulReadAt = results[0].ReadAt;
+
+                if (_alarms is not null)
+                    await _alarms.ReportReadingsAsync(config.Device, results);
+
+                await SaveReadingsAsync(config.Device, results);
+
                 CompletedRounds++;
-                StatusText = $"已完成第 {CompletedRounds} 轮，成功 {succeeded}/{Readings.Count} 个点；" +
+                StatusText = $"已完成第 {CompletedRounds} 轮，成功 {results.Count}/{Readings.Count} 个点；" +
                     $"等待 {config.Device.SamplingIntervalMilliseconds} ms 后继续。";
-                // 这一轮结束后再等采集间隔；异步等待不卡界面，也能被停止信号取消。
+
                 await Task.Delay(config.Device.SamplingIntervalMilliseconds, cancellationToken);
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            StatusText = "已停止采集，连接已关闭；表格保留停止前的最后结果。";
-        }
+
         catch (Exception) when (cancellationToken.IsCancellationRequested)
         {
-            // 停止后才返回的查询错误，也按停止处理，不再新增故障报警。
-            StatusText = "已停止采集，连接已关闭；表格保留停止前的最后结果。";
+            StatusText = "已停止采集，连接已释放；表格保留最后结果。";
         }
         catch (Exception ex)
         {
-            AppLog.Error("设备采集任务无法继续", $"DeviceId={DeviceId}", ex);
-            // 开始时配置不可用，或发生无法继续的错误，就结束这台设备的任务。
+            AppLog.Error("采集停止：无法继续", $"设备={DeviceId}", ex);
+            foreach (PointMonitorViewModel row in Readings)
+                row.ShowFailure($"失败：{ex.Message}");
             StatusText = $"采集已结束：{ex.Message}";
             if (_alarms is not null)
-                await _alarms.ReportDeviceFailureAsync(DeviceId, _lastDeviceName, ex.Message);
+                await _alarms.ReportDeviceFailureAsync(DeviceId, deviceName, ex.Message);
         }
         finally
         {
-            // 等本次串口收发结束，再退出自己的占用；同 COM 下其他设备仍可继续采集。
-            await _pointReader.CloseAsync();
-            // 无论停止还是出错，都释放本次“停止开关”。
-            _cancellation?.Dispose();
-            _cancellation = null;
-            // 标记“不再监测”，不把仍有问题的点误标为正常。
-            if (_alarms is not null)
-                await _alarms.EndDeviceMonitoringAsync(DeviceId);
-            // 收尾完成后再标记任务已停止。
-            IsRunning = false;
-            AppLog.Info("设备采集已结束", $"DeviceId={DeviceId}; Rounds={CompletedRounds}; Saved={SavedRecords}; SaveFailures={SaveFailures}");
+            IsStopping = true;
+
+            try
+            {
+                if (_alarms is not null)
+                    await _alarms.EndDeviceMonitoringAsync(DeviceId);
+            }
+            finally
+            {
+                // 读取对象已离开 await using，最后再清理停止状态和任务统计。
+                _stopSource?.Dispose();
+                _stopSource = null;
+
+                IsRunning = false;
+                IsStopping = false;
+                AppLog.Info("采集结束",
+                    $"设备={DeviceId} 轮次={CompletedRounds} 已存={SavedRecords} 存储失败={SaveFailures}");
+            }
         }
     }
 
-    /// <summary>
-    /// 由 RunAsync 开始时调用一次。
-    /// 查出本次要用的设备和全部点位；设备不可用或没有点位时不开始读取。
-    /// </summary>
+    /// <summary>查出本次要用的设备和全部点位；设备不可用或没有点位时不开始读取。</summary>
     private (DeviceInfo Device, IReadOnlyList<PointInfo> Points) LoadConfiguration()
     {
-        // 按编号查这一台；enabledOnly: true 表示停用设备也当作查不到。
         DeviceInfo? device = _deviceStore.GetDevice(_currentUser, DeviceId, enabledOnly: true);
         if (device is null)
             throw new InvalidOperationException("设备已停用或已删除，请刷新设备列表。");
 
-        // 用 DeviceId 查属于它的全部点位。
         var points = _deviceStore.GetPoints(_currentUser, DeviceId);
         if (points.Count == 0)
             throw new InvalidOperationException("设备没有采集点，请先让管理员配置采集点。");
 
-        // 一起返回设备对象 device 和点位集合 points，集合中每项是一个 PointInfo。
         return (device, points);
     }
 
-    /// <summary>
-    /// 由 RunAsync 加载配置后调用一次。
-    /// 为本次采集准备表格行，数值等下面读取成功后再填。
-    /// points 中每项是 PointInfo 配置，Readings 中每项是 PointReadingViewModel 显示行。
-    /// </summary>
-    private void PrepareRows(IReadOnlyList<PointInfo> points)
-    {
-        // 每份 PointInfo 配置对应一个显示行，不改数据库里的点位和历史。
-        Readings.Clear();
-        foreach (PointInfo point in points)
-            Readings.Add(new PointReadingViewModel(point));
-    }
-
-    /// <summary>
-    /// 由 RunAsync 在一个点读取成功后调用。
-    /// 把这个点本次读到的值，保存成一条历史记录。
-    /// </summary>
-    private async Task SaveReadingAsync(DeviceInfo device, PointReadResult result)
+    /// <summary>批量保存本轮成功读数，保存失败不影响通信连接。</summary>
+    private async Task SaveReadingsAsync(DeviceInfo device, IReadOnlyList<PointReadResult> results)
     {
         try
         {
-            // 把设备、点位、数值和时间装成一条历史记录。
-            var record = new HistoryRecord(device.Id, device.Name,
-                result.Point.Id, result.Point.Name, result.Value, result.ReadAt);
+            var records = results.Select(result => new HistoryRecord(device.Id, device.Name,
+                result.Point.Id, result.Point.Name, result.Value, result.ReadAt, unit: result.Point.Unit)).ToArray();
 
-            // 放到后台写数据库，避免卡住界面。
-            // 等这条保存结束再继续；点停止也会等这次保存结束。
-            await Task.Run(() => _historyStore.SaveRecord(_currentUser, record));
+            // 一轮一次提交；保存异常留在本方法内，不触发设备重连。
+            await Task.Run(() => _historyStore.SaveRecords(_currentUser, records));
 
-            // 保存成功，已保存条数加 1。
-            SavedRecords++;
+            SavedRecords += records.Length;
         }
         catch (Exception ex)
         {
-            // 保存失败，记下日志、失败原因和失败条数；读到的值仍然保留。
-            AppLog.Error("读数历史保存失败", $"DeviceId={DeviceId}; PointId={result.Point.Id}", ex,
+            AppLog.Error("读数保存失败", $"设备={DeviceId} 条数={results.Count}", ex,
                 $"history-save-{DeviceId}");
-            _lastSaveError = ex.Message;
-            SaveFailures++;
-            // 这次不自动重试；后面的点和下一轮仍会继续尝试保存。
+            _lastHistorySaveError = ex.Message;
+            SaveFailures += results.Count;
         }
     }
 
-    /// <summary>
-    /// 由 DeviceRuntimeManager.StopAsync 或 StopAllSessionsAsync 调用。
-    /// 发出停止信号，再等采集循环和保存收尾；Cancel 不等于任务已经结束。
-    /// </summary>
+    /// <summary>发出取消信号并等待采集任务结束。</summary>
     public async Task StopAsync()
     {
         if (IsRunning)
         {
-            StatusText = "正在停止，取消读取或等待；若正在保存历史，则先等这一条保存结束…";
-            // 这里只发信号，真正结束要等下面的 Task。
-            _cancellation?.Cancel();
+            IsStopping = true;
+            StatusText = "正在停止，等当前库读取完成或超时；已开始的历史保存也会等它结束…";
+
+            _stopSource?.Cancel();
         }
 
-        // 等循环和 finally 结束，已开始的历史保存也会等它写完。
-        await _runningTask;
+        // Cancel 只是通知，等任务退出后才算停止完成。
+        await _samplingTask;
+    }
+
+    /// <summary>断开旧行通知，不删除数据库历史。</summary>
+    internal void StopReadingNotifications()
+    {
+        foreach (PointMonitorViewModel row in Readings)
+            row.Dispose();
     }
 }

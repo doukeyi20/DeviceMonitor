@@ -1,61 +1,47 @@
+// 执行单次 TCP 连接及连接超时控制。
 using System.Net.Sockets;
 using DeviceMonitor.Core.Models;
 
-namespace DeviceMonitor.Core.Communication
+namespace DeviceMonitor.Core.Communication;
+
+public static class TcpConnectionTester
 {
-
-    /// <summary>
-    /// 测试设备的地址和端口能否连通，不发送 Modbus 请求。
-    /// TCP 连通不代表 Unit ID 和寄存器地址正确。
-    /// </summary>
-    public sealed class TcpConnectionTester
+    /// <summary>测试 TCP 端口连接，不执行 Modbus 读取。</summary>
+    public static async Task TestAsync(DeviceInfo device, CancellationToken cancellationToken = default)
     {
-        /// <summary>
-        /// 由 DeviceManagementViewModel.TestConnectionAsync 调用。
-        /// 尝试连接设备，失败或超时就抛异常；测试结束后关闭连接。
-        /// </summary>
-        public async Task TestAsync(DeviceInfo device, CancellationToken cancellationToken = default)
+        using var tcp = new TcpClient();
+        await ConnectAsync(tcp, device, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static void Validate(DeviceInfo device)
+    {
+        ArgumentNullException.ThrowIfNull(device);
+        if (device.CommunicationMode != DeviceCommunicationMode.Tcp)
+            throw new ArgumentException("这里只测试 TCP 端口；RTU 请用读取一次验证。", nameof(device));
+        ArgumentException.ThrowIfNullOrWhiteSpace(device.Host);
+        if (device.Port is < 1 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(device.Port), "端口必须在 1 到 65535 之间。");
+        if (device.ConnectTimeoutMilliseconds <= 0)
+            throw new ArgumentOutOfRangeException(nameof(device.ConnectTimeoutMilliseconds), "连接超时必须大于 0。");
+    }
+
+    /// <summary>TestAsync 和 ModbusPointReader.ConnectAsync 共用：一次 TCP 连接的限时。</summary>
+    internal static async Task ConnectAsync(TcpClient tcp, DeviceInfo device, CancellationToken token)
+    {
+        Validate(device);
+
+        // 关联用户停止信号，并为本次连接单独设置超时。
+        using var connectionTimeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+
+        connectionTimeout.CancelAfter(device.ConnectTimeoutMilliseconds);
+        try
         {
-            // 先检查地址、端口和超时设置。
-            ArgumentNullException.ThrowIfNull(device);
-            if (device.CommunicationMode != DeviceCommunicationMode.Tcp)
-                throw new ArgumentException("这里只测试 TCP 端口；RTU 请用读取一次验证。", nameof(device));
-            ArgumentException.ThrowIfNullOrWhiteSpace(device.Host);
-
-            if (device.Port < 1 || device.Port > 65535)
-            {
-                throw new ArgumentOutOfRangeException(nameof(device.Port),
-                    "端口必须在 1 到 65535 之间。");
-            }
-
-            if (device.ConnectTimeoutMilliseconds <= 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(device.ConnectTimeoutMilliseconds),
-                    "连接超时必须大于 0。");
-            }
-
-            // using 保证退出方法时关闭连接；timeout 同时响应手动取消和超时。
-            using TcpClient client = new();
-            using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-
-            // 到设定时间自动取消等待，不能只把超时数字放在配置里。
-            timeout.CancelAfter(device.ConnectTimeoutMilliseconds);
-
-            try
-            {
-                await client.ConnectAsync(device.Host, device.Port, timeout.Token);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                // 手动取消要原样传出去，不误报为超时。
-                throw new OperationCanceledException(cancellationToken);
-            }
-            catch (OperationCanceledException ex) when (timeout.IsCancellationRequested)
-            {
-                // 不是手动取消，而是时间到了，改为超时异常。
-                throw new TimeoutException(
-                    $"TCP 连接超时（{device.ConnectTimeoutMilliseconds} ms）。", ex);
-            }
+            await tcp.ConnectAsync(device.Host.Trim(), device.Port, connectionTimeout.Token).ConfigureAwait(false);
+        }
+        // 外部未取消而连接被取消，按连接超时处理；用户取消则保留原取消异常。
+        catch (OperationCanceledException ex) when (!token.IsCancellationRequested)
+        {
+            throw new TimeoutException($"连接设备超时（{device.ConnectTimeoutMilliseconds} ms）。", ex);
         }
     }
 }

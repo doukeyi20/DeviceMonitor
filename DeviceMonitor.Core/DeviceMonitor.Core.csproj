@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -9,9 +9,13 @@
   <ItemGroup>
     <InternalsVisibleTo Include="DeviceMonitor.RtuChecks" />
     <InternalsVisibleTo Include="DeviceMonitor.PersistenceChecks" />
+    <InternalsVisibleTo Include="DeviceMonitor.Desktop" />
+
+    <PackageReference Include="NModbus" Version="3.0.83" />
+    <PackageReference Include="NModbus.Serial" Version="3.0.83" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.12" />
-    <!-- EF 开发工具：生成迁移、在包管理器控制台应用迁移。 -->
+
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.12" PrivateAssets="all" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="10.0.12" PrivateAssets="all" />
     <PackageReference Include="System.IO.Ports" Version="10.0.11" />

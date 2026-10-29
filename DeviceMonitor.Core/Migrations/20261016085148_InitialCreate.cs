@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore.Migrations;
+// 首次建库建表的 EF 迁移；只在未执行过时应用，不清空已迁移的库。
+using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
