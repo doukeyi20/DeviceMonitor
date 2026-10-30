@@ -1,6 +1,6 @@
 // 验证项目功能及异常处理的回归检查。
-using DeviceMonitor.Core.Models;
-using DeviceMonitor.Core.Persistence;
+using System.IO;
+using DeviceMonitor.Model;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using System.Globalization;
@@ -18,6 +18,7 @@ internal static class Program
         {
             CheckEngineeringValues(folder);
             CheckBatchPersistence(folder);
+            CheckGeneratedIdsUpgrade(folder);
             Check(!File.Exists(path), "从空白路径开始首次迁移");
             new DatabaseInitializer(path).Initialize();
             Check(File.Exists(path), "Migrate 创建数据库文件");
@@ -30,6 +31,13 @@ internal static class Program
             Check(!users.TryCreateFirstAdministrator("Other", "Admin123"), "已有账户不再创建首次管理员");
             var admin = users.CheckLogin(" admin ", "Admin123")!;
             Check(admin is not null && admin.Role == UserRole.Administrator, "登录保留 NOCASE 和 Trim");
+            foreach (string password in new[] { null!, "", "   ", "12345" })
+            {
+                Throws<ArgumentException>(() => users.TryCreateFirstAdministrator("InvalidAdmin", password),
+                    "首次管理员的空白或过短密码由统一入口拒绝");
+                Throws<ArgumentException>(() => users.TryCreateOperator(admin!, "InvalidWorker", password),
+                    "操作员的空白或过短密码由统一入口拒绝");
+            }
             Check(users.CheckLogin("Admin", "wrong") is null, "错误密码拒绝登录");
             Check(users.TryCreateOperator(admin!, "Worker", "Worker123"), "创建操作员");
             Check(!users.TryCreateOperator(admin!, "worker", "Worker123"), "用户名大小写重复返回 false");
@@ -69,7 +77,7 @@ internal static class Program
             long removedPointId = devices.GetPoints(admin!, device.Id).Single(x => x.Name == "Temporary").Id;
             Check(devices.TryDeletePoint(admin!, device.Id, removedPointId), "删除临时点");
             Check(devices.TryAddPoint(admin!, device.Id, new PointInput { Name = "Next", RegisterType = RegisterType.Holding }), "删除后新增另一点");
-            Check(devices.GetPoints(admin!, device.Id).Single(x => x.Name == "Next").Id > removedPointId, "读取 sqlite_sequence，空历史时也不复用点号");
+            Check(devices.GetPoints(admin!, device.Id).Single(x => x.Name == "Next").Id > removedPointId, "数据库自增，空历史时也不复用点号");
 
             DateTimeOffset time = DateTimeOffset.Parse("2026-10-16T01:02:03.1234567+00:00", CultureInfo.InvariantCulture);
             using (var connection = new SqliteConnection($"Data Source={path}"))
@@ -168,8 +176,8 @@ internal static class Program
             var factory = new MonitorDbContextFactory(path);
             using (var db = factory.Create())
             {
-                Check(db.Database.GetAppliedMigrations().Count() == 2 &&
-                    db.Database.GetAppliedMigrations().First().EndsWith("_InitialCreate"), "首次迁移和数值换算迁移均已登记");
+                Check(db.Database.GetAppliedMigrations().Count() == 3 &&
+                    db.Database.GetAppliedMigrations().First().EndsWith("_InitialCreate"), "建表、数值换算和自动编号迁移均已登记");
                 Check(!db.Database.GetPendingMigrations().Any(), "没有尚未应用的迁移");
                 Check(!db.Database.HasPendingModelChanges(), "模型快照与当前表配置一致");
                 Check(db.Database.GenerateCreateScript().Contains("sqlite_sequence", StringComparison.OrdinalIgnoreCase) == false,
@@ -217,7 +225,7 @@ internal static class Program
                 command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE name = '__EFMigrationsHistory'";
                 Check(Convert.ToInt32(command.ExecuteScalar()) == 1, "EF 迁移历史表已创建");
                 command.CommandText = "SELECT COUNT(*) FROM __EFMigrationsHistory";
-                Check(Convert.ToInt32(command.ExecuteScalar()) == 2, "两次迁移各登记一次");
+                Check(Convert.ToInt32(command.ExecuteScalar()) == 3, "三次迁移各登记一次");
                 command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('Users','Devices','DevicePoints','HistoryRecords','AlarmRecords')";
                 Check(Convert.ToInt32(command.ExecuteScalar()) == 5, "首次迁移一次创建五张业务表");
                 command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN ('IX_Devices_RtuStation','IX_HistoryRecords_DeviceId_ReadAtUtc','IX_HistoryRecords_ReadAtUtc_Id','IX_AlarmRecords_StartedAtUtc_Id','IX_AlarmRecords_DeviceId_StartedAtUtc_Id')";
@@ -227,12 +235,74 @@ internal static class Program
             Check(users.CheckLogin("Admin", "Admin123") is not null && history.GetPage(admin!, new()).TotalRecords == 46,
                 "重新初始化不清空已有账户和历史");
             using (var db = factory.Create())
-                Check(db.Database.GetAppliedMigrations().Count() == 2, "重复启动不重复执行已有迁移");
+                Check(db.Database.GetAppliedMigrations().Count() == 3, "重复启动不重复执行已有迁移");
             Console.WriteLine($"ALL {_checks} EF PERSISTENCE CHECKS PASSED\nTemporary database: {path}");
             return 0;
         }
         catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
         finally { SqliteConnection.ClearAllPools(); }
+    }
+
+    private static void CheckGeneratedIdsUpgrade(string folder)
+    {
+        string path = Path.Combine(folder, "generated-ids-upgrade.db");
+        var options = new DbContextOptionsBuilder<MonitorDbContext>()
+            .UseSqlite(DatabaseInitializer.CreateConnectionString(path)).Options;
+        using (var db = new MonitorDbContext(options))
+        {
+            // 先建立改动前的数据库，再用真实旧数据验证升级，而不是只测空库。
+            var migrator = Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions
+                .GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>(db);
+            migrator.Migrate("20261017072905_AddEngineeringValues");
+        }
+
+        var users = new UserStore(path);
+        users.TryCreateFirstAdministrator("ids-admin", "Admin123");
+        var user = users.CheckLogin("ids-admin", "Admin123")!;
+        var devices = new DeviceStore(path);
+        devices.TryAddDevice(user, Input("保留设备"));
+        var device = devices.GetDevices(user).Single();
+        devices.TrySetDeviceEnabled(user, device.Id, true);
+        devices.TryAddPoint(user, device.Id, new PointInput
+        {
+            Name = "保留点位", RegisterType = RegisterType.Holding, DataType = PointDataType.UInt16
+        });
+
+        var history = new HistoryStore(path);
+        history.SaveRecord(user, new(700, "已删除设备", 900, "已删除点位", 23.5, DateTimeOffset.UtcNow));
+        var alarms = new AlarmStore(path);
+        alarms.SaveRecord(user, new AlarmRecord
+        {
+            DeviceId = 800, DeviceName = "旧报警设备", PointId = 1000, PointName = "旧报警点位",
+            Kind = AlarmKind.HighLimit, State = AlarmState.Active, Message = "超限",
+            Value = 30, Limit = 20, StartedAt = DateTimeOffset.UtcNow, LastSeenAt = DateTimeOffset.UtcNow
+        });
+
+        new DatabaseInitializer(path).Initialize();
+        Check(users.CheckLogin("ids-admin", "Admin123") is not null
+            && devices.GetPoints(user, device.Id).Single().Name == "保留点位",
+            "自动编号升级保留原账户、设备和点位关系");
+        Check(history.GetRecentRecords(user).Single().Value == 23.5
+            && alarms.GetRecentRecords(user).Single().PointId == 1000,
+            "自动编号升级不修改旧历史和报警");
+        devices.TryAddDevice(user, Input("升级后设备"));
+        devices.TryAddPoint(user, device.Id, new PointInput
+        {
+            Name = "升级后点位", RegisterType = RegisterType.Holding, DataType = PointDataType.UInt16
+        });
+        long addedDevice = devices.GetDevices(user).Single(x => x.Name == "升级后设备").Id;
+        long addedPoint = devices.GetPoints(user, device.Id).Single(x => x.Name == "升级后点位").Id;
+        Check(addedDevice > 800 && addedPoint > 1000, "升级后的新编号避开已删除配置的历史和报警编号");
+        devices.TryDeleteDevice(user, addedDevice);
+        devices.TryDeletePoint(user, device.Id, addedPoint);
+        devices.TryAddDevice(user, Input("再次新增"));
+        devices.TryAddPoint(user, device.Id, new PointInput
+        {
+            Name = "再次新增点位", RegisterType = RegisterType.Holding, DataType = PointDataType.UInt16
+        });
+        Check(devices.GetDevices(user).Single(x => x.Name == "再次新增").Id > addedDevice
+            && devices.GetPoints(user, device.Id).Single(x => x.Name == "再次新增点位").Id > addedPoint,
+            "自动编号不复用刚删除且没有历史的配置编号");
     }
 
     private static void CheckBatchPersistence(string folder)
@@ -265,6 +335,26 @@ internal static class Program
         Check(alarms.GetPage(user, new()).Records.All(e => e.State == AlarmState.Recovered)
             && alarms.GetPage(user, new()).TotalRecords == 2, "批量更新同事件不重复新增，正确记录恢复");
         Throws<ArgumentException>(() => alarms.SaveRecords(user, new[] { events[0], events[0] }), "同批重复事件编号明确拒绝");
+
+        AlarmRecord changed = events[0] with
+        {
+            State = AlarmState.Recovered,
+            LastSeenAt = now.AddSeconds(2),
+            EndedAt = now.AddSeconds(2),
+            Value = 12,
+            Occurrences = 2
+        };
+        alarms.SaveRecords(user, new[] { changed, Event(3) });
+        var mixed = alarms.GetRecentRecords(user);
+        Check(mixed.Count == 3 && mixed.Single(e => e.EventId == changed.EventId).Value == 12,
+            "同批既更新旧报警又新增报警，一次查询后仍正确区分");
+        Execute("CREATE TRIGGER fail_mixed_alarm BEFORE INSERT ON AlarmRecords WHEN NEW.PointId=4 BEGIN SELECT RAISE(ABORT,'test'); END;");
+        Throws<DbUpdateException>(() => alarms.SaveRecords(user, new[] { changed with { Value = 99 }, Event(4) }),
+            "混合批次新增失败仍抛出保存异常");
+        mixed = alarms.GetRecentRecords(user);
+        Check(mixed.Count == 3 && mixed.Single(e => e.EventId == changed.EventId).Value == 12,
+            "混合批次失败同时回滚旧报警更新和新报警插入");
+        Execute("DROP TRIGGER fail_mixed_alarm;");
 
         AlarmRecord Event(long point) => new()
         {

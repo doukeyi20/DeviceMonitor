@@ -16,7 +16,7 @@
         <SolidColorBrush x:Key="SecondaryTextBrush" Color="#69717A" />
         <SolidColorBrush x:Key="AccentBrush" Color="#3D4854" />
 
-        <ImageSource x:Key="ApplicationIcon">pack://application:,,,/DeviceMonitor.Desktop;component/AppIcon.ico</ImageSource>
+        <ImageSource x:Key="ApplicationIcon">pack://application:,,,/DeviceMonitor;component/AppIcon.ico</ImageSource>
 
         <Style TargetType="{x:Type TextBlock}">
             <Setter Property="FontFamily" Value="Microsoft YaHei UI" />

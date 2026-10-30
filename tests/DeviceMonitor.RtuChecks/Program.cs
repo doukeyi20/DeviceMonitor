@@ -1,5 +1,5 @@
 // 验证项目功能及异常处理的回归检查。
-using DeviceMonitor.ViewModels;
+using DeviceMonitor.ViewModel;
 using System.Buffers.Binary;
 using NModbus;
 using NModbus.IO;
@@ -16,10 +16,8 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using DeviceMonitor;
-using DeviceMonitor.Core.Communication;
-using DeviceMonitor.Core.Models;
-using DeviceMonitor.Core.Persistence;
-using DeviceMonitor.Views;
+using DeviceMonitor.Model;
+using DeviceMonitor.View;
 using Microsoft.Data.Sqlite;
 
 internal static class Program
@@ -328,12 +326,12 @@ internal static class Program
             acquisition.SelectedPoint = acquisition.Points.Single(p => p.Address == 0);
             await acquisition.ReadOnceCommand.ExecuteAsync(null);
             Check(acquisition.ReadResultText.Contains("486"), "RTU 读取一次命令走完整入口并显示整数");
-            Check(acquisition.ReadValueText == "486" && acquisition.ReadState == DeviceMonitor.ViewModels.SingleReadState.Succeeded
+            Check(acquisition.ReadValueText == "486" && acquisition.ReadState == DeviceMonitor.ViewModel.SingleReadState.Succeeded
                 && acquisition.ReadTimeText != "—", "成功结果分开保存数值、状态和时间");
             Check(CountRows(path, "HistoryRecords") == 0 && CountRows(path, "AlarmRecords") == 0, "单次读取不保存历史或报警");
             Check(ports.Single().Disposed, "单次读取 finally 释放串口");
             acquisition.SelectedPoint = acquisition.Points.Single(p => p.Address == 1);
-            Check(acquisition.ReadValueText == "—" && acquisition.ReadState == DeviceMonitor.ViewModels.SingleReadState.NotRead,
+            Check(acquisition.ReadValueText == "—" && acquisition.ReadState == DeviceMonitor.ViewModel.SingleReadState.NotRead,
                 "换点清掉旧值，不把湿度结果挂到温度上");
             await acquisition.ReadOnceCommand.ExecuteAsync(null);
             Check(acquisition.ReadResultText.Contains("-97"), "RTU 读取器与页面正确显示有符号温度");
@@ -341,7 +339,7 @@ internal static class Program
 
             silent = true;
             await acquisition.ReadOnceCommand.ExecuteAsync(null);
-            Check(acquisition.ReadState == DeviceMonitor.ViewModels.SingleReadState.TimedOut && acquisition.ReadValueText == "—"
+            Check(acquisition.ReadState == DeviceMonitor.ViewModel.SingleReadState.TimedOut && acquisition.ReadValueText == "—"
                 && acquisition.ReadTimeText == "—" && acquisition.ReadResultText.Contains("超时"), "超时显示真实原因，不留旧成功值和时间");
             Task cancelRead = acquisition.ReadOnceCommand.ExecuteAsync(null);
             await Task.Delay(30);
@@ -355,15 +353,15 @@ internal static class Program
             Check(runtime.SingleReadDeviceId == first.Id, "发出取消不等于收尾结束，测试目标仍暂时禁止删除");
             await cancelRead;
             Check(runtime.SingleReadDeviceId is null, "单次测试实际收尾后才解除删除限制");
-            Check(acquisition.ReadState == DeviceMonitor.ViewModels.SingleReadState.Canceled && acquisition.ReadValueText == "—"
+            Check(acquisition.ReadState == DeviceMonitor.ViewModel.SingleReadState.Canceled && acquisition.ReadValueText == "—"
                 && !acquisition.IsReading, "取消显示独立状态，收尾完成后恢复按钮");
             silent = false; corrupt = true;
             await acquisition.ReadOnceCommand.ExecuteAsync(null);
-            Check(acquisition.ReadState == DeviceMonitor.ViewModels.SingleReadState.Failed && acquisition.ReadValueText == "—"
+            Check(acquisition.ReadState == DeviceMonitor.ViewModel.SingleReadState.Failed && acquisition.ReadValueText == "—"
                 && !string.IsNullOrWhiteSpace(acquisition.ReadResultText), "库发现响应损坏后显示失败原因");
             corrupt = false;
             await acquisition.ReadOnceCommand.ExecuteAsync(null);
-            Check(acquisition.ReadState == DeviceMonitor.ViewModels.SingleReadState.Succeeded && acquisition.ReadValueText == "-97",
+            Check(acquisition.ReadState == DeviceMonitor.ViewModel.SingleReadState.Succeeded && acquisition.ReadValueText == "-97",
                 "失败后重新读取可恢复成功显示");
             Check(CountRows(path, "HistoryRecords") == 0 && CountRows(path, "AlarmRecords") == 0,
                 "新增显示状态没有让单次测试保存历史或报警");

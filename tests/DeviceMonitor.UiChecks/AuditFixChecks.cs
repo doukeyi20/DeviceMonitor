@@ -1,9 +1,8 @@
 // 验证项目功能及异常处理的回归检查。
 using System.IO;
-using DeviceMonitor.Core;
-using DeviceMonitor.Core.Models;
-using DeviceMonitor.Core.Persistence;
-using DeviceMonitor.ViewModels;
+using DeviceMonitor;
+using DeviceMonitor.Model;
+using DeviceMonitor.ViewModel;
 using Microsoft.Data.Sqlite;
 
 internal static partial class Program
@@ -40,14 +39,17 @@ internal static partial class Program
         holder = HoldAuditWriteLockAsync(path, acquired);
         await acquired.Task;
         Task pointSave = points.SavePointCommand.ExecuteAsync(null);
-        Check(points.IsBusy && !points.CanChoosePoint && !points.CanEditConfiguration
-            && !points.ConfirmDiscardChanges(), "点位保存期间锁定输入、选行和关闭，不假装取消已开始写入");
+        Check(points.IsBusy && !points.CanChoosePoint && !points.CanEditConfiguration,
+            "点位保存期间锁定输入和选行，不假装取消已开始写入");
         await Task.WhenAll(pointSave, holder);
-        Check(!points.IsBusy && points.SelectedPoint?.Unit == "audit-unit" && !points.HasUnsavedChanges,
-            "点位异步保存后恢复选择、快照和可操作状态");
+        Check(!points.IsBusy && points.SelectedPoint?.Unit == "audit-unit" && points.CanChoosePoint,
+            "点位异步保存后恢复选择和可操作状态");
 
         var login = new LoginViewModel(new UserStore(path));
         await login.InitializeAsync();
+        login.ShowAdminSetupCommand.Execute(null);
+        Check(login.IsAdminSetupVisible && !login.IsWorking,
+            "打开首次管理员面板只切换显示，不再重复查询数据库");
         login.AdminUserName = "audit-admin";
         login.AdminPasswordsRequested += request => { request.Password = "Audit123!"; request.Confirmation = "Audit123!"; };
         await login.CreateFirstAdminCommand.ExecuteAsync(null);
@@ -58,6 +60,23 @@ internal static partial class Program
         login.LoginSucceeded += _ => loginSucceeded = !login.IsWorking;
         await login.LoginCommand.ExecuteAsync(null);
         Check(loginSucceeded, "异步验证成功先解除忙状态，再通知登录窗口关闭");
+
+        var users = new UserStore(path);
+        var admin = users.CheckLogin("audit-admin", "Audit123!")!;
+        var password = new PasswordEditViewModel(admin, users);
+        password.PasswordsRequested += request =>
+        {
+            request.OldPassword = "Audit123!";
+            request.NewPassword = request.Confirmation = "Changed123!";
+        };
+        bool completed = false;
+        password.SaveSucceeded += () => completed = !password.IsSaving;
+        Task passwordSave = password.SaveCommand.ExecuteAsync(null);
+        Check(password.IsSaving && !password.CanEditInputs && !password.SaveCommand.CanExecute(null),
+            "密码保存期间仍锁定输入，防止重复提交");
+        await passwordSave;
+        Check(completed && password.IsSaved && users.CheckLogin("audit-admin", "Changed123!") is not null,
+            "密码实际保存后再通知关闭，不再另存关闭状态或父窗口保存任务");
 
         string logs = Path.Combine(directory, "logs");
         AppLog.Initialize(logs);

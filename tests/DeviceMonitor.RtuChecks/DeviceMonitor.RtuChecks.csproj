@@ -7,6 +7,6 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../../DeviceMonitor/DeviceMonitor.Desktop.csproj" />
+    <ProjectReference Include="../../DeviceMonitor/DeviceMonitor.csproj" />
   </ItemGroup>
 </Project>

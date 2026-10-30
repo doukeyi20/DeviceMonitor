@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+
+    <ApplicationIcon>AppIcon.ico</ApplicationIcon>
+    <RootNamespace>DeviceMonitor</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageReference Include="NModbus" Version="3.0.83" />
+    <PackageReference Include="NModbus.Serial" Version="3.0.83" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.12" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.12" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="10.0.12" PrivateAssets="all" />
+    <PackageReference Include="System.IO.Ports" Version="10.0.11" />
+    <Resource Include="AppIcon.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="DeviceMonitor.RtuChecks" />
+    <InternalsVisibleTo Include="DeviceMonitor.PersistenceChecks" />
+    <Using Include="System.IO" />
+  </ItemGroup>
+
+</Project>

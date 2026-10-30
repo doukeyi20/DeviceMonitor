@@ -73,10 +73,10 @@
 ```powershell
 dotnet restore DeviceMonitor.slnx
 dotnet build DeviceMonitor.slnx -c Release
-dotnet run --project DeviceMonitor/DeviceMonitor.Desktop.csproj -c Release
+dotnet run --project DeviceMonitor/DeviceMonitor.csproj -c Release
 ```
 
-也可以打开 `DeviceMonitor.slnx`，将 `DeviceMonitor.Desktop` 设置为启动项目。
+也可以打开 `DeviceMonitor.slnx`，解决方案中只有一个 `DeviceMonitor` WPF 项目。
 
 ### 首次使用
 
@@ -85,6 +85,8 @@ dotnet run --project DeviceMonitor/DeviceMonitor.Desktop.csproj -c Release
 3. 按设备手册配置点位，执行“读取一次”，核对地址、数据类型与倍率。
 4. 在实时监控中勾选设备并开始采集，选中点位查看曲线。
 5. 在历史记录中查询读数、查看趋势或导出 CSV。修改正在使用的配置前，先停止对应设备。
+
+点位管理中选中一行即可编辑；保存前切换点位、刷新或关闭窗口，会放弃尚未保存的输入。
 
 设备“启用”不等于已开始采集。连接前应核对设备供电、接线和通信参数；协议地址以设备手册为准，不能直接把 `40001` 一类显示地址当成报文地址。
 
@@ -102,11 +104,11 @@ dotnet run --project DeviceMonitor/DeviceMonitor.Desktop.csproj -c Release
 - **连接与调度分开**：各设备维护采集任务；健康连接跨轮次复用。共用 COM 口的 RTU 设备共享串口，并串行完成每次请求响应。
 - **按错误类型恢复**：连接和收发故障清理失效连接后等待重试；设备忙保留连接；配置类异常结束任务并提示。
 - **统一数值转换**：寄存器先按 UInt16 / Int16 解释，再应用倍率和偏移；显示、报警、历史与导出使用同一实际值。
-- **异步界面与安全停止**：同步库调用放在线程池；取消后等待已开始的读取和保存完成，再释放连接。
-- **数据一致性**：每轮成功读数批量提交，每次数据库操作独立创建上下文；失败读数不以旧值或零值冒充成功。
+- **异步界面与安全停止**：同步库调用放在线程池；各页面通过统一入口收尾，取消后等待已开始的读取和保存完成，再释放连接。
+- **数据一致性**：每轮成功读数批量提交，报警按批查询和更新，每次数据库操作独立创建上下文；失败读数不以旧值或零值冒充成功。
 - **历史查询与导出**：筛选和分页在数据库执行；翻页、趋势、导出沿用已应用条件，CSV 分批写入临时文件，成功后替换目标。
 
-核心实现：[采集任务](DeviceMonitor/ViewModels/DeviceSamplingViewModel.cs) · [通信读取](DeviceMonitor.Core/Communication/ModbusPointReader.cs) · [报警处理](DeviceMonitor/ViewModels/AlarmMonitor.cs) · [历史存取](DeviceMonitor.Core/Persistence/HistoryStore.cs)
+核心实现：[采集任务](DeviceMonitor/ViewModel/DeviceSamplingViewModel.cs) · [通信读取](DeviceMonitor/Model/ModbusPointReader.cs) · [报警处理](DeviceMonitor/ViewModel/AlarmMonitor.cs) · [历史存取](DeviceMonitor/Model/HistoryStore.cs)
 
 ## 回归检查
 
@@ -130,8 +132,13 @@ dotnet run --project tests/DeviceMonitor.UiChecks/DeviceMonitor.UiChecks.csproj 
 
 ```text
 DeviceMonitor.slnx
-DeviceMonitor/             # WPF 应用、页面、ViewModel 与曲线绘制
-DeviceMonitor.Core/        # 通信、数据模型、EF 数据访问及运行日志
+DeviceMonitor/
+  DeviceMonitor.csproj      # 单个 WPF 项目
+  View/                    # WPF 页面、弹窗与曲线绘制
+  ViewModel/               # 界面数据、命令、采集与报警协调
+  Model/                   # 数据结构、数据库操作、设备通信和 CSV 导出
+  Migrations/              # EF 迁移与模型快照
+  AppLog.cs                # 运行日志
 tests/                     # 通信、数据库和界面回归检查
 docs/images/               # 界面截图
 ```

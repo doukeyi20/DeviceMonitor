@@ -8,11 +8,9 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows.Interop;
-using DeviceMonitor.Core;
-using DeviceMonitor.Core.Models;
-using DeviceMonitor.Core.Persistence;
-using DeviceMonitor.ViewModels;
-using DeviceMonitor.Views;
+using DeviceMonitor.Model;
+using DeviceMonitor.ViewModel;
+using DeviceMonitor.View;
 
 namespace DeviceMonitor;
 

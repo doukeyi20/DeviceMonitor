@@ -1,27 +1,30 @@
 // 初始化日志、数据库和登录窗口，记录程序级异常。
-using DeviceMonitor.Core.Persistence;
+using DeviceMonitor.Model;
 using System.Windows;
-using DeviceMonitor.Views;
+using DeviceMonitor.View;
 using System;
 using System.IO;
 using System.Threading.Tasks;
 using System.Windows.Threading;
-using DeviceMonitor.Core;
 
 namespace DeviceMonitor
 {
     public partial class App : Application
     {
-        /// <summary>初始化基础服务并显示登录窗口。</summary>
+        /// <summary>程序启动时，初始化基础服务并显示登录窗口。</summary>
         protected override void OnStartup(StartupEventArgs e)
         {
             base.OnStartup(e);
 
             try
             {
-                // 先准备日志目录，后续初始化失败也能留下原因。
-                AppLog.Initialize(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "DeviceMonitor", "Logs"));
+                // 获取当前用户的本地应用数据目录，再拼上项目和日志文件夹名称。。
+                AppLog.Initialize(
+                    Path.Combine(
+                        Environment.GetFolderPath(
+                            Environment.SpecialFolder.LocalApplicationData),
+                    "DeviceMonitor", "Logs")
+                    );
 
                 AppLog.Info("程序启动");
 
@@ -29,12 +32,13 @@ namespace DeviceMonitor
                 AppDomain.CurrentDomain.UnhandledException += RecordDomainError;
                 TaskScheduler.UnobservedTaskException += RecordTaskError;
 
+                // 数据库初始化器，负责创建数据库文件、应用迁移和建表
                 DatabaseInitializer initializer = new DatabaseInitializer();
 
-                // 启动时应用待执行迁移，不重复建表或清空已有数据。
+                // 启动时第一次应用待执行迁移，不重复建表或清空已有数据。
                 initializer.Initialize();
 
-                // 复用存储入口；各次数据库操作仍创建独立 DbContext。
+                // 创建数据库操作入口
                 UserStore userStore = new UserStore(initializer.DatabasePath);
 
                 DeviceStore deviceStore = new DeviceStore(initializer.DatabasePath);

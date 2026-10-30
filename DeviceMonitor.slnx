@@ -1,4 +1,3 @@
 <Solution>
-  <Project Path="DeviceMonitor.Core/DeviceMonitor.Core.csproj" Id="f211df15-2129-40cb-b76e-74c53bfa46b6" />
-  <Project Path="DeviceMonitor/DeviceMonitor.Desktop.csproj" />
+  <Project Path="DeviceMonitor/DeviceMonitor.csproj" />
 </Solution>

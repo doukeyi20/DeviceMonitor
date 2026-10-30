@@ -3,8 +3,7 @@ using System.Buffers.Binary;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
-using DeviceMonitor.Core.Communication;
-using DeviceMonitor.Core.Models;
+using DeviceMonitor.Model;
 
 internal static class TcpLibraryChecks
 {

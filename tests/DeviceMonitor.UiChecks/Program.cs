@@ -10,10 +10,9 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using DeviceMonitor;
-using DeviceMonitor.Core.Models;
-using DeviceMonitor.Core.Persistence;
-using DeviceMonitor.ViewModels;
-using DeviceMonitor.Views;
+using DeviceMonitor.Model;
+using DeviceMonitor.ViewModel;
+using DeviceMonitor.View;
 using Microsoft.Data.Sqlite;
 
 internal static partial class Program
@@ -70,16 +69,20 @@ internal static partial class Program
                 "历史查询期间禁用输入和重复操作，不维护输入版本号");
             await loading;
             history.PointNameFilter = "尚未查询的新条件";
-            Check(history.FiltersChanged && history.NextPageCommand.CanExecute(null)
+            Check(history.NextPageCommand.CanExecute(null)
                 && history.ExportRecordsCommand.CanExecute(null) && history.ShowTrendCommand.CanExecute(null),
-                "历史输入改变只提示待查询，不锁住上次结果的翻页、导出和趋势");
+                "历史输入改变不锁住上次结果的翻页、导出和趋势");
             await history.NextPageCommand.ExecuteAsync(null);
-            Check(history.CurrentPage == 2 && history.Records.Count == 5 && history.FiltersChanged,
+            Check(history.CurrentPage == 2 && history.Records.Count == 5 && history.PointNameFilter == "尚未查询的新条件",
                 "翻页沿用旧条件和批次，不应用也不清除新输入");
-            var trend = history.CreateTrendViewModel(history.SelectedRecord!);
+            HistoryTrendViewModel? requestedTrend = null;
+            history.TrendRequested += model => requestedTrend = model;
+            history.ShowTrendCommand.Execute(null);
+            var trend = requestedTrend ?? throw new Exception("未打开点位趋势");
             await trend.LoadTrendCommand.ExecuteAsync(null);
             Check(trend.TotalRecords == 205, "点位趋势使用上次查询范围，不偷偷采用新输入");
-            await trend.StopOperationsAsync();
+            trend.StopUpdating();
+            Check(!trend.LoadTrendCommand.CanExecute(null), "关闭只读趋势后不再接受新查询");
 
             string csv = Path.Combine(Output, $"last-query-{Guid.NewGuid():N}.csv");
             history.ExportPathRequested += () => csv;
@@ -97,17 +100,18 @@ internal static partial class Program
                 "新历史查询失败仍保留且允许操作上次成功结果");
             history.PointNameFilter = point.Name;
             await history.RefreshRecordsCommand.ExecuteAsync(null);
-            Check(!history.FiltersChanged && history.CurrentPage == 1 && history.TotalRecords == 205,
+            Check(history.CurrentPage == 1 && history.TotalRecords == 205,
                 "明确点击查询后才应用输入，并回到第一页");
 
             var alarmPage = history.Alarms;
             await alarmPage.RefreshRecordsCommand.ExecuteAsync(null);
             alarmPage.SelectedCategory = alarmPage.CategoryOptions.Single(item => item.Category == AlarmCategory.Value);
-            Check(alarmPage.FiltersChanged && alarmPage.NextPageCommand.CanExecute(null)
+            Check(alarmPage.NextPageCommand.CanExecute(null)
                 && alarmPage.ExportRecordsCommand.CanExecute(null), "报警历史同样不因未查询输入锁住旧结果");
             await alarmPage.NextPageCommand.ExecuteAsync(null);
             Check(alarmPage.CurrentPage == 2 && alarmPage.Records.Count == 100
-                && alarmPage.Records.All(record => record.Kind == AlarmKind.AcquisitionFailure) && alarmPage.FiltersChanged,
+                && alarmPage.Records.All(record => record.Kind == AlarmKind.AcquisitionFailure)
+                && alarmPage.SelectedCategory.Category == AlarmCategory.Value,
                 "报警翻页继续查看原来的采集异常，不切换成尚未查询的数值报警");
             string alarmCsv = Path.Combine(Output, $"last-alarms-{Guid.NewGuid():N}.csv");
             alarmPage.ExportPathRequested += () => alarmCsv;
@@ -150,6 +154,14 @@ internal static partial class Program
         var sampling = tasks.GetOrCreateSession(device.Id);
         int confirmations = 0;
         management.ConfirmationRequested += request => { confirmations++; request.Confirmed = true; };
+        var setTestDevice = typeof(DeviceManagementViewModel).GetMethod("SetConnectionTestDevice",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        int testStateNotifications = 0;
+        management.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(management.IsTestingConnection))
+                testStateNotifications++;
+        };
         try
         {
             Set(sampling, nameof(sampling.IsRunning), true);
@@ -168,15 +180,15 @@ internal static partial class Program
             Set(tasks, nameof(tasks.SingleReadDeviceId), null);
             Check(management.DeleteDeviceCommand.CanExecute(null), "单点测试结束后恢复删除按钮");
 
-            typeof(DeviceManagementViewModel).GetField("_connectionTestDeviceId", BindingFlags.Instance | BindingFlags.NonPublic)!
-                .SetValue(management, device.Id);
-            Set(management, nameof(management.IsTestingConnection), true);
+            setTestDevice.Invoke(management, new object?[] { device.Id });
+            Check(management.IsTestingConnection && management.TestConnectionButtonText == "测试中…"
+                && testStateNotifications == 1, "测试目标编号统一驱动测试状态、按钮文字和界面通知");
             Check(!management.DeleteDeviceCommand.CanExecute(null), "本设备TCP测试期间禁止删除，不自动取消测试");
             management.SelectedDevice = management.Devices.First(item => item.Id != device.Id);
             Check(management.DeleteDeviceCommand.CanExecute(null), "一台设备测试不妨碍删除另一台闲置设备");
-            typeof(DeviceManagementViewModel).GetField("_connectionTestDeviceId", BindingFlags.Instance | BindingFlags.NonPublic)!
-                .SetValue(management, null);
-            Set(management, nameof(management.IsTestingConnection), false);
+            setTestDevice.Invoke(management, new object?[] { null });
+            Check(!management.IsTestingConnection && management.TestConnectionButtonText == "TCP端口测试"
+                && testStateNotifications == 2, "清空测试目标后同步恢复状态，不维护第二份布尔值");
             management.SelectedDevice = management.Devices.Single(item => item.Id == device.Id);
             await management.DeleteDeviceCommand.ExecuteAsync(null);
             Check(confirmations == 1 && store.GetDevice(user, device.Id) is null && tasks.Sessions.All(item => item.DeviceId != device.Id),
@@ -189,6 +201,68 @@ internal static partial class Program
             await management.StopOperationsAsync();
             await tasks.StopAllAsync();
         }
+    }
+
+    private static async Task CheckDeviceSelectionAfterRefreshAsync(UserAccount user)
+    {
+        string path = Path.Combine(Output, $"device-selection-{Guid.NewGuid():N}.db");
+        new DatabaseInitializer(path).Initialize();
+        var store = new DeviceStore(path);
+        Seed(store, user);
+        store.TryAddDevice(user, new DeviceInput
+        {
+            Name = "Z额外设备", Host = "127.0.0.1", Port = 502, UnitId = 1,
+            SamplingIntervalMilliseconds = 1000, ConnectTimeoutMilliseconds = 1000,
+            ReadTimeoutMilliseconds = 1000, WriteTimeoutMilliseconds = 1000
+        });
+        long extraId = store.GetDevices(user).Single(device => device.Name == "Z额外设备").Id;
+        store.TrySetDeviceEnabled(user, extraId, true);
+        var tasks = new DeviceTasks(user, store, new HistoryStore(path));
+        var management = new DeviceManagementViewModel(user, store, tasks);
+        var points = new PointConfigurationViewModel(user, store, tasks);
+        var pointQuery = typeof(PointConfigurationViewModel).GetField("_pointLoadTask",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        management.ConfirmationRequested += request => request.Confirmed = true;
+        try
+        {
+            await management.RefreshDevicesCommand.ExecuteAsync(null);
+            await points.RefreshDevicesCommand.ExecuteAsync(null);
+            management.SelectedDevice = management.Devices.Last();
+            points.SelectedDevice = points.Devices.Last();
+            await WaitForPointsAsync();
+            await management.DeleteDeviceCommand.ExecuteAsync(null);
+            await WaitForPointsAsync();
+            Check(management.SelectedDevice == management.Devices.First()
+                && points.SelectedDevice == points.Devices.First()
+                && points.Points.All(point => point.DeviceId == points.SelectedDevice.Id),
+                "删除末行后两页统一选择首项，点位不保留被删设备的数据");
+
+            management.SelectedDevice = management.Devices.Last();
+            points.SelectedDevice = points.Devices.Last();
+            await WaitForPointsAsync();
+            long selectedId = management.SelectedDevice.Id;
+            await management.RefreshDevicesCommand.ExecuteAsync(null);
+            await points.RefreshDevicesCommand.ExecuteAsync(null);
+            Check(management.SelectedDevice?.Id == selectedId && points.SelectedDevice?.Id == selectedId,
+                "刷新仍按编号保留存在的设备，不因首项回退规则丢掉正常选择");
+
+            while (management.Devices.Count > 0)
+            {
+                await management.DeleteDeviceCommand.ExecuteAsync(null);
+                await WaitForPointsAsync();
+            }
+            Check(management.SelectedDevice is null && points.SelectedDevice is null
+                && points.Devices.Count == 0 && points.Points.Count == 0,
+                "删除唯一剩余设备后清空选择和点位，空列表不访问旧行位置");
+        }
+        finally
+        {
+            await tasks.StopAllAsync();
+            await management.StopOperationsAsync();
+            await points.StopOperationsAsync();
+        }
+
+        Task WaitForPointsAsync() => ((Task)pointQuery.GetValue(points)!).WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     private static void CheckTrendNotifications(DeviceInfo device, PointInfo point)
@@ -245,6 +319,7 @@ internal static partial class Program
         await CheckPointManagementInteractionsAsync(user);
         await CheckLastQueryOperationsAsync(user);
         await CheckDeleteIdleDeviceAsync(user);
+        await CheckDeviceSelectionAfterRefreshAsync(user);
         var seededHistory = new HistoryStore(path);
         DeviceInfo historyDevice = store.GetDevices(user).First();
         PointInfo historyPoint = store.GetPoints(user, historyDevice.Id).First();
@@ -252,7 +327,7 @@ internal static partial class Program
         seededHistory.SaveRecords(user, Enumerable.Range(0, 3).Select(index => new HistoryRecord(
             historyDevice.Id, historyDevice.Name, historyPoint.Id, historyPoint.Name,
             20 + index, DateTimeOffset.Now.AddSeconds(-index))).ToArray());
-        await CheckPointQueryQueueAsync(user, store, new HistoryStore(path));
+        await CheckPointLoadingAsync(user, store, new HistoryStore(path));
         await CheckCreateUserAsync(user, new UserStore(path));
         await CheckFailedStopCleanupAsync(user, store, new HistoryStore(path));
         var app = new App(); app.InitializeComponent();
@@ -460,9 +535,6 @@ internal static partial class Program
         DeviceInfo device = store.GetDevices(user).First();
         using var points = new PointManagementViewModel(user, store, device);
         await points.RefreshPointsCommand.ExecuteAsync(null);
-        bool allowDiscard = false;
-        int discardQuestions = 0;
-        points.ConfirmationRequested += request => { discardQuestions++; request.Confirmed = allowDiscard; };
         bool allowDelete = false;
         points.DeleteConfirmationRequested += request => request.Confirmed = allowDelete;
 
@@ -470,24 +542,20 @@ internal static partial class Program
         PointInfo second = points.Points.Last();
         points.SelectedPoint = first;
         Check(points.IsEditing && points.PointName == first.Name && points.AddressText == first.Address.ToString()
-            && points.SelectedDataType == first.DataType && !points.HasUnsavedChanges,
+            && points.SelectedDataType == first.DataType,
             "选中采集点直接载入右侧，不需要额外编辑命令");
         points.SelectedPoint = second;
-        Check(points.SelectedPoint == second && points.PointName == second.Name && discardQuestions == 0,
-            "未修改的点位切换不弹确认，表单跟随当前选择");
+        Check(points.SelectedPoint == second && points.PointName == second.Name,
+            "点位切换不弹确认，表单跟随当前选择");
 
         points.PointName = "尚未保存的名称";
         points.SelectedPoint = first;
-        Check(points.SelectedPoint == second && points.PointName == "尚未保存的名称" && points.HasUnsavedChanges
-            && discardQuestions == 1, "拒绝放弃修改后，原选择和输入一起保留");
-        allowDiscard = true;
-        points.SelectedPoint = first;
-        Check(points.SelectedPoint == first && points.PointName == first.Name && !points.HasUnsavedChanges
-            && discardQuestions == 2, "确认放弃修改后，目标和表单一起切到新点位");
+        Check(points.SelectedPoint == first && points.PointName == first.Name,
+            "切换点位直接载入目标，放弃未保存输入，不保留另一份表单快照");
 
         points.ScaleText = "NaN";
         await points.SavePointCommand.ExecuteAsync(null);
-        Check(points.IsEditing && points.PageMessage.Contains("倍率") && points.HasUnsavedChanges,
+        Check(points.IsEditing && points.PageMessage.Contains("倍率") && points.ScaleText == "NaN",
             "表单拒绝 NaN 倍率，并保留当前点位和编辑输入");
         points.ScaleText = "0.1"; points.OffsetText = "-2"; points.UnitText = "%RH";
         points.LowerLimitText = "-1.5"; points.UpperLimitText = "60.5";
@@ -496,7 +564,7 @@ internal static partial class Program
         await points.SavePointCommand.ExecuteAsync(null);
         PointInfo converted = store.GetPoints(user, device.Id).Single(point => point.Id == changedId);
         Check(points.IsEditing && points.SelectedPoint?.Id == changedId && points.Points.Contains(points.SelectedPoint)
-            && points.Points.Count == originalCount && !points.HasUnsavedChanges,
+            && points.Points.Count == originalCount,
             "保存修改后保留实际选中行，表单目标一致，不误插入新增记录");
         Check(converted.Scale == 0.1 && converted.Offset == -2 && converted.Unit == "%RH"
             && converted.LowerLimit == -1.5 && converted.UpperLimit == 60.5
@@ -505,95 +573,78 @@ internal static partial class Program
 
         points.PointName = "不应保存的名字";
         points.RevertPointCommand.Execute(null);
-        Check(points.SelectedPoint?.Id == changedId && points.PointName == converted.Name && !points.HasUnsavedChanges,
+        Check(points.SelectedPoint?.Id == changedId && points.PointName == converted.Name,
             "撤销输入仅恢复当前点配置，不切到新增也不改数据库");
         points.ScaleText = "7";
-        allowDiscard = false;
-        await points.RefreshPointsCommand.ExecuteAsync(null);
-        Check(points.SelectedPoint?.Id == changedId && points.ScaleText == "7" && points.HasUnsavedChanges,
-            "拒绝放弃输入时刷新不替换列表或表单");
-        allowDiscard = true;
         await points.RefreshPointsCommand.ExecuteAsync(null);
         Check(points.SelectedPoint?.Id == changedId && points.Points.Contains(points.SelectedPoint)
-            && points.ScaleText == "0.1" && !points.HasUnsavedChanges,
-            "确认刷新后按编号恢复新行对象，同时载入数据库最新配置");
+            && points.ScaleText == "0.1",
+            "刷新直接按编号恢复新行对象，同时载入数据库最新配置");
 
         points.NewPointCommand.Execute(null);
         Check(!points.IsEditing && points.SelectedPoint is null && points.PointName == "" && points.AddressText == ""
-            && points.ScaleText == "1" && points.OffsetText == "0" && points.UnitText == "" && !points.HasUnsavedChanges,
+            && points.ScaleText == "1" && points.OffsetText == "0" && points.UnitText == "",
             "新增采集点入口清除选择，恢复空表单和不换算默认值");
         points.PointName = "新建测试点"; points.AddressText = "2";
         points.SelectedRegisterType = RegisterType.Holding; points.SelectedDataType = PointDataType.UInt16;
         await points.SavePointCommand.ExecuteAsync(null);
         Check(points.Points.Count == originalCount + 1 && points.SelectedPoint?.Name == "新建测试点"
-            && points.PointName == "新建测试点" && points.IsEditing && !points.HasUnsavedChanges,
+            && points.PointName == "新建测试点" && points.IsEditing,
             "新增保存后自动选中新点，表格和表单不再显示两个目标");
         long addedId = points.SelectedPoint!.Id;
 
         points.UnitText = "未保存单位";
         await points.DeletePointCommand.ExecuteAsync(null);
-        Check(points.SelectedPoint?.Id == addedId && points.UnitText == "未保存单位" && points.HasUnsavedChanges
+        Check(points.SelectedPoint?.Id == addedId && points.UnitText == "未保存单位"
             && store.GetPoints(user, device.Id).Any(point => point.Id == addedId),
             "取消删除保留原点和未保存输入，不发生数据库删除");
         allowDelete = true;
         await points.DeletePointCommand.ExecuteAsync(null);
-        Check(points.SelectedPoint is null && !points.IsEditing && points.PointName == "" && !points.HasUnsavedChanges
+        Check(points.SelectedPoint is null && !points.IsEditing && points.PointName == ""
             && points.Points.Count == originalCount && !store.GetPoints(user, device.Id).Any(point => point.Id == addedId),
             "确认删除后清除选中与旧输入，不自动编辑邻行");
 
         points.PointName = "未完成的新增";
-        allowDiscard = false;
         points.NewPointCommand.Execute(null);
-        Check(points.PointName == "未完成的新增" && points.HasUnsavedChanges,
-            "再次点击新增也不能静默丢掉未保存输入");
-        Check(!points.ConfirmDiscardChanges(), "关窗使用同一放弃输入确认，拒绝时阻止关闭");
-        allowDiscard = true;
+        Check(points.PointName == "" && points.SelectedPoint is null,
+            "再次点击新增直接清空临时输入，不维护放弃修改确认状态");
+        points.PointName = "尚未保存";
         points.RevertPointCommand.Execute(null);
-        Check(points.PointName == "" && !points.HasUnsavedChanges,
+        Check(points.PointName == "",
             "新增状态撤销输入恢复空表单，不误修改之前选中过的点");
     }
 
-    private static async Task CheckPointQueryQueueAsync(UserAccount user, DeviceStore store, HistoryStore history)
+    private static async Task CheckPointLoadingAsync(UserAccount user, DeviceStore store, HistoryStore history)
     {
         var runtime = new DeviceTasks(user, store, history);
         var vm = new PointConfigurationViewModel(user, store, runtime);
         var pendingField = typeof(PointConfigurationViewModel).GetField("_pointLoadTask", BindingFlags.Instance | BindingFlags.NonPublic)!;
         DeviceInfo[] devices = store.GetDevices(user).ToArray();
-        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         try
         {
-            pendingField.SetValue(vm, gate.Task);
-            vm.SelectedDevice = devices[0];
-            vm.SelectedDevice = devices[1];
             vm.SelectedDevice = devices[0];
             Task pending = (Task)pendingField.GetValue(vm)!;
-            Check(!pending.IsCompleted && vm.Points.Count == 0, "快速切换设备时，后续查询等待前一份，不显示旧点位");
-            gate.SetResult();
+            Check(vm.IsLoadingPoints && !vm.CanChooseDevice && vm.Points.Count == 0,
+                "查询点位期间禁用设备选择，不再给旧选择排队");
             await pending.WaitAsync(TimeSpan.FromSeconds(5));
-            Check(vm.Points.Count == 2 && vm.Points.All(p => p.DeviceId == devices[0].Id) && !vm.IsLoadingPoints,
-                "查询队列结束只显示当前设备点位，加载状态恢复");
+            Check(vm.Points.Count == 2 && vm.Points.All(p => p.DeviceId == devices[0].Id) && vm.CanChooseDevice,
+                "查询结束显示当前设备点位，恢复选择");
 
-            gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            pendingField.SetValue(vm, gate.Task);
             vm.SelectedDevice = devices[1];
-            vm.SelectedDevice = null;
             pending = (Task)pendingField.GetValue(vm)!;
-            gate.SetResult();
+            vm.SelectedDevice = null;
             await pending.WaitAsync(TimeSpan.FromSeconds(5));
-            Check(vm.Points.Count == 0 && vm.SelectedPoint is null, "等待期间清空设备选择，旧查询不会把点位放回来");
+            Check(vm.Points.Count == 0 && vm.SelectedPoint is null && !vm.IsLoadingPoints,
+                "程序清空选择后，尚未结束的旧查询不会把点位放回来");
 
-            gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            pendingField.SetValue(vm, gate.Task);
             vm.SelectedDevice = devices[0];
             Task stopping = vm.StopOperationsAsync();
-            Check(!stopping.IsCompleted, "退出时会等待队列前面尚未结束的查询");
-            gate.SetResult();
+            Check(!stopping.IsCompleted, "退出时等待当前查询收尾，不等待旧选择队列");
             await stopping.WaitAsync(TimeSpan.FromSeconds(5));
-            Check(vm.Points.Count == 0 && !vm.CanChooseDevice, "退出后排队查询不再开始，也不会回填页面");
+            Check(vm.Points.Count == 0 && !vm.CanChooseDevice, "退出后查询不再回填页面或恢复操作");
         }
         finally
         {
-            gate.TrySetResult();
             await vm.StopOperationsAsync();
             await runtime.StopAllAsync();
         }
@@ -622,9 +673,11 @@ internal static partial class Program
         vm.MessageRequested += (_, _) => messages++;
         Task creating = vm.CreateOperatorCommand.ExecuteAsync(null);
         Check(!creating.IsCompleted, "创建操作员的密码计算在后台进行，命令异步返回");
-        Check(!vm.RefreshUsersCommand.CanExecute(null) && !vm.CreateOperatorCommand.CanExecute(null) && !vm.CanEditNewUser,
+        Check(!vm.RefreshUsersCommand.CanExecute(null) && !vm.CreateOperatorCommand.CanExecute(null)
+            && !vm.CanEditNewUser && !vm.CanChooseUser,
             "账户写入期间不重复创建或修改同一份页面状态");
-        Task closing = vm.StopOperationsAsync();
+        PageViewModel page = vm;
+        Task closing = page.StopOperationsAsync();
         await Task.WhenAll(creating, closing);
         Check(store.GetUsers(user).Any(account => account.UserName == "async-worker"), "退出等待已开始的账户保存完成");
         Check(messages == 0, "退出期间保存完成不再向旧页面弹出成功消息");
@@ -722,6 +775,12 @@ internal static partial class Program
         DatePicker[] dates = Descendants<DatePicker>(expander).ToArray();
         Check(expander.IsExpanded && dates.Length == 2 && dates.All(date => date.ActualWidth >= 130 && date.ActualHeight >= 25),
             name + "时间筛选展开后开始与结束日期控件完整显示");
+        var dateText = (TextBox)dates[0].Template.FindName("PART_TextBox", dates[0]);
+        Check(!dateText.IsReadOnly, name + "使用标准日期输入，不再查模板并强制锁住文本框");
+        DateTime? originalDate = dates[0].SelectedDate;
+        dates[0].SetCurrentValue(DatePicker.TextProperty, "2026/10/29");
+        Check(dates[0].SelectedDate == new DateTime(2026, 10, 29), name + "手动输入日期可正常转换为筛选日期");
+        dates[0].SetCurrentValue(DatePicker.SelectedDateProperty, originalDate);
         var filterScroll = Descendants<ScrollViewer>(expander).First();
         Check(filterScroll.HorizontalScrollBarVisibility == ScrollBarVisibility.Disabled && filterScroll.ScrollableWidth < 1,
             name + "筛选区按宽度换行，不产生横向滚动");
