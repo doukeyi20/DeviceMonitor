@@ -327,6 +327,24 @@ internal static partial class Program
         seededHistory.SaveRecords(user, Enumerable.Range(0, 3).Select(index => new HistoryRecord(
             historyDevice.Id, historyDevice.Name, historyPoint.Id, historyPoint.Name,
             20 + index, DateTimeOffset.Now.AddSeconds(-index))).ToArray());
+        // 截图也使用临时库中的真实列表记录，覆盖启用、停用和报警详情外观。
+        var screenUsers = new UserStore(path);
+        screenUsers.TryCreateFirstAdministrator(user.UserName, "UiAdmin123!");
+        screenUsers.TryCreateOperator(user, "operator-01", "UiOperator123!");
+        screenUsers.TryCreateOperator(user, "operator-02", "UiOperator123!");
+        UserAccount disabledOperator = screenUsers.GetUsers(user).Single(item => item.UserName == "operator-02");
+        screenUsers.TrySetOperatorEnabled(user, disabledOperator.Id, false);
+        DateTimeOffset alarmAt = DateTimeOffset.UtcNow.AddMinutes(-3);
+        new AlarmStore(path).SaveRecords(user, new[] { AlarmState.Active, AlarmState.Recovered }.Select(state => new AlarmRecord
+        {
+            DeviceId = historyDevice.Id, DeviceName = historyDevice.Name,
+            PointId = historyPoint.Id, PointName = historyPoint.Name,
+            Kind = AlarmKind.HighLimit, State = state, Value = 28.6, Limit = 26, Unit = "℃",
+            StartedAt = alarmAt, LastSeenAt = alarmAt.AddMinutes(1),
+            EndedAt = state == AlarmState.Active ? null : alarmAt.AddMinutes(2), Occurrences = 3,
+            Message = state == AlarmState.Active ? "温度 28.6 ℃ 高于上限 26 ℃。"
+                : "温度已回到允许范围，本次报警已恢复。"
+        }).ToArray());
         await CheckPointLoadingAsync(user, store, new HistoryStore(path));
         await CheckCreateUserAsync(user, new UserStore(path));
         await CheckFailedStopCleanupAsync(user, store, new HistoryStore(path));
@@ -463,10 +481,18 @@ internal static partial class Program
             CheckNoPageTitle(monitorView, "实时监控");
 
             main.CurrentPage = main.Pages.OfType<UserManagementViewModel>().Single();
+            await ((UserManagementViewModel)main.CurrentPage).RefreshUsersCommand.ExecuteAsync(null);
             Render(window, new Size(1424, 861), "users-clean");
             CheckNoPageTitle((DependencyObject)window.Content, "用户管理");
             Render(window, new Size(1240, 681), "users-small");
             CheckTables((DependencyObject)window.Content, "用户管理小工作区");
+            var userView = Descendants<UserManagementView>((DependencyObject)window.Content).Single();
+            var createPanel = (Expander)userView.FindName("CreateOperatorExpander");
+            createPanel.IsExpanded = true;
+            Render(window, new Size(1240, 681), "users-create-small");
+            Check(Descendants<PasswordBox>(createPanel).Count() == 2 && Descendants<Button>(createPanel).Any(button => button.ActualHeight >= 32),
+                "账号创建区展开后保留两个密码输入和创建入口");
+            createPanel.IsExpanded = false;
             var history = main.Pages.OfType<HistoryViewModel>().Single();
             await history.RefreshRecordsCommand.ExecuteAsync(null);
             await history.Alarms.RefreshRecordsCommand.ExecuteAsync(null);
@@ -485,10 +511,34 @@ internal static partial class Program
             CheckHistoryFilters(Descendants<HistoryView>((DependencyObject)window.Content).Single(), "采集历史小工作区");
             Render(window, new Size(1424, 861), "history-filters-large");
             CheckHistoryFilters(Descendants<HistoryView>((DependencyObject)window.Content).Single(), "采集历史正常窗口");
+            var trend = new HistoryTrendViewModel(user, seededHistory, history.SelectedRecord!, new HistoryFilter(), history.Records.Max(item => item.Id));
+            await trend.LoadTrendCommand.ExecuteAsync(null);
+            var trendWindow = new HistoryTrendWindow(trend);
+            Render(trendWindow, new Size(960, 620), "history-trend-clean");
+            Check(trend.Records.Count > 0 && Descendants<HistoryTrendChart>((DependencyObject)trendWindow.Content).Single().Records.Count > 0,
+                "历史趋势沿用临时库记录，统计和曲线仍绑定原数据");
+            trendWindow.Close();
             var tabs = Descendants<TabControl>((DependencyObject)window.Content).Single();
             tabs.SelectedIndex = 1;
             history.Alarms.UseTimeFilter = true;
             Render(window, new Size(1424, 861), "alarms-clean");
+            var alarmView = Descendants<AlarmHistoryView>((DependencyObject)window.Content).Single();
+            var alarmGrid = (DataGrid)alarmView.FindName("AlarmRecordsGrid");
+            Check(alarmGrid.Columns.Count == 6 && alarmGrid.RowDetailsVisibilityMode == DataGridRowDetailsVisibilityMode.VisibleWhenSelected,
+                "报警列表保留六个关键列，完整字段放选中行详情而非另增弹窗");
+            foreach (AlarmRecord record in history.Alarms.Records)
+            {
+                alarmGrid.SelectedItem = record;
+                Render(window, new Size(1424, 861), $"alarm-{record.State}-details");
+                string[] detailTexts = Descendants<TextBlock>(alarmGrid).Select(text =>
+                    new System.Windows.Documents.TextRange(text.ContentStart, text.ContentEnd).Text).ToArray();
+                Check(detailTexts.Any(text => text == record.Message)
+                    && detailTexts.Any(text => text.StartsWith("最近发生："))
+                    && detailTexts.Any(text => text.StartsWith("结束时间：")),
+                    record.State + " 报警选中后可读说明、最近发生及结束时间");
+                Check(Descendants<DataGridDetailsPresenter>(alarmGrid).Count(detail => detail.Visibility == Visibility.Visible) == 1,
+                    record.State + " 报警切换只展开当前行详情");
+            }
             CheckHistoryFilters(Descendants<AlarmHistoryView>((DependencyObject)window.Content).Single(), "报警历史正常窗口");
             Render(window, new Size(1240, 681), "alarms-filters-small");
             CheckHistoryFilters(Descendants<AlarmHistoryView>((DependencyObject)window.Content).Single(), "报警历史小工作区");
@@ -510,11 +560,21 @@ internal static partial class Program
             CheckEditableSerialPort(deviceEditor);
             deviceEditor.Close();
             Render(new PasswordWindow(new PasswordEditViewModel(user, new UserStore(path))), new Size(520, 430), "password-clean");
+            Render(new PasswordWindow(new PasswordEditViewModel(user, screenUsers, disabledOperator)), new Size(480, 430), "password-reset-clean");
             var login = new LoginWindow(new UserStore(path), store, new HistoryStore(path));
             await ((LoginViewModel)login.DataContext).InitializeAsync();
             Render(login, new Size(500, 530), "login-clean");
             Check(login.Icon is not null && login.ResizeMode == ResizeMode.NoResize,
                 "登录窗口使用同一图标并保留固定大小");
+            string freshPath = Path.Combine(Output, $"first-login-only-{Guid.NewGuid():N}.db");
+            new DatabaseInitializer(freshPath).Initialize();
+            var firstLogin = new LoginWindow(new UserStore(freshPath), new DeviceStore(freshPath), new HistoryStore(freshPath));
+            var firstLoginModel = (LoginViewModel)firstLogin.DataContext;
+            await firstLoginModel.InitializeAsync();
+            firstLoginModel.ShowAdminSetupCommand.Execute(null);
+            Render(firstLogin, new Size(500, 560), "first-admin-clean");
+            Check(firstLoginModel.IsAdminSetupVisible && Descendants<PasswordBox>((DependencyObject)firstLogin.Content).Count(box => box.ActualHeight > 0) >= 2,
+                "首次管理员创建面板保留密码确认和固定窗口内滚动能力");
             var stopBeforeExit = typeof(MainWindow).GetMethod("StopBeforeExitAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
             await (Task)stopBeforeExit.Invoke(window, null)!;
             Check(main.DeviceTasks.IsShuttingDown && !history.RefreshRecordsCommand.CanExecute(null),

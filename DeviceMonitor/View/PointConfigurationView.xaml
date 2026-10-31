@@ -14,8 +14,9 @@
                   VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <Grid Height="{Binding ViewportHeight, ElementName=PageScrollViewer}" MinHeight="596">
             <Grid.RowDefinitions>
-                <RowDefinition Height="2*" />
-                <RowDefinition Height="3*" />
+                <!-- 设备只是选择入口，把更多空间留给点位和测试结果。 -->
+                <RowDefinition Height="190" />
+                <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
@@ -29,11 +30,11 @@
                         <TextBlock Text="设备" Style="{StaticResource SectionHeadingStyle}"
                                    VerticalAlignment="Center" Margin="0,0,18,6" />
                         <Button Content="刷新设备" Command="{Binding RefreshDevicesCommand}"
-                                Height="34" Margin="0,0,10,6"
+                                Height="36" Margin="0,0,10,6"
                                 Style="{StaticResource SecondaryActionButtonStyle}" />
 
                         <Button Content="管理采集点" Command="{Binding ManagePointsCommand}"
-                                Height="34" Margin="0,0,16,6"
+                                Height="36" Margin="0,0,16,6"
                                 ToolTip="修改当前设备的点位配置；采集中的设备要先停止。"
                                 ToolTipService.ShowOnDisabled="True"
                                 Style="{StaticResource SecondaryActionButtonStyle}" />
@@ -59,7 +60,7 @@
                             <DataGrid.Columns>
                                 <DataGridTextColumn ElementStyle="{StaticResource TableCellTextStyle}" Header="编号" Binding="{Binding Id}" Width="*" MinWidth="60" />
                                 <DataGridTextColumn ElementStyle="{StaticResource TableCellTextStyle}" Header="设备名称" Binding="{Binding Name}" Width="2*" MinWidth="120" />
-                                <DataGridTextColumn ElementStyle="{StaticResource TableCellTextStyle}" Header="通信方式" Binding="{Binding CommunicationText}" Width="*" MinWidth="105" />
+                                <DataGridTextColumn ElementStyle="{StaticResource TableCellTextStyle}" Header="通信方式" Binding="{Binding CommunicationText}" Width="*" MinWidth="125" />
                                 <DataGridTextColumn ElementStyle="{StaticResource TableCellTextStyle}" Header="连接地址 / 参数" Binding="{Binding Endpoint}" Width="2*" MinWidth="180" />
                                 <DataGridTextColumn ElementStyle="{StaticResource TableCellTextStyle}" Header="站号/Unit ID" Binding="{Binding UnitId}" Width="115" MinWidth="115" />
                                 <DataGridTextColumn ElementStyle="{StaticResource TableCellTextStyle}" Header="采集间隔(ms)" Binding="{Binding SamplingIntervalMilliseconds}" Width="2*" MinWidth="120" />
@@ -102,15 +103,15 @@
 
                     <WrapPanel Grid.Row="1">
                         <Button Content="刷新采集点" Command="{Binding RefreshPointsCommand}"
-                                Height="34" Margin="0,0,10,6"
+                                Height="36" Margin="0,0,10,6"
                                 Style="{StaticResource SecondaryActionButtonStyle}" />
                         <Button Content="{Binding ReadOnceButtonText}" Command="{Binding ReadOnceCommand}"
                                 ToolTip="只测试选中的一个点，不保存历史；同设备连续采集中不可测试。"
-                                Height="34" Margin="0,0,10,6"
+                                Height="36" Margin="0,0,10,6"
                                 Style="{StaticResource PrimaryActionButtonStyle}" />
                         <Button Content="取消读取" Command="{Binding ReadOnceCancelCommand}"
                                 ToolTip="发出取消信号；正在执行的读写可能需要等到返回或超时。"
-                                Height="34" Margin="0,0,0,6">
+                                Height="36" Margin="0,0,0,6">
                             <Button.Style>
                                 <Style TargetType="Button" BasedOn="{StaticResource SecondaryActionButtonStyle}">
                                     <Setter Property="Visibility" Value="Collapsed" />

@@ -12,12 +12,12 @@ namespace DeviceMonitor.View
         private const int VerticalTickCount = 5;
         private static readonly Brush BackgroundBrush = Brushes.White;
         private static readonly Brush TextBrush = CreateBrush(95, 105, 117);
-        private static readonly Brush LineBrush = CreateBrush(68, 101, 126);
+        private static readonly Brush LineBrush = CreateBrush(37, 99, 235);
         private static readonly Pen BorderPen = CreatePen(224, 228, 233, 1);
         private static readonly Pen GridPen = CreatePen(237, 240, 243, 1);
         private static readonly Pen AxisPen = CreatePen(173, 181, 190, 1);
-        private static readonly Pen CurvePen = CreatePen(68, 101, 126, 1.8);
-        private static readonly Typeface ChartTypeface = new Typeface("Segoe UI");
+        private static readonly Pen CurvePen = CreatePen(37, 99, 235, 1.8);
+        private static readonly Typeface ChartTypeface = new Typeface("Microsoft YaHei UI");
 
         // 绘图数据通过绑定传入，查询仍由对应 ViewModel 完成。
         public static readonly DependencyProperty RecordsProperty = DependencyProperty.Register(

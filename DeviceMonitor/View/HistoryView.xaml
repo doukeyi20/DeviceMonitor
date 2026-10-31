@@ -79,7 +79,7 @@
             </Grid>
         </Border>
 
-        <Border Grid.Row="1" Margin="0,8,0,8" Padding="8,3"
+        <Border Grid.Row="1" Margin="0,12,0,8" Padding="0,0,0,8" BorderThickness="0,0,0,1" CornerRadius="0"
                 Style="{StaticResource SectionCardStyle}">
             <Grid>
             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
@@ -115,7 +115,7 @@
         <Border Grid.Row="2" Padding="0" Style="{StaticResource SectionCardStyle}">
             <Grid MinHeight="70">
 
-            <DataGrid BorderThickness="0" RowHeight="32" ColumnHeaderHeight="32" ItemsSource="{Binding Records}" SelectedItem="{Binding SelectedRecord, Mode=TwoWay}"
+            <DataGrid BorderThickness="0" RowHeight="38" ColumnHeaderHeight="36" ItemsSource="{Binding Records}" SelectedItem="{Binding SelectedRecord, Mode=TwoWay}"
                           SelectionMode="Single" SelectionUnit="FullRow"
                           AutoGenerateColumns="False" IsReadOnly="True"
                           CanUserAddRows="False" CanUserDeleteRows="False" CanUserReorderColumns="False"
@@ -123,18 +123,18 @@
                           ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto">
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="设备" Binding="{Binding DeviceName}" Width="2*" MinWidth="100">
-                            <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock">
+                            <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock" BasedOn="{StaticResource TableCellTextStyle}">
                                 <Setter Property="TextTrimming" Value="CharacterEllipsis" /><Setter Property="ToolTip" Value="{Binding DeviceName}" />
                             </Style></DataGridTextColumn.ElementStyle>
                         </DataGridTextColumn>
                         <DataGridTextColumn Header="采集点" Binding="{Binding PointName}" Width="2*" MinWidth="100">
-                            <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock">
+                            <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock" BasedOn="{StaticResource TableCellTextStyle}">
                                 <Setter Property="TextTrimming" Value="CharacterEllipsis" /><Setter Property="ToolTip" Value="{Binding PointName}" />
                             </Style></DataGridTextColumn.ElementStyle>
                         </DataGridTextColumn>
-                        <DataGridTextColumn Header="读取值" Binding="{Binding ValueText}" Width="*" MinWidth="105" />
+                        <DataGridTextColumn Header="读取值" Binding="{Binding ValueText}" Width="*" MinWidth="105" ElementStyle="{StaticResource TableNumberTextStyle}" HeaderStyle="{StaticResource TableNumberHeaderStyle}" />
                         <DataGridTextColumn Header="读取时间（本机）" Binding="{Binding ReadAtLocal, StringFormat={}{0:yyyy-MM-dd HH:mm:ss.fff}}"
-                                            Width="3*" MinWidth="190" />
+                                            Width="2*" MinWidth="205" ElementStyle="{StaticResource TableTimeTextStyle}" />
                     </DataGrid.Columns>
                 </DataGrid>
             <Border Padding="12" Margin="12,40,12,8" MaxWidth="360" HorizontalAlignment="Center"
@@ -150,9 +150,9 @@
             </Grid>
         </Border>
 
-        <Border Grid.Row="3" Margin="0,8,0,0" Padding="8,2" HorizontalAlignment="Left"
+        <Border Grid.Row="3" Margin="0,8,0,0" Padding="0,2" Background="Transparent"
                 Style="{StaticResource ToolbarCardStyle}">
-            <StackPanel Orientation="Horizontal">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
             <Button Content="上一页" Command="{Binding PreviousPageCommand}" Height="28" Padding="10,3" Margin="0,0,10,0" Style="{StaticResource SecondaryActionButtonStyle}" />
             <TextBlock Text="{Binding PageDescription}" FontSize="12" VerticalAlignment="Center" Margin="0,0,10,0" />
             <Button Content="下一页" Command="{Binding NextPageCommand}" Height="28" Padding="10,3" Style="{StaticResource SecondaryActionButtonStyle}" />

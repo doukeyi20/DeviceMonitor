@@ -62,7 +62,7 @@
             <Setter Property="ToolTip" Value="{Binding DetailsText}" />
             <Style.Triggers>
                 <Trigger Property="IsSelected" Value="True">
-                    <Setter Property="Background" Value="#E7EDF2" />
+                    <Setter Property="Background" Value="{StaticResource AccentSoftBrush}" />
                 </Trigger>
                 <DataTrigger Binding="{Binding IsAlert}" Value="True">
                     <Setter Property="Background" Value="#FFF1F0" />
@@ -112,27 +112,27 @@
                 <StackPanel Orientation="Horizontal" Margin="0,0,12,0">
                 <Button Content="刷新设备" Command="{Binding RefreshDevicesCommand}"
                         Style="{StaticResource SecondaryActionButtonStyle}" Padding="12,8"
-                        Width="96" Height="38" Margin="0,0,8,8" />
+                        Width="96" Height="36" Margin="0,0,8,8" />
                 <Button Content="全选" Command="{Binding CheckAllDevicesCommand}"
                         Style="{StaticResource LinkActionButtonStyle}" Padding="10,8"
-                        Width="60" Height="38" Margin="0,0,8,8" />
+                        Width="60" Height="36" Margin="0,0,8,8" />
                 <Button Content="清空勾选" Command="{Binding ClearDeviceChecksCommand}"
                         ToolTip="只取消勾选，不会停止正在采集的设备；可使用“停止所选”或“停止全部”。"
                         Style="{StaticResource LinkActionButtonStyle}" Padding="10,8"
-                        Width="86" Height="38" Margin="0,0,0,8" />
+                        Width="86" Height="36" Margin="0,0,0,8" />
                 </StackPanel>
                 <StackPanel Orientation="Horizontal">
 
                 <Button Content="开始采集" Command="{Binding StartSamplingCommand}" ToolTip="开始采集勾选且已启用的设备。"
                         Style="{StaticResource PrimaryActionButtonStyle}" Padding="12,8"
-                        Width="100" Height="38" Margin="0,0,8,8" />
+                        Width="100" Height="36" Margin="0,0,8,8" />
                 <Button Content="停止所选" Command="{Binding StopSamplingCommand}" ToolTip="停止勾选设备的采集。"
                         Style="{StaticResource SecondaryActionButtonStyle}" Padding="12,8"
-                        Width="100" Height="38" Margin="0,0,8,8" />
+                        Width="100" Height="36" Margin="0,0,8,8" />
                 <Button Content="停止全部" Command="{Binding StopAllSamplingCommand}"
                         ToolTip="停止所有正在采集的设备，不受勾选范围影响；之后仍可重新开始。"
                         Style="{StaticResource SecondaryActionButtonStyle}" Padding="12,8"
-                        Width="100" Height="38" Margin="0,0,0,8" />
+                        Width="100" Height="36" Margin="0,0,0,8" />
                 </StackPanel>
             </WrapPanel>
             <StackPanel Grid.Column="1" Margin="14,0,2,8" VerticalAlignment="Center">
@@ -175,8 +175,8 @@
                                                     <Setter Property="BorderBrush" Value="{StaticResource BorderBrushNeutral}" />
                                                     <Style.Triggers>
                                                         <DataTrigger Binding="{Binding IsChecked}" Value="True">
-                                                            <Setter Property="Background" Value="#E7EDF2" />
-                                                            <Setter Property="BorderBrush" Value="#A7B3BF" />
+                                                            <Setter Property="Background" Value="{StaticResource AccentSoftBrush}" />
+                                                            <Setter Property="BorderBrush" Value="#93C5FD" />
                                                         </DataTrigger>
                                                     </Style.Triggers>
                                                 </Style>
@@ -229,9 +229,10 @@
 
                 <Grid Grid.Column="2">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="0.9*" MinHeight="200" />
+                        <!-- 点多时在表内滚动，不让读数区挤掉曲线。 -->
+                        <RowDefinition Height="0.7*" MinHeight="240" />
                         <RowDefinition Height="12" />
-                        <RowDefinition Height="1.1*" MinHeight="260" />
+                        <RowDefinition Height="1.3*" MinHeight="280" />
                     </Grid.RowDefinitions>
 
                     <Border Padding="12" Style="{StaticResource SectionCardStyle}">
@@ -253,8 +254,27 @@
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Header="设备" Binding="{Binding DeviceName}" Width="1*" MinWidth="90" ElementStyle="{StaticResource MonitorReadingTextStyle}" />
                                     <DataGridTextColumn Header="点位" Binding="{Binding PointName}" Width="1.2*" MinWidth="110" ElementStyle="{StaticResource MonitorReadingTextStyle}" />
-                                    <DataGridTextColumn Header="读数" Binding="{Binding ValueText}" Width="90" MinWidth="90" ElementStyle="{StaticResource MonitorReadingTextStyle}" />
-                                    <DataGridTextColumn Header="状态" Binding="{Binding StatusText}" Width="1.4*" MinWidth="130" ElementStyle="{StaticResource MonitorStatusTextStyle}" />
+                                    <DataGridTextColumn Header="读数" Binding="{Binding ValueText}" Width="100" MinWidth="100" HeaderStyle="{StaticResource TableNumberHeaderStyle}">
+                                        <DataGridTextColumn.ElementStyle>
+                                            <Style TargetType="TextBlock" BasedOn="{StaticResource MonitorReadingTextStyle}">
+                                                <Setter Property="HorizontalAlignment" Value="Right" />
+                                                <Setter Property="FontWeight" Value="SemiBold" />
+                                            </Style>
+                                        </DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                    <DataGridTemplateColumn Header="状态" Width="1.4*" MinWidth="130">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Border Margin="6,0" Padding="7,3" CornerRadius="4" HorizontalAlignment="Left" VerticalAlignment="Center">
+                                                    <Border.Style><Style TargetType="Border">
+                                                        <Setter Property="Background" Value="#F1F5F9" />
+                                                        <Style.Triggers><DataTrigger Binding="{Binding IsAlert}" Value="True"><Setter Property="Background" Value="#FEE4E2" /></DataTrigger></Style.Triggers>
+                                                    </Style></Border.Style>
+                                                    <TextBlock Text="{Binding StatusText}" Margin="0" FontSize="12" Style="{StaticResource MonitorStatusTextStyle}" />
+                                                </Border>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
                                     <DataGridTextColumn Header="时间" Binding="{Binding ReadTimeText}" Width="82" MinWidth="82" ElementStyle="{StaticResource MonitorReadingTextStyle}" />
                                 </DataGrid.Columns>
                             </DataGrid>

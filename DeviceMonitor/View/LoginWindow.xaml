@@ -7,7 +7,7 @@
         Title="登录 - DeviceMonitor"
         Icon="{StaticResource ApplicationIcon}"
         Width="500"
-        Height="600"
+        Height="560"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource PageBackgroundBrush}"
@@ -36,8 +36,8 @@
                 <Grid Margin="0,0,0,28">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="58" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                     <Border Width="44" Height="44" HorizontalAlignment="Left" VerticalAlignment="Center"
-                            Background="{StaticResource SoftSurfaceBrush}" CornerRadius="12">
-                        <TextBlock Text="DM" FontSize="15" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            Background="{StaticResource AccentBrush}" CornerRadius="12">
+                        <Path Data="{StaticResource ApplicationMarkGeometry}" Stroke="White" StrokeThickness="1.8" Stretch="Uniform" Margin="8" />
                     </Border>
                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
                         <TextBlock Text="设备监控系统" Style="{StaticResource PageTitleStyle}" />
@@ -76,8 +76,8 @@
                 <Grid Margin="0,0,0,22">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="58" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                     <Border Width="44" Height="44" HorizontalAlignment="Left" VerticalAlignment="Center"
-                            Background="{StaticResource SoftSurfaceBrush}" CornerRadius="12">
-                        <TextBlock Text="DM" FontSize="15" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            Background="{StaticResource AccentBrush}" CornerRadius="12">
+                        <Path Data="{StaticResource ApplicationMarkGeometry}" Stroke="White" StrokeThickness="1.8" Stretch="Uniform" Margin="8" />
                     </Border>
                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
                         <TextBlock Text="创建首个管理员" Style="{StaticResource PageTitleStyle}" />

@@ -11,13 +11,13 @@ public sealed class LiveTrendChart : FrameworkElement
     private const int MaximumSamples = 300;
     private const int VerticalTickCount = 5;
     private static readonly TimeSpan DefaultWindowDuration = TimeSpan.FromMinutes(5);
-    private static readonly Typeface ChartTypeface = new("Segoe UI");
+    private static readonly Typeface ChartTypeface = new("Microsoft YaHei UI");
     private static readonly Brush TextBrush = CreateBrush(95, 105, 117);
-    private static readonly Brush CurveBrush = CreateBrush(44, 112, 151);
+    private static readonly Brush CurveBrush = CreateBrush(37, 99, 235);
     private static readonly Pen BorderPen = CreatePen(224, 228, 233, 1);
     private static readonly Pen GridPen = CreatePen(237, 240, 243, 1);
     private static readonly Pen AxisPen = CreatePen(173, 181, 190, 1);
-    private static readonly Pen CurvePen = CreatePen(44, 112, 151, 1.8);
+    private static readonly Pen CurvePen = CreatePen(37, 99, 235, 1.8);
 
     // 输入变化交给 WPF 安排重绘，图表只消费显示样本，不执行通信。
     public static readonly DependencyProperty SamplesProperty = DependencyProperty.Register(

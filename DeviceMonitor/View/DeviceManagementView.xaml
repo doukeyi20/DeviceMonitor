@@ -19,12 +19,19 @@
             </Grid.RowDefinitions>
 
             <Border Style="{StaticResource ToolbarCardStyle}" Margin="0,0,0,10">
+                <DockPanel LastChildFill="True">
+                    <Button DockPanel.Dock="Right" Content="{Binding DeleteDeviceButtonText}" Width="100" Height="36"
+                            Margin="12,0,0,6" VerticalAlignment="Top"
+                            Command="{Binding DeleteDeviceCommand}"
+                            ToolTip="请先手动停止这台设备的采集或测试，等结束后再删除；历史读数和报警历史保留。"
+                            ToolTipService.ShowOnDisabled="True"
+                            Style="{StaticResource DangerActionButtonStyle}" />
                 <WrapPanel>
                     <StackPanel Margin="0,0,18,6">
                         <StackPanel Orientation="Horizontal">
-                            <Button Content="新增设备" Width="100" Height="34" Margin="0,0,8,0"
+                            <Button Content="新增设备" Width="100" Height="36" Margin="0,0,8,0"
                                     Command="{Binding AddDeviceCommand}" Style="{StaticResource PrimaryActionButtonStyle}" />
-                            <Button x:Name="EditDeviceButton" Content="编辑设备" Width="100" Height="34"
+                            <Button x:Name="EditDeviceButton" Content="编辑设备" Width="100" Height="36"
                                     ToolTip="编辑选中设备；采集中的设备要先停止。也可双击设备行打开。"
                                     ToolTipService.ShowOnDisabled="True"
                                     Command="{Binding EditDeviceCommand}" Style="{StaticResource SecondaryActionButtonStyle}" />
@@ -32,11 +39,11 @@
                     </StackPanel>
                     <StackPanel Margin="0,0,18,6">
                         <StackPanel Orientation="Horizontal">
-                            <Button x:Name="EnableDeviceButton" Content="启用设备" Width="92" Height="34" Margin="0,0,8,0"
+                            <Button x:Name="EnableDeviceButton" Content="启用设备" Width="92" Height="36" Margin="0,0,8,0"
                                     Command="{Binding EnableDeviceCommand}"
                                     ToolTip="只允许这台设备被采集；不会自动启动。"
                                     Style="{StaticResource SecondaryActionButtonStyle}" />
-                            <Button x:Name="DisableDeviceButton" Content="停用设备" Width="92" Height="34"
+                            <Button x:Name="DisableDeviceButton" Content="停用设备" Width="92" Height="36"
                                     Command="{Binding DisableDeviceCommand}"
                                     ToolTip="先到实时监控停止这台设备，等停止完成后才能停用。"
                                     Style="{StaticResource SecondaryActionButtonStyle}" />
@@ -54,10 +61,10 @@
                         </StackPanel.Style>
                         <StackPanel Orientation="Horizontal">
                             <Button x:Name="TestConnectionButton" Content="{Binding TestConnectionButtonText}"
-                                    Width="100" Height="34" Command="{Binding TestConnectionCommand}"
+                                    Width="100" Height="36" Command="{Binding TestConnectionCommand}"
                                     ToolTip="只测试 TCP 端口。RTU 请到采集点配置选择点位，点击读取一次。"
                                     Style="{StaticResource SecondaryActionButtonStyle}" />
-                            <Button Content="取消测试" Width="92" Height="34" Margin="8,0,0,0"
+                            <Button Content="取消测试" Width="92" Height="36" Margin="8,0,0,0"
                                     Command="{Binding TestConnectionCancelCommand}"
                                     ToolTip="取消正在进行的 TCP 测试，不影响连续采集。">
                                 <Button.Style>
@@ -74,17 +81,10 @@
                         </StackPanel>
                     </StackPanel>
                     <StackPanel Margin="0,0,18,6">
-                        <Button Content="刷新设备" Width="100" Height="34"
+                        <Button Content="刷新设备" Width="100" Height="36"
                                 Command="{Binding RefreshDevicesCommand}"
                                 ToolTip="重新读取已保存的设备配置；不连接设备，也不启停采集。"
                                 Style="{StaticResource SecondaryActionButtonStyle}" />
-                    </StackPanel>
-                    <StackPanel Margin="0,0,0,6">
-                        <Button Content="{Binding DeleteDeviceButtonText}" Width="100" Height="34"
-                                Command="{Binding DeleteDeviceCommand}"
-                                ToolTip="请先手动停止这台设备的采集或测试，等结束后再删除；历史读数和报警历史保留。"
-                                ToolTipService.ShowOnDisabled="True"
-                                Style="{StaticResource DangerActionButtonStyle}" />
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="18,0,0,6">
                         <TextBlock Text="已保存 " Style="{StaticResource SubtleTextStyle}" />
@@ -92,6 +92,7 @@
                         <TextBlock Text=" 台设备" Style="{StaticResource SubtleTextStyle}" />
                     </StackPanel>
                 </WrapPanel>
+                </DockPanel>
             </Border>
 
             <StackPanel Grid.Row="1" Margin="0,0,0,10">
@@ -103,10 +104,10 @@
 
             <Grid Grid.Row="2">
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="*" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
-            <Border Style="{StaticResource SectionCardStyle}" Padding="0">
+            <Border Grid.Row="1" Style="{StaticResource SectionCardStyle}" Padding="0" BorderThickness="0">
                 <DataGrid x:Name="DevicesGrid" ItemsSource="{Binding Devices}"
                           MouseDoubleClick="DevicesGrid_MouseDoubleClick"
                           SelectedItem="{Binding SelectedDevice, Mode=TwoWay}"
@@ -119,11 +120,9 @@
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="设备名称" Binding="{Binding Name}" Width="2*" MinWidth="130" ElementStyle="{StaticResource TableCellTextStyle}" />
                         <DataGridTemplateColumn Header="启用状态" Width="*" MinWidth="90">
-                            <DataGridTemplateColumn.CellTemplate>
-                                <DataTemplate><TextBlock Style="{StaticResource EnabledStateTextStyle}" /></DataTemplate>
-                            </DataGridTemplateColumn.CellTemplate>
+                            <DataGridTemplateColumn.CellTemplate><StaticResource ResourceKey="EnabledStateBadgeTemplate" /></DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTextColumn Header="通信方式" Binding="{Binding CommunicationText}" Width="*" MinWidth="105" ElementStyle="{StaticResource TableCellTextStyle}" />
+                        <DataGridTextColumn Header="通信方式" Binding="{Binding CommunicationText}" Width="*" MinWidth="125" ElementStyle="{StaticResource TableCellTextStyle}" />
                         <DataGridTextColumn Header="连接地址 / 参数" Binding="{Binding Endpoint}" Width="2*" MinWidth="180" ElementStyle="{StaticResource TableCellTextStyle}" />
                         <DataGridTextColumn Header="站号/Unit ID" Binding="{Binding UnitId}" Width="115" MinWidth="115" ElementStyle="{StaticResource TableCellTextStyle}" />
                         <DataGridTextColumn Header="采集间隔(ms)" Binding="{Binding SamplingIntervalMilliseconds}" Width="2*" MinWidth="125" ElementStyle="{StaticResource TableCellTextStyle}" />
@@ -131,7 +130,8 @@
                 </DataGrid>
             </Border>
 
-            <Border Grid.Row="1" x:Name="SelectedDeviceDetails" Margin="0,10,0,0" Padding="12,10">
+            <!-- 详情靠近列表顶部，选中设备后不用跨越整页空白查看。 -->
+            <Border Grid.Row="0" x:Name="SelectedDeviceDetails" Margin="0,0,0,12" Padding="12,10" BorderThickness="0">
                 <Border.Style>
                     <Style TargetType="Border" BasedOn="{StaticResource ToolbarCardStyle}">
                         <Style.Triggers>

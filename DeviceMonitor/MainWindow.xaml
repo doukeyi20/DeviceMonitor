@@ -51,7 +51,7 @@
 
     <Grid>
         <Grid.RowDefinitions>
-            <RowDefinition Height="70" />
+            <RowDefinition Height="64" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
@@ -74,12 +74,12 @@
 
                     <Border Width="36" Height="36" CornerRadius="9" Margin="0,0,12,0"
                             Background="{StaticResource AccentBrush}">
-                        <Path Data="M 0,10 L 5,10 8,2 13,18 17,8 23,8" Stroke="White"
+                        <Path Data="{StaticResource ApplicationMarkGeometry}" Stroke="White"
                               StrokeThickness="1.8" Stretch="Uniform" Margin="7" />
                     </Border>
                     <StackPanel VerticalAlignment="Center">
                     <TextBlock Text="{Binding WindowTitle}"
-                               FontSize="19"
+                               FontSize="18"
                                FontWeight="SemiBold" />
                     </StackPanel>
                 </StackPanel>
@@ -139,23 +139,24 @@
                 <ListBox.ItemTemplate>
                     <DataTemplate>
                         <StackPanel Orientation="Horizontal">
-                            <Border Width="27" Height="27" CornerRadius="6" Margin="0,0,10,0"
-                                    Background="#EBEFF2" VerticalAlignment="Center">
-                                <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="12">
-                                    <TextBlock.Style>
-                                        <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
-                                            <Setter Property="Text" Value="页" />
-                                            <Style.Triggers>
-                                                <DataTrigger Binding="{Binding Title}" Value="实时监控"><Setter Property="Text" Value="监" /></DataTrigger>
-                                                <DataTrigger Binding="{Binding Title}" Value="设备管理"><Setter Property="Text" Value="设" /></DataTrigger>
-                                                <DataTrigger Binding="{Binding Title}" Value="采集点配置"><Setter Property="Text" Value="点" /></DataTrigger>
-                                                <DataTrigger Binding="{Binding Title}" Value="历史记录"><Setter Property="Text" Value="历" /></DataTrigger>
-                                                <DataTrigger Binding="{Binding Title}" Value="用户管理"><Setter Property="Text" Value="用" /></DataTrigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </TextBlock.Style>
-                                </TextBlock>
-                            </Border>
+                            <!-- 简单线条图标直接放在界面里，不引入图标库或新的代码类。 -->
+                            <Path Width="18" Height="18" Margin="2,0,14,0" Stretch="Uniform"
+                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ListBoxItem}}"
+                                  StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                  VerticalAlignment="Center">
+                                <Path.Style>
+                                    <Style TargetType="Path">
+                                        <Setter Property="Data" Value="M 2,3 L 18,3 18,17 2,17 Z" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Title}" Value="实时监控"><Setter Property="Data" Value="M 1,10 L 5,10 8,3 12,17 15,9 20,9 M 2,20 L 18,20" /></DataTrigger>
+                                            <DataTrigger Binding="{Binding Title}" Value="设备管理"><Setter Property="Data" Value="M 2,2 L 18,2 18,14 2,14 Z M 7,19 L 13,19 M 10,14 L 10,19 M 5,6 L 8,6 M 5,10 L 13,10" /></DataTrigger>
+                                            <DataTrigger Binding="{Binding Title}" Value="采集点配置"><Setter Property="Data" Value="M 5,1 L 5,19 M 10,1 L 10,19 M 15,1 L 15,19 M 2,6 L 8,6 M 7,14 L 13,14 M 12,8 L 18,8" /></DataTrigger>
+                                            <DataTrigger Binding="{Binding Title}" Value="历史记录"><Setter Property="Data" Value="M 3,5 A 8,8 0 1 1 2,13 M 3,1 L 3,6 8,6 M 10,5 L 10,11 14,13" /></DataTrigger>
+                                            <DataTrigger Binding="{Binding Title}" Value="用户管理"><Setter Property="Data" Value="M 6,6 A 4,4 0 1 1 14,6 A 4,4 0 1 1 6,6 M 2,20 C 2,12 18,12 18,20" /></DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Path.Style>
+                            </Path>
                             <TextBlock Text="{Binding Title}" VerticalAlignment="Center" />
                         </StackPanel>
                     </DataTemplate>
@@ -174,7 +175,7 @@
                                     <Border x:Name="ItemBorder"
                                             Background="{TemplateBinding Background}"
                                             BorderBrush="Transparent"
-                                            BorderThickness="1"
+                                            BorderThickness="3,0,0,0"
                                             CornerRadius="8"
                                             Padding="{TemplateBinding Padding}">
                                         <ContentPresenter ContentSource="Content"
@@ -187,9 +188,9 @@
                                                     Value="{StaticResource SoftSurfaceBrush}" />
                                         </Trigger>
                                         <Trigger Property="IsSelected" Value="True">
-                                            <Setter TargetName="ItemBorder" Property="Background" Value="#E7ECF1" />
-                                            <Setter TargetName="ItemBorder" Property="BorderBrush" Value="#D7DFE6" />
-                                            <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}" />
+                                            <Setter TargetName="ItemBorder" Property="Background" Value="{StaticResource AccentSoftBrush}" />
+                                            <Setter TargetName="ItemBorder" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                            <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
                                             <Setter Property="FontWeight" Value="SemiBold" />
                                         </Trigger>
                                         <Trigger Property="IsKeyboardFocused" Value="True">
@@ -207,7 +208,7 @@
                         BorderBrush="{StaticResource BorderBrushNeutral}" BorderThickness="0,1,0,0">
                     <Button x:Name="LogoutButton" Content="退出登录" Command="{Binding LogoutCommand}"
                             HorizontalContentAlignment="Left" Padding="12,9" MinHeight="40"
-                            Foreground="#B42318" Style="{StaticResource SecondaryActionButtonStyle}" />
+                            Foreground="{StaticResource SecondaryTextBrush}" Style="{StaticResource LinkActionButtonStyle}" />
                 </Border>
             </Grid>
         </Border>
@@ -218,7 +219,7 @@
                 Padding="18"
                 Background="{StaticResource SurfaceBrush}"
                 BorderBrush="{StaticResource BorderBrushNeutral}"
-                BorderThickness="1"
+                BorderThickness="0"
                 CornerRadius="12">
 
             <ContentControl Content="{Binding CurrentPage}" 

@@ -79,7 +79,7 @@
             </Grid>
         </Border>
 
-        <Border Grid.Row="1" Margin="0,8,0,8" Padding="8,3"
+        <Border Grid.Row="1" Margin="0,12,0,8" Padding="0,0,0,8" BorderThickness="0,0,0,1" CornerRadius="0"
                 Style="{StaticResource SectionCardStyle}">
             <Grid>
             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
@@ -112,74 +112,63 @@
         <Border Grid.Row="2" Padding="0" Style="{StaticResource SectionCardStyle}">
             <Grid MinHeight="70">
 
-            <DataGrid BorderThickness="0" RowHeight="32" ColumnHeaderHeight="32" ItemsSource="{Binding Records}" AutoGenerateColumns="False" IsReadOnly="True"
+            <!-- 列表只展示识别报警的关键信息；选中行可展开全部细节，不影响导出内容。 -->
+            <DataGrid x:Name="AlarmRecordsGrid" BorderThickness="0" RowHeight="38" ColumnHeaderHeight="36"
+                          ItemsSource="{Binding Records}" AutoGenerateColumns="False" IsReadOnly="True"
+                          RowDetailsVisibilityMode="VisibleWhenSelected" AreRowDetailsFrozen="True"
                           SelectionMode="Single" SelectionUnit="FullRow"
                           CanUserAddRows="False" CanUserDeleteRows="False" CanUserReorderColumns="False"
                           CanUserResizeColumns="False" HeadersVisibility="Column"
                           ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto">
                     <DataGrid.Columns>
-                    <DataGridTextColumn Binding="{Binding StateText}" Width="85">
-                        <DataGridTextColumn.Header>
-                            <TextBlock Text="状态"
-                                       ToolTip="未恢复表示这条历史报警没有恢复时间，不代表设备当前仍在采集。" />
-                        </DataGridTextColumn.Header>
-                        <DataGridTextColumn.ElementStyle>
-                            <Style TargetType="TextBlock">
-                                <Setter Property="FontWeight" Value="SemiBold" />
-                                <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}" />
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding StateText}" Value="未恢复">
-                                        <Setter Property="Foreground" Value="#B42318" />
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </DataGridTextColumn.ElementStyle>
-                    </DataGridTextColumn>
-                    <DataGridTextColumn Header="设备" Binding="{Binding DeviceName}" Width="120">
-                        <DataGridTextColumn.ElementStyle>
-                            <Style TargetType="TextBlock">
-                                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
-                                <Setter Property="ToolTip" Value="{Binding DeviceName}" />
-                            </Style>
-                        </DataGridTextColumn.ElementStyle>
-                    </DataGridTextColumn>
-                    <DataGridTextColumn Header="采集点" Binding="{Binding PointName}" Width="120">
-                        <DataGridTextColumn.ElementStyle>
-                            <Style TargetType="TextBlock">
-                                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
-                                <Setter Property="ToolTip" Value="{Binding PointName}" />
-                            </Style>
-                        </DataGridTextColumn.ElementStyle>
-                    </DataGridTextColumn>
-                    <DataGridTextColumn Header="原因" Binding="{Binding KindText}" Width="110" />
+                    <DataGridTemplateColumn Header="状态" Width="90">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <Border CornerRadius="4" Padding="7,3" Margin="10,0" HorizontalAlignment="Left" VerticalAlignment="Center"
+                                        ToolTip="未恢复表示这条历史报警没有恢复时间，不代表设备当前仍在采集。">
+                                    <Border.Style><Style TargetType="Border">
+                                        <Setter Property="Background" Value="#F1F5F9" />
+                                        <Style.Triggers><DataTrigger Binding="{Binding StateText}" Value="未恢复"><Setter Property="Background" Value="#FFF1F0" /></DataTrigger></Style.Triggers>
+                                    </Style></Border.Style>
+                                    <TextBlock Text="{Binding StateText}" FontSize="12" FontWeight="SemiBold">
+                                        <TextBlock.Style><Style TargetType="TextBlock">
+                                            <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}" />
+                                            <Style.Triggers><DataTrigger Binding="{Binding StateText}" Value="未恢复"><Setter Property="Foreground" Value="#B42318" /></DataTrigger></Style.Triggers>
+                                        </Style></TextBlock.Style>
+                                    </TextBlock>
+                                </Border>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTextColumn Header="设备" Binding="{Binding DeviceName}" Width="1.1*" MinWidth="110" ElementStyle="{StaticResource TableCellTextStyle}" />
+                    <DataGridTextColumn Header="采集点" Binding="{Binding PointName}" Width="1.2*" MinWidth="110" ElementStyle="{StaticResource TableCellTextStyle}" />
+                    <DataGridTextColumn Header="原因" Binding="{Binding KindText}" Width="110" ElementStyle="{StaticResource TableCellTextStyle}" />
+                    <DataGridTextColumn Header="异常值" Binding="{Binding ValueText}" Width="100" ElementStyle="{StaticResource TableNumberTextStyle}" HeaderStyle="{StaticResource TableNumberHeaderStyle}" />
                     <DataGridTextColumn Header="发生时间（本机）"
                                             Binding="{Binding StartedAtLocal, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}}"
-                                            Width="170" />
-                    <DataGridTextColumn Header="类别" Binding="{Binding CategoryText}" Width="100" />
-                    <DataGridTextColumn Header="说明" Binding="{Binding Message}" Width="280">
-                        <DataGridTextColumn.ElementStyle>
-                            <Style TargetType="TextBlock">
-                                    <Setter Property="TextTrimming" Value="CharacterEllipsis" />
-                                    <Setter Property="ToolTip" Value="{Binding Message}" />
-                                </Style>
-                            </DataGridTextColumn.ElementStyle>
-                        </DataGridTextColumn>
-                    <DataGridTextColumn Header="异常值" Binding="{Binding ValueText}" Width="110">
-                            <DataGridTextColumn.ElementStyle>
-                                <Style TargetType="TextBlock">
-                                    <Setter Property="ToolTip" Value="最近一次越限时的值，不是当前实时值。" />
-                                </Style>
-                            </DataGridTextColumn.ElementStyle>
-                        </DataGridTextColumn>
-                    <DataGridTextColumn Header="界限" Binding="{Binding LimitText}" Width="110" />
-                    <DataGridTextColumn Header="出现次数" Binding="{Binding Occurrences}" Width="95" />
-                    <DataGridTextColumn Header="最近发生（本机）"
-                                            Binding="{Binding LastSeenAtLocal, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}}"
-                                            Width="170" />
-                    <DataGridTextColumn Header="结束时间（本机）"
-                                            Binding="{Binding EndedAtLocal, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}, TargetNullValue=—}"
-                                            Width="170" />
+                                            Width="172" ElementStyle="{StaticResource TableTimeTextStyle}" />
                 </DataGrid.Columns>
+                <DataGrid.RowDetailsTemplate>
+                    <DataTemplate>
+                        <Border Margin="12,0,12,12" Padding="14,10" Background="{StaticResource SoftSurfaceBrush}" CornerRadius="6">
+                            <StackPanel>
+                                <TextBlock Text="{Binding DeviceName}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                <TextBlock Text="{Binding PointName}" Margin="0,3,0,8" TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}" />
+                                <UniformGrid Columns="2">
+                                    <TextBlock Margin="0,0,12,6"><Run Text="类别：" /><Run Text="{Binding CategoryText, Mode=OneWay}" /></TextBlock>
+                                    <TextBlock Margin="0,0,0,6"><Run Text="出现次数：" /><Run Text="{Binding Occurrences, Mode=OneWay}" /></TextBlock>
+                                    <TextBlock Margin="0,0,12,6"><Run Text="界限：" /><Run Text="{Binding LimitText, Mode=OneWay}" /></TextBlock>
+                                    <TextBlock Margin="0,0,0,6" ToolTip="最近一次越限时的值，不是当前实时值。"><Run Text="异常值：" /><Run Text="{Binding ValueText, Mode=OneWay}" /></TextBlock>
+                                    <TextBlock Margin="0,0,12,6"><Run Text="最近发生：" /><Run Text="{Binding LastSeenAtLocal, Mode=OneWay, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}}" /></TextBlock>
+                                    <TextBlock Margin="0,0,0,6"><Run Text="结束时间：" /><Run Text="{Binding EndedAtLocal, Mode=OneWay, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}, TargetNullValue=—}" /></TextBlock>
+                                </UniformGrid>
+                                <ScrollViewer MaxHeight="100" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                    <TextBlock Text="{Binding Message}" TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}" />
+                                </ScrollViewer>
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </DataGrid.RowDetailsTemplate>
                 </DataGrid>
             <Border Padding="12" Margin="12,40,12,8" MaxWidth="360" HorizontalAlignment="Center"
                     VerticalAlignment="Center" Background="{StaticResource SoftSurfaceBrush}" CornerRadius="8" IsHitTestVisible="False">
@@ -194,9 +183,9 @@
             </Grid>
         </Border>
 
-        <Border Grid.Row="3" Margin="0,8,0,0" Padding="8,2" HorizontalAlignment="Left"
+        <Border Grid.Row="3" Margin="0,8,0,0" Padding="0,2" Background="Transparent"
                 Style="{StaticResource ToolbarCardStyle}">
-            <StackPanel Orientation="Horizontal">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
             <Button Content="上一页" Command="{Binding PreviousPageCommand}" Height="28" Padding="10,3" Margin="0,0,10,0" Style="{StaticResource SecondaryActionButtonStyle}" />
             <TextBlock Text="{Binding PageDescription}" FontSize="12" VerticalAlignment="Center" Margin="0,0,10,0" />
             <Button Content="下一页" Command="{Binding NextPageCommand}" Height="28" Padding="10,3" Style="{StaticResource SecondaryActionButtonStyle}" />
