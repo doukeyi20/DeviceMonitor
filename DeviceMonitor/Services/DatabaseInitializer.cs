@@ -2,7 +2,9 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
-namespace DeviceMonitor.Model;
+using DeviceMonitor.Model;
+
+namespace DeviceMonitor.Services;
 
 public class DatabaseInitializer
 {

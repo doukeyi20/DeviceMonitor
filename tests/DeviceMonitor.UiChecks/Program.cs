@@ -1,4 +1,5 @@
 // 验证项目功能及异常处理的回归检查。
+using DeviceMonitor.Services;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -36,6 +37,320 @@ internal static partial class Program
         return result;
     }
 
+    // 整套检查只使用临时库与构造的显示样本，不调用真实串口。
+    private static async Task RunAsync()
+    {
+        Directory.CreateDirectory(Output);
+        var app = new App();
+        app.InitializeComponent();
+        app.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+        string path = Path.Combine(Output, $"workbench-{Guid.NewGuid():N}.db");
+        new DatabaseInitializer(path).Initialize();
+        var users = new UserStore(path);
+        users.TryCreateFirstAdministrator("admin", "UiAdmin123!");
+        var user = users.CheckLogin("admin", "UiAdmin123!")!;
+        var store = new DeviceStore(path);
+        Seed(store, user);
+        var history = new HistoryStore(path);
+
+        await CheckAuditFixesAsync(user);
+        await CheckDeviceRefreshInteractionsAsync(user);
+        await CheckDirectPasswordFlowsAsync();
+        await CheckPointManagementInteractionsAsync(user);
+        await CheckLastQueryOperationsAsync(user);
+        await CheckCreateUserAsync(user, users);
+        await CheckFailedStopCleanupAsync(user, store, history);
+
+        var window = new MainWindow(user, users, store, history);
+        window.WindowStartupLocation = WindowStartupLocation.Manual;
+        window.ShowActivated = false;
+        window.ShowInTaskbar = false;
+        window.Left = -10000;
+        window.Top = -10000;
+        window.Show();
+        await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+        var main = (MainViewModel)window.DataContext;
+        var monitor = main.Pages.OfType<MonitoringViewModel>().Single();
+        var config = main.Pages.OfType<DeviceManagementViewModel>().Single();
+        Check(main.Pages.Count == 4 && main.Pages.All(page => page.Title != "采集点配置"),
+            "管理员四个入口，点位与设备合并配置");
+
+        await WaitForAsync(() => !monitor.IsRefreshing);
+        await config.RefreshDevicesCommand.ExecuteAsync(null);
+        Check(config.SelectedDevice is null && config.Editor is null && config.PointEditor is null,
+            "设备列表加载后不自动选中设备，也不创建右侧表单");
+        main.CurrentPage = config;
+        Render(window, new Size(1424, 861), "configuration-unselected");
+        var configView = Descendants<DeviceManagementView>((DependencyObject)window.Content).Single();
+        Check(((StackPanel)configView.FindName("DeviceSelectionHint")).IsVisible
+            && ((Grid)configView.FindName("DeviceEditorArea")).Visibility == Visibility.Collapsed
+            && ((ListBox)configView.FindName("DevicesList")).SelectedItem is null,
+            "未选设备时显示明确提示并隐藏表单，列表不会自动选第一项");
+        // 后续删除使用检查中的确认回调；暂时离开配置页，避免真的弹出确认框。
+        main.CurrentPage = monitor;
+        await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+        config.SelectedDevice = config.Devices.First();
+        await WaitForAsync(() => config.PointEditor is { IsBusy: false });
+        Check(config.SelectedDevice is not null && config.Editor is not null && config.PointEditor is not null,
+            "选中设备同时载入连接表单和点位，不额外打开窗口");
+        var first = config.SelectedDevice!;
+        config.Editor!.DeviceName = "未保存";
+        config.ResetDeviceCommand.Execute(null);
+        Check(config.Editor.DeviceName == first.Name && store.GetDevice(user, first.Id)!.Name == first.Name,
+            "撤销连接输入只恢复表单，不写数据库");
+        config.SelectedTabIndex = 1;
+        config.AddDeviceCommand.Execute(null);
+        Check(config.SelectedDevice is null && config.SelectedTabIndex == 0 && !config.CanOpenPoints,
+            "新增自动回到连接参数，保存前不能误改旧设备点位");
+        var editor = config.Editor!;
+        editor.DeviceName = "新 TCP 设备";
+        editor.Host = "127.0.0.1";
+        editor.PortText = "0";
+        await editor.SaveCommand.ExecuteAsync(null);
+        Check(editor.PageMessage.Contains("端口") && store.GetDevices(user).Count == 2,
+            "端口不合法保留输入，尚未保存设备");
+        editor.PortText = "503";
+        await editor.SaveCommand.ExecuteAsync(null);
+        Check(config.SelectedDevice is null && config.SelectedTabIndex == 0 && !config.CanOpenPoints
+            && config.Editor is null && config.PointEditor is null && config.Devices.Any(device => device.Name == "新 TCP 设备"),
+            "新增保存后只刷新列表并清空表单，不自动选择或跳到点位标签");
+        config.SelectedDevice = config.Devices.Single(device => device.Name == "新 TCP 设备");
+        await WaitForAsync(() => config.PointEditor is { IsBusy: false });
+        Check(config.CanOpenPoints && config.PointEditor?.Points.Count == 0,
+            "用户重新点击新设备后，可以自行进入点位配置");
+        long addedId = config.SelectedDevice.Id;
+        config.ConfirmationRequested += (_, _) => true;
+        await config.DeleteDeviceCommand.ExecuteAsync(null);
+        Check(store.GetDevice(user, addedId) is null && config.SelectedDevice is null && config.Editor is null,
+            "空设备正常删除后清空选择，不自动跳到其他设备");
+
+        config.SelectedDevice = config.Devices.First();
+        await WaitForAsync(() => config.PointEditor is { IsBusy: false });
+        config.SelectedTabIndex = 1;
+        var pointEditor = config.PointEditor!;
+        pointEditor.SelectedPoint = pointEditor.Points.First();
+        Check(pointEditor.PointName == pointEditor.SelectedPoint.Name && pointEditor.ReadOnceCommand.CanExecute(null),
+            "点位选中直接编辑，已保存点可单点测试");
+        main.CurrentPage = config;
+        Render(window, new Size(1424, 861), "configuration-points");
+        CheckNoPageTitle((DependencyObject)window.Content, "统一配置");
+        Check(Descendants<PointEditorView>((DependencyObject)window.Content).Any(), "点位表单内嵌在配置页");
+        CheckTables((DependencyObject)window.Content, "统一配置正常窗口");
+        config.SelectedTabIndex = 0;
+        Render(window, new Size(1424, 861), "configuration-connection");
+        Render(window, new Size(1240, 681), "configuration-small");
+        config.SelectedTabIndex = 1;
+        Render(window, new Size(1240, 681), "configuration-points-small");
+        CheckTables((DependencyObject)window.Content, "小窗口点位配置");
+
+        await monitor.RefreshDevicesCommand.ExecuteAsync(null);
+        Check(monitor.SelectedDevice is not null && !monitor.HasReadings && monitor.ActiveSamplingCount == 0,
+            "监控默认选择首设备，但不伪造数据也不自动开始");
+        main.CurrentPage = monitor;
+        Render(window, new Size(1424, 861), "monitor-empty");
+        Check(monitor.StartSamplingCommand.CanExecute(null) && !monitor.StopSamplingCommand.CanExecute(null),
+            "未采集设备只允许开始，停止按钮不误导");
+        var devices = monitor.Devices.ToArray();
+        var firstSession = main.SamplingTasks.GetOrCreateSession(devices[0].Device.Id);
+        Set(main.SamplingTasks, nameof(SamplingTasks.SingleReadDeviceId), devices[0].Device.Id);
+        bool testConflict = false;
+        try { main.SamplingTasks.Start(devices[0].Device.Id); }
+        catch (InvalidOperationException) { testConflict = true; }
+        Set(main.SamplingTasks, nameof(SamplingTasks.SingleReadDeviceId), null);
+        Check(testConflict, "测试尚未收尾时拒绝从监控页同时开始");
+
+        // 构造多点位卡片样本，真实通信另由 RTU/TCP 检查覆盖。
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        foreach (var row in devices)
+        {
+            var session = main.SamplingTasks.GetOrCreateSession(row.Device.Id);
+            Set(session, nameof(session.IsRunning), true);
+            Set(session, nameof(session.LastSuccessfulReadAt), now);
+            for (int n = 0; n < 8; n++)
+            {
+                var point = new PointInfo(row.Device.Id * 100 + n, row.Device.Id,
+                    n == 0 ? "温度" : n == 1 ? "湿度" : $"测点 {n + 1}",
+                    RegisterType.Holding, (ushort)n, PointDataType.Int16,
+                    upperLimit: n == 0 ? 26 : null, scale: 0.1, unit: n == 0 ? "℃" : n == 1 ? "%RH" : "");
+                var reading = new PointReadingViewModel(row.Device, point, main.SamplingTasks.Alarms, session);
+                session.Readings.Add(reading);
+                for (int i = 0; i < 100; i++)
+                {
+                    int value = 230 + n * 20 + (int)(Math.Sin(i / 10.0) * 20);
+                    reading.ShowResult(new PointReadResult(point, (ushort)value, value, now.AddSeconds(i - 99)),
+                        TimeSpan.FromSeconds(i));
+                }
+            }
+        }
+        monitor.SelectedDevice = devices[0];
+        var keptPoint = firstSession.Readings.First();
+        monitor.SelectedReading = keptPoint;
+        int sampleCount = keptPoint.TrendSamples.Count;
+        await WaitForAsync(() => monitor.Trend.Samples.Count == sampleCount);
+        Check(monitor.Trend.Samples.SequenceEqual(keptPoint.TrendSamples),
+            "任务快速填入读数后，曲线自动显示选中点的全部缓存");
+        monitor.SelectedReading = firstSession.Readings[1];
+        Check(monitor.Trend.AxisTitle.Contains("湿度")
+            && monitor.Trend.Samples.SequenceEqual(firstSession.Readings[1].TrendSamples),
+            "选择另一张读数卡只靠属性变化通知切换曲线");
+        monitor.SelectedReading = null;
+        Check(monitor.Trend.Samples.Count == 0 && monitor.Trend.AxisTitle == "读数",
+            "清空读数选择时，属性变化通知也会清空当前曲线显示，不删除点位缓存");
+        monitor.SelectedReading = keptPoint;
+        Check(monitor.ReadingColumns == 4 && monitor.Readings.Count() == 8 && ReferenceEquals(monitor.Readings, firstSession.Readings),
+            "只绑定当前设备原点位集合，不建立全部设备拼接副本");
+        monitor.SelectedDevice = devices[1];
+        Check(monitor.Readings.All(point => point.DeviceId == devices[1].Device.Id) && firstSession.IsRunning,
+            "切换设备只改变显示，另一台仍采集");
+        monitor.SelectedDevice = devices[0];
+        monitor.SelectedReading = keptPoint;
+        Check(monitor.Trend.Samples.Count == sampleCount, "切回设备时恢复原缓存，不清空曲线");
+
+        await CheckAlarmFlowAsync(new AlarmMonitor(user, new AlarmStore(path)), store, user, path, devices[0].Device, keptPoint.Point);
+        var currentHigh = new PointReadResult(keptPoint.Point, 300, 300, now.AddSeconds(1));
+        keptPoint.ShowResult(currentHigh, TimeSpan.FromSeconds(100));
+        await main.SamplingTasks.Alarms.ReportReadingsAsync(devices[0].Device, [currentHigh]);
+        Render(window, new Size(1424, 861), "monitor-cards");
+        Check(Descendants<TrendChart>((DependencyObject)window.Content).Single().ActualHeight >= 180,
+            "八个点位也保留足够曲线高度");
+        var cards = Descendants<ListBox>((DependencyObject)window.Content).Single(box => box.Name == "ReadingCards");
+        Check(cards.ActualHeight <= 260 && cards.Items.Count == 8, "多点位卡片内部滚动，最多占两行高度");
+        Check(!Descendants<CheckBox>((DependencyObject)window.Content).Any(), "监控不再维护第二套勾选选择");
+        CheckNoPageTitle((DependencyObject)window.Content, "监控");
+        Render(window, new Size(1240, 681), "monitor-small");
+        var smallChart = Descendants<TrendChart>((DependencyObject)window.Content).Single();
+        var smallRoot = (FrameworkElement)window.Content;
+        var bottom = smallChart.TranslatePoint(new Point(0, smallChart.ActualHeight), smallRoot).Y;
+        Check(bottom <= smallRoot.ActualHeight && cards.MaxHeight == 128, "小窗口卡片缩为一行，曲线底部仍在窗口内");
+        Render(window, new Size(1904, 1001), "monitor-large");
+
+        var current = monitor.SelectedDevice;
+        await main.SamplingTasks.Alarms.ReportDeviceFailureAsync(devices[1].Device.Id, devices[1].Device.Name, "等待超时");
+        Check(ReferenceEquals(current, monitor.SelectedDevice), "报警不会自动抢走当前设备选择");
+        monitor.LocateAlarmCommand.Execute(main.SamplingTasks.Alarms.ActiveRecords.First(a => a.DeviceId == devices[1].Device.Id));
+        Check(monitor.SelectedDevice == devices[1], "点击报警才定位到对应设备");
+        foreach (var task in main.SamplingTasks.Sessions) Set(task, nameof(task.IsRunning), false);
+
+        DeviceInfo saved = store.GetDevices(user).First();
+        PointInfo savedPoint = store.GetPoints(user, saved.Id).First();
+        await CheckTrendNotificationsAsync(saved, savedPoint);
+        history.SaveRecord(user, new(saved.Id, saved.Name, savedPoint.Id, savedPoint.Name, 23.5, now));
+        var historyPage = main.Pages.OfType<HistoryViewModel>().Single();
+        historyPage.UseTimeFilter = true;
+        historyPage.StartDate = historyPage.EndDate = DateTime.Today;
+        historyPage.StartTimeText = "00:00:00";
+        historyPage.EndTimeText = "23:59:59";
+        await historyPage.RefreshRecordsCommand.ExecuteAsync(null);
+        Check(historyPage.UseTimeFilter && historyPage.StartDate == DateTime.Today && historyPage.TotalRecords >= 1,
+            "手动填写日期和时间后查询，保留基本时间筛选");
+        main.CurrentPage = historyPage;
+        Render(window, new Size(1424, 861), "history");
+        var historyTable = Descendants<DataGrid>((DependencyObject)window.Content)
+            .Single(grid => ReferenceEquals(grid.ItemsSource, historyPage.Records));
+        Check(historyTable.SelectedItem is null && historyPage.HasQueried,
+            "历史查询成功后表格不自动选择行，页面记录已查询状态");
+        var historyView = Descendants<HistoryView>((DependencyObject)window.Content).Single();
+        string[] removedActions = { "选中点位趋势", "点位趋势", "最近一小时", "今天", "最近 24 小时", "全部时间" };
+        Check(!Descendants<Button>(historyView).Any(button => button.Content is string label && removedActions.Contains(label)),
+            "采集历史只提供基本查询分页导出，不保留趋势和快捷时间入口");
+        historyTable.SelectedItem = historyPage.Records.First();
+        await Dispatcher.Yield(DispatcherPriority.DataBind);
+        Check(ReferenceEquals(historyTable.SelectedItem, historyPage.Records.First()),
+            "表格仍可以选中一行查看，高亮不需要额外业务选择对象");
+        await historyPage.RefreshRecordsCommand.ExecuteAsync(null);
+        await Dispatcher.Yield(DispatcherPriority.DataBind);
+        Check(historyTable.SelectedItem is null,
+            "真实表格刷新后移除旧选择，不自动选第一行");
+        await historyPage.Alarms.RefreshRecordsCommand.ExecuteAsync(null);
+        var alarmTab = Descendants<TabItem>((DependencyObject)window.Content).Single(tab => Equals(tab.Header, "报警历史"));
+        alarmTab.IsSelected = true;
+        Render(window, new Size(1424, 861), "alarm-history");
+        alarmTab.IsSelected = false;
+
+        var usersPage = main.Pages.OfType<UserManagementViewModel>().Single();
+        await usersPage.RefreshUsersCommand.ExecuteAsync(null);
+        usersPage.ConfirmationRequested += (_, _) => true;
+        usersPage.SelectedUser = usersPage.Users.Single(account => account.Role == UserRole.Operator);
+        Check(usersPage.OperatorActionText == "停用账户" && usersPage.ToggleOperatorCommand.CanExecute(null),
+            "选中已启用操作员，按钮只显示可执行的停用动作");
+        await usersPage.ToggleOperatorCommand.ExecuteAsync(null);
+        Check(usersPage.SelectedUser?.IsEnabled == false && usersPage.OperatorActionText == "启用账户",
+            "停用保存后按钮自动切换为启用，不显示两枚互斥按钮");
+        await usersPage.ToggleOperatorCommand.ExecuteAsync(null);
+        Check(usersPage.SelectedUser?.IsEnabled == true, "再次点击可恢复操作员状态");
+        usersPage.SelectedUser = usersPage.Users.Single(account => account.Role == UserRole.Administrator);
+        Check(!usersPage.ToggleOperatorCommand.CanExecute(null), "同一入口不能停用管理员");
+        main.CurrentPage = usersPage;
+        Render(window, new Size(1424, 861), "users");
+        CheckTables((DependencyObject)window.Content, "用户页");
+
+        var worker = new UserAccount(20, "worker", UserRole.Operator, true);
+        var workerMain = new MainViewModel(worker, users, store, history);
+        Check(workerMain.Pages.Count == 2 && workerMain.Pages.Any(page => page is HistoryViewModel)
+            && !workerMain.Pages.Any(page => page is DeviceManagementViewModel or UserManagementViewModel),
+            "操作员能监控和查询历史，但不能修改配置或账户");
+        string workerCsv = Path.Combine(Output, "worker-history.csv");
+        string workerAlarms = Path.Combine(Output, "worker-alarms.csv");
+        new HistoryCsvExporter(history).Export(worker, new HistoryFilter(), long.MaxValue, workerCsv);
+        new AlarmCsvExporter(new AlarmStore(path)).Export(worker, new AlarmFilter(), long.MaxValue, workerAlarms);
+        Check(File.Exists(workerCsv) && File.Exists(workerAlarms), "操作员的只读权限包含历史和报警导出");
+        await workerMain.StopBackgroundWorkAsync();
+
+        IntPtr handle = new WindowInteropHelper(window).EnsureHandle();
+        int nativeStyle = GetWindowLong(handle, -16);
+        Check((nativeStyle & 0x00010000) != 0 && (nativeStyle & 0x00040000) == 0,
+            "仍允许最大化，但不允许拖边框任意缩放");
+        Check(window.Icon is not null && window.Width == 1440 && window.Height == 900,
+            "主窗口保留应用图标和初始大小");
+        Check(Descendants<Button>((DependencyObject)window.Content).Count(button => Equals(button.Content, "退出登录")) == 1,
+            "退出登录只在左下角保留一个入口");
+        await main.StopBackgroundWorkAsync();
+        Check(!monitor.RefreshDevicesCommand.CanExecute(null) && !config.RefreshDevicesCommand.CanExecute(null),
+            "退出后不再接受页面操作");
+        typeof(MainWindow).GetField("_canClose", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, true);
+        window.Close();
+        AppLog.Close();
+    }
+
+    private static async Task CheckAlarmFlowAsync(AlarmMonitor alarms, DeviceStore store, UserAccount user,
+        string path, DeviceInfo device, PointInfo point)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        var high = new PointReadResult(point, 300, 300, now);
+        await alarms.ReportReadingsAsync(device, [high]);
+        await alarms.ReportReadingsAsync(device, [high]);
+        Check(alarms.ActiveCount == 1 && alarms.Records.Count == 1 && alarms.ActiveRecords.Single().Occurrences == 2,
+            "持续越限更新原报警次数，不每轮新增");
+        await alarms.ReportDeviceFailureAsync(device.Id, device.Name, "等待超时");
+        await alarms.ReportDeviceFailureAsync(device.Id, device.Name, "等待超时");
+        Check(alarms.ActiveRecords.Count(a => a.Kind == AlarmKind.AcquisitionFailure) == 1
+            && alarms.ActiveRecords.Single(a => a.Kind == AlarmKind.AcquisitionFailure).PointId is null,
+            "整台设备通信故障只记一条，不按点位复制相同记录");
+        await alarms.ReportReadingsAsync(device, [new PointReadResult(point, 200, 200, now.AddSeconds(1))]);
+        Check(alarms.ActiveCount == 0 && !alarms.HasActiveAlarms && alarms.Records.All(a => a.State == AlarmState.Recovered),
+            "读取成功恢复设备故障，回到范围恢复数值报警，当前列表同步清空");
+
+        RenameTable(path, "AlarmRecords", "HiddenAlarmRecords");
+        try { await alarms.ReportDeviceFailureAsync(device.Id, device.Name, "模拟保存失败"); }
+        finally { RenameTable(path, "HiddenAlarmRecords", "AlarmRecords"); }
+        Check(alarms.PendingSaveCount == 1 && alarms.PersistenceStatusText.Contains("保存失败"),
+            "报警保存失败保留待存更新，界面能看到保存故障");
+        await alarms.FlushAsync();
+        Check(alarms.PendingSaveCount == 0 && alarms.PersistenceStatusText == "",
+            "数据库恢复后保存原事件并清除错误提示");
+        await alarms.EndDeviceMonitoringAsync(device.Id);
+        Check(alarms.ActiveCount == 0 && alarms.Records.Any(a => a.State == AlarmState.NotMonitoring),
+            "停止标记不再监测，不冒充设备故障已恢复");
+        await alarms.ReportReadingsAsync(device, [high]);
+        Check(new AlarmStore(path).GetRecentRecords(user).Any(), "报警变化已写入临时数据库");
+    }
+
+    private static async Task WaitForAsync(Func<bool> ready)
+    {
+        for (int i = 0; i < 500 && !ready(); i++) await Task.Delay(10);
+        Check(ready(), "异步界面加载在限定时间内完成");
+    }
+
     private static async Task CheckLastQueryOperationsAsync(UserAccount user)
     {
         string path = Path.Combine(Output, $"last-query-only-{Guid.NewGuid():N}.db");
@@ -68,28 +383,42 @@ internal static partial class Program
             Check(history.IsLoading && !history.CanEditFilters && !history.ExportRecordsCommand.CanExecute(null),
                 "历史查询期间禁用输入和重复操作，不维护输入版本号");
             await loading;
+            Check(history.HasQueried && history.Records.Count == 200 && history.TotalPages == 2,
+                "历史查询保存成功状态，第一页最多显示200条");
+            readings.SaveRecord(user, new HistoryRecord(device.Id, device.Name, point.Id, point.Name,
+                9999, now.AddSeconds(10)));
             history.PointNameFilter = "尚未查询的新条件";
             Check(history.NextPageCommand.CanExecute(null)
-                && history.ExportRecordsCommand.CanExecute(null) && history.ShowTrendCommand.CanExecute(null),
-                "历史输入改变不锁住上次结果的翻页、导出和趋势");
+                && history.ExportRecordsCommand.CanExecute(null),
+                "历史输入改变不锁住当前结果的翻页和导出");
             await history.NextPageCommand.ExecuteAsync(null);
             Check(history.CurrentPage == 2 && history.Records.Count == 5 && history.PointNameFilter == "尚未查询的新条件",
-                "翻页沿用旧条件和批次，不应用也不清除新输入");
-            HistoryTrendViewModel? requestedTrend = null;
-            history.TrendRequested += model => requestedTrend = model;
-            history.ShowTrendCommand.Execute(null);
-            var trend = requestedTrend ?? throw new Exception("未打开点位趋势");
-            await trend.LoadTrendCommand.ExecuteAsync(null);
-            Check(trend.TotalRecords == 205, "点位趋势使用上次查询范围，不偷偷采用新输入");
-            trend.StopUpdating();
-            Check(!trend.LoadTrendCommand.CanExecute(null), "关闭只读趋势后不再接受新查询");
+                "翻页沿用查询条件和编号上限，排除新记录并保留未查询输入");
 
             string csv = Path.Combine(Output, $"last-query-{Guid.NewGuid():N}.csv");
-            history.ExportPathRequested += () => csv;
+            int historyPathRequests = 0;
+            history.ExportPathRequested += () => { historyPathRequests++; return null; };
+            history.ExportPathRequested += () => { historyPathRequests++; return csv; };
             await history.ExportRecordsCommand.ExecuteAsync(null);
+            Check(historyPathRequests == 1,
+                "采集历史有多个路径处理器时也只选择一次路径");
             await Dispatcher.Yield(DispatcherPriority.Background);
             Check(File.ReadLines(csv).Count() == 206 && history.PageMessage.StartsWith("已导出"),
-                "历史导出包含上次结果全部205条，迟到进度不覆盖完成提示");
+                "历史导出包含当前查询全部205条，不限当前页且排除新增记录");
+
+            string protectedCsv = Path.Combine(Output, $"cancel-history-{Guid.NewGuid():N}.csv");
+            File.WriteAllText(protectedCsv, "已有导出文件");
+            Func<string?> cancelExport = () =>
+            {
+                history.ExportRecordsCommand.Cancel();
+                return protectedCsv;
+            };
+            history.ExportPathRequested += cancelExport;
+            await history.ExportRecordsCommand.ExecuteAsync(null);
+            history.ExportPathRequested -= cancelExport;
+            Check(File.ReadAllText(protectedCsv) == "已有导出文件" && history.PageMessage.Contains("取消")
+                && !history.IsBusy && history.CanEditFilters,
+                "取消历史导出保留原文件，并恢复输入与操作条件");
 
             long[] previousRows = history.Records.Select(record => record.Id).ToArray();
             RenameTable(path, "HistoryRecords", "HiddenHistoryForCheck");
@@ -97,11 +426,30 @@ internal static partial class Program
             finally { RenameTable(path, "HiddenHistoryForCheck", "HistoryRecords"); }
             Check(history.PageMessage.Contains("查询失败") && previousRows.SequenceEqual(history.Records.Select(record => record.Id))
                 && history.PreviousPageCommand.CanExecute(null) && history.ExportRecordsCommand.CanExecute(null),
-                "新历史查询失败仍保留且允许操作上次成功结果");
+                "新历史查询失败保留上次结果，翻页和导出继续可用");
             history.PointNameFilter = point.Name;
             await history.RefreshRecordsCommand.ExecuteAsync(null);
-            Check(history.CurrentPage == 1 && history.TotalRecords == 205,
-                "明确点击查询后才应用输入，并回到第一页");
+            Check(history.CurrentPage == 1 && history.TotalRecords == 206,
+                "明确点击查询后应用输入、回到第一页，并纳入后来新增的记录");
+            long[] rowsBeforeInvalidTime = history.Records.Select(record => record.Id).ToArray();
+            history.UseTimeFilter = true;
+            history.StartDate = history.EndDate = DateTime.Today;
+            history.StartTimeText = "23:00:00";
+            history.EndTimeText = "22:00:00";
+            await history.RefreshRecordsCommand.ExecuteAsync(null);
+            Check(history.PageMessage.Contains("开始时间不能晚于结束时间")
+                && rowsBeforeInvalidTime.SequenceEqual(history.Records.Select(record => record.Id)),
+                "手动输入的时间范围无效时保留旧结果");
+            await history.ResetFiltersCommand.ExecuteAsync(null);
+            Check(!history.UseTimeFilter && history.SelectedDevice?.DeviceId is null
+                && history.PointNameFilter == "" && history.TotalRecords == 206 && history.CurrentPage == 1,
+                "重置恢复全部设备、空点位条件和全部时间，并查询第一页");
+            history.PointNameFilter = "__no_matching_history__";
+            await history.RefreshRecordsCommand.ExecuteAsync(null);
+            Check(history.HasQueried && history.Records.Count == 0 && history.ShowEmptyMessage
+                && !history.NextPageCommand.CanExecute(null) && !history.ExportRecordsCommand.CanExecute(null),
+                "成功查询到零条仍算查过，显示空提示并禁用翻页和导出");
+            await history.ResetFiltersCommand.ExecuteAsync(null);
 
             var alarmPage = history.Alarms;
             await alarmPage.RefreshRecordsCommand.ExecuteAsync(null);
@@ -114,11 +462,26 @@ internal static partial class Program
                 && alarmPage.SelectedCategory.Category == AlarmCategory.Value,
                 "报警翻页继续查看原来的采集异常，不切换成尚未查询的数值报警");
             string alarmCsv = Path.Combine(Output, $"last-alarms-{Guid.NewGuid():N}.csv");
-            alarmPage.ExportPathRequested += () => alarmCsv;
+            int alarmPathRequests = 0;
+            alarmPage.ExportPathRequested += () => { alarmPathRequests++; return null; };
+            alarmPage.ExportPathRequested += () => { alarmPathRequests++; return alarmCsv; };
             await alarmPage.ExportRecordsCommand.ExecuteAsync(null);
+            Check(alarmPathRequests == 1,
+                "多个路径处理器仍只调用当前一个，报警导出不会连续打开保存窗口");
             await Dispatcher.Yield(DispatcherPriority.Background);
             Check(File.ReadLines(alarmCsv).Count() == 206 && alarmPage.PageMessage.StartsWith("已导出"),
                 "报警导出沿用上次205条结果，完成后不再接收旧进度");
+            int requestsBeforeCancel = alarmPathRequests;
+            string previousAlarmCsv = File.ReadAllText(alarmCsv);
+            int canceledPathRequests = 0;
+            Func<string?> cancelAlarmPath = () => { canceledPathRequests++; return null; };
+            alarmPage.ExportPathRequested += cancelAlarmPath;
+            await alarmPage.ExportRecordsCommand.ExecuteAsync(null);
+            alarmPage.ExportPathRequested -= cancelAlarmPath;
+            Check(canceledPathRequests == 1 && alarmPathRequests == requestsBeforeCancel
+                && File.ReadAllText(alarmCsv) == previousAlarmCsv && !alarmPage.IsExporting
+                && alarmPage.PageMessage.Contains("取消"),
+                "取消当前报警保存窗口不再调用旧窗口，也不覆盖已导出的文件");
             long[] previousAlarms = alarmPage.Records.Select(record => record.Id).ToArray();
             RenameTable(path, "AlarmRecords", "HiddenAlarmsForCheck");
             try { await alarmPage.RefreshRecordsCommand.ExecuteAsync(null); }
@@ -140,451 +503,56 @@ internal static partial class Program
         command.ExecuteNonQuery();
     }
 
-    private static async Task CheckDeleteIdleDeviceAsync(UserAccount user)
+
+    private static async Task CheckTrendNotificationsAsync(DeviceInfo device, PointInfo point)
     {
-        string path = Path.Combine(Output, $"delete-idle-only-{Guid.NewGuid():N}.db");
-        new DatabaseInitializer(path).Initialize();
-        var store = new DeviceStore(path);
-        Seed(store, user);
-        var tasks = new DeviceTasks(user, store, new HistoryStore(path));
-        var management = new DeviceManagementViewModel(user, store, tasks);
-        await management.RefreshDevicesCommand.ExecuteAsync(null);
-        DeviceInfo device = management.Devices.First();
-        management.SelectedDevice = device;
-        var sampling = tasks.GetOrCreateSession(device.Id);
-        int confirmations = 0;
-        management.ConfirmationRequested += request => { confirmations++; request.Confirmed = true; };
-        var setTestDevice = typeof(DeviceManagementViewModel).GetMethod("SetConnectionTestDevice",
-            BindingFlags.Instance | BindingFlags.NonPublic)!;
-        int testStateNotifications = 0;
-        management.PropertyChanged += (_, e) =>
-        {
-            if (e.PropertyName == nameof(management.IsTestingConnection))
-                testStateNotifications++;
-        };
-        try
-        {
-            Set(sampling, nameof(sampling.IsRunning), true);
-            Check(!management.DeleteDeviceCommand.CanExecute(null), "正在采集的目标不能删除，必须先手动停止");
-            await management.DeleteDeviceCommand.ExecuteAsync(null);
-            try { await tasks.DeleteDeviceAsync(device.Id); throw new Exception("运行中的设备不应允许删除"); }
-            catch (InvalidOperationException) { }
-            Check(confirmations == 0 && sampling.IsRunning && store.GetDevice(user, device.Id) is not null,
-                "删除拒绝时不弹确认、不代做停止，也不删除配置");
-            Set(sampling, nameof(sampling.IsRunning), false);
-
-            Set(tasks, nameof(tasks.SingleReadDeviceId), device.Id);
-            Check(!management.DeleteDeviceCommand.CanExecute(null), "单点测试尚未收尾时禁止删除目标");
-            try { await tasks.DeleteDeviceAsync(device.Id); throw new Exception("测试中的设备不应允许删除"); }
-            catch (InvalidOperationException) { }
-            Set(tasks, nameof(tasks.SingleReadDeviceId), null);
-            Check(management.DeleteDeviceCommand.CanExecute(null), "单点测试结束后恢复删除按钮");
-
-            setTestDevice.Invoke(management, new object?[] { device.Id });
-            Check(management.IsTestingConnection && management.TestConnectionButtonText == "测试中…"
-                && testStateNotifications == 1, "测试目标编号统一驱动测试状态、按钮文字和界面通知");
-            Check(!management.DeleteDeviceCommand.CanExecute(null), "本设备TCP测试期间禁止删除，不自动取消测试");
-            management.SelectedDevice = management.Devices.First(item => item.Id != device.Id);
-            Check(management.DeleteDeviceCommand.CanExecute(null), "一台设备测试不妨碍删除另一台闲置设备");
-            setTestDevice.Invoke(management, new object?[] { null });
-            Check(!management.IsTestingConnection && management.TestConnectionButtonText == "TCP端口测试"
-                && testStateNotifications == 2, "清空测试目标后同步恢复状态，不维护第二份布尔值");
-            management.SelectedDevice = management.Devices.Single(item => item.Id == device.Id);
-            await management.DeleteDeviceCommand.ExecuteAsync(null);
-            Check(confirmations == 1 && store.GetDevice(user, device.Id) is null && tasks.Sessions.All(item => item.DeviceId != device.Id),
-                "用户先停止后，删除只确认一次并清掉配置及旧任务");
-        }
-        finally
-        {
-            Set(sampling, nameof(sampling.IsRunning), false);
-            Set(tasks, nameof(tasks.SingleReadDeviceId), null);
-            await management.StopOperationsAsync();
-            await tasks.StopAllAsync();
-        }
-    }
-
-    private static async Task CheckDeviceSelectionAfterRefreshAsync(UserAccount user)
-    {
-        string path = Path.Combine(Output, $"device-selection-{Guid.NewGuid():N}.db");
-        new DatabaseInitializer(path).Initialize();
-        var store = new DeviceStore(path);
-        Seed(store, user);
-        store.TryAddDevice(user, new DeviceInput
-        {
-            Name = "Z额外设备", Host = "127.0.0.1", Port = 502, UnitId = 1,
-            SamplingIntervalMilliseconds = 1000, ConnectTimeoutMilliseconds = 1000,
-            ReadTimeoutMilliseconds = 1000, WriteTimeoutMilliseconds = 1000
-        });
-        long extraId = store.GetDevices(user).Single(device => device.Name == "Z额外设备").Id;
-        store.TrySetDeviceEnabled(user, extraId, true);
-        var tasks = new DeviceTasks(user, store, new HistoryStore(path));
-        var management = new DeviceManagementViewModel(user, store, tasks);
-        var points = new PointConfigurationViewModel(user, store, tasks);
-        var pointQuery = typeof(PointConfigurationViewModel).GetField("_pointLoadTask",
-            BindingFlags.Instance | BindingFlags.NonPublic)!;
-        management.ConfirmationRequested += request => request.Confirmed = true;
-        try
-        {
-            await management.RefreshDevicesCommand.ExecuteAsync(null);
-            await points.RefreshDevicesCommand.ExecuteAsync(null);
-            management.SelectedDevice = management.Devices.Last();
-            points.SelectedDevice = points.Devices.Last();
-            await WaitForPointsAsync();
-            await management.DeleteDeviceCommand.ExecuteAsync(null);
-            await WaitForPointsAsync();
-            Check(management.SelectedDevice == management.Devices.First()
-                && points.SelectedDevice == points.Devices.First()
-                && points.Points.All(point => point.DeviceId == points.SelectedDevice.Id),
-                "删除末行后两页统一选择首项，点位不保留被删设备的数据");
-
-            management.SelectedDevice = management.Devices.Last();
-            points.SelectedDevice = points.Devices.Last();
-            await WaitForPointsAsync();
-            long selectedId = management.SelectedDevice.Id;
-            await management.RefreshDevicesCommand.ExecuteAsync(null);
-            await points.RefreshDevicesCommand.ExecuteAsync(null);
-            Check(management.SelectedDevice?.Id == selectedId && points.SelectedDevice?.Id == selectedId,
-                "刷新仍按编号保留存在的设备，不因首项回退规则丢掉正常选择");
-
-            while (management.Devices.Count > 0)
-            {
-                await management.DeleteDeviceCommand.ExecuteAsync(null);
-                await WaitForPointsAsync();
-            }
-            Check(management.SelectedDevice is null && points.SelectedDevice is null
-                && points.Devices.Count == 0 && points.Points.Count == 0,
-                "删除唯一剩余设备后清空选择和点位，空列表不访问旧行位置");
-        }
-        finally
-        {
-            await tasks.StopAllAsync();
-            await management.StopOperationsAsync();
-            await points.StopOperationsAsync();
-        }
-
-        Task WaitForPointsAsync() => ((Task)pointQuery.GetValue(points)!).WaitAsync(TimeSpan.FromSeconds(5));
-    }
-
-    private static void CheckTrendNotifications(DeviceInfo device, PointInfo point)
-    {
-        using var first = new PointMonitorViewModel(device, point);
-        using var second = new PointMonitorViewModel(device, point);
+        using var first = new PointReadingViewModel(device, point);
+        using var second = new PointReadingViewModel(device, point);
         using var trend = new LiveTrendViewModel();
-        int endTimeNotifications = 0;
+        int displayNotifications = 0;
         int trendNotifications = 0;
         trend.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName == nameof(LiveTrendViewModel.EndTime)) endTimeNotifications++;
+            if (e.PropertyName == nameof(LiveTrendViewModel.Samples)) displayNotifications++;
         };
         first.TrendChanged += () => trendNotifications++;
         trend.Select(first);
-        Check(trend.EndTime is null && trend.Samples.Count == 0, "空波形没有伪造结束时间");
+        Check(trend.Samples.Count == 0, "空波形没有伪造时间点");
 
-        DateTimeOffset readAt = DateTimeOffset.UtcNow.AddSeconds(-2);
-        first.ShowResult(new PointReadResult(point, 123, 123, readAt));
-        Check(trend.EndTime == readAt && endTimeNotifications > 0 && trendNotifications == 1,
-            "成功后样本末项决定横轴结束时间，并发出属性和无参数曲线通知");
-        first.ShowFailure("模拟通信超时");
-        Check(trend.Samples[^1].Value is null && trend.EndTime == trend.Samples[^1].ReadAt
-            && trend.StatusText.Contains("中断") && trendNotifications == 2,
-            "失败断点也更新横轴，不把断点画成零");
+        DateTimeOffset readAt = DateTimeOffset.UtcNow;
+        first.ShowResult(new PointReadResult(point, 123, 123, readAt), TimeSpan.FromSeconds(1));
+        Check(trend.Samples[^1].Elapsed == TimeSpan.FromSeconds(1) && trendNotifications == 1,
+            "首个点立即显示，横坐标使用本次采集经过的时间");
+        int displaysBeforeBurst = displayNotifications;
+        first.ShowResult(new PointReadResult(point, 124, 124, readAt.AddHours(-1)), TimeSpan.FromSeconds(1.5));
+        first.ShowFailure("模拟通信超时", TimeSpan.FromSeconds(2));
+        Check(trend.Samples.Count == 1 && first.TrendSamples.Count == 3 && trendNotifications == 3,
+            "短时间内的更新先进入缓存，曲线不反复重画");
+        await WaitForAsync(() => trend.Samples.Count == 3);
+        Check(trend.Samples[1].Elapsed == TimeSpan.FromSeconds(1.5)
+            && trend.Samples[^1] is { Value: null } last && last.Elapsed == TimeSpan.FromSeconds(2)
+            && trend.StatusText.Contains("中断") && displayNotifications == displaysBeforeBurst + 1,
+            "合并刷新保留断点，本机时间回拨不改变横坐标");
 
+        first.ShowResult(new PointReadResult(point, 125, 125, readAt), TimeSpan.FromSeconds(3));
         trend.Select(second);
-        Check(trend.EndTime is null && trend.Samples.Count == 0, "切到尚无数据的点后横轴不沿用旧点时间");
-        first.ShowResult(new PointReadResult(point, 124, 124, DateTimeOffset.UtcNow));
-        Check(trend.Samples.Count == 0 && trend.EndTime is null, "旧点有新数据不刷新已切走的图，但仍保存旧点缓存");
+        Check(trend.Samples.Count == 0, "切到尚无数据的点后立即清空原曲线");
+        first.ShowResult(new PointReadResult(point, 126, 126, readAt), TimeSpan.FromSeconds(4));
+        Check(trend.Samples.Count == 0, "旧点有新数据不刷新已切走的图，但仍保存旧点缓存");
         trend.Select(first);
-        Check(trend.Samples.Count == 3 && trend.EndTime == first.TrendSamples[^1].ReadAt,
+        Check(trend.Samples.Count == 5 && trend.Samples[^1].Elapsed == TimeSpan.FromSeconds(4),
             "切回原点恢复全部缓存及末项时间，不重新从空曲线开始");
 
         trend.Dispose();
         int countAtClose = trend.Samples.Count;
-        first.ShowCanceled();
+        first.ShowCanceled(TimeSpan.FromSeconds(5));
         trend.Select(second);
         first.Dispose();
         first.Dispose();
-        Check(trend.Samples.Count == countAtClose && first.TrendSamples.Count == 4,
+        Check(trend.Samples.Count == countAtClose && first.TrendSamples.Count == 6,
             "曲线退出后不再响应选择或通知，重复退订点位也安全");
     }
 
-    private static async Task RunAsync()
-    {
-        Directory.CreateDirectory(Output);
-        string path = Path.Combine(Output, $"ui-test-only-{Guid.NewGuid():N}.db");
-        new DatabaseInitializer(path).Initialize();
-        var user = new UserAccount(1, "ui-check-admin", UserRole.Administrator, true);
-        var store = new DeviceStore(path);
-        Seed(store, user);
-        await CheckAuditFixesAsync(user);
-        await CheckPointManagementInteractionsAsync(user);
-        await CheckLastQueryOperationsAsync(user);
-        await CheckDeleteIdleDeviceAsync(user);
-        await CheckDeviceSelectionAfterRefreshAsync(user);
-        var seededHistory = new HistoryStore(path);
-        DeviceInfo historyDevice = store.GetDevices(user).First();
-        PointInfo historyPoint = store.GetPoints(user, historyDevice.Id).First();
-        CheckTrendNotifications(historyDevice, historyPoint);
-        seededHistory.SaveRecords(user, Enumerable.Range(0, 3).Select(index => new HistoryRecord(
-            historyDevice.Id, historyDevice.Name, historyPoint.Id, historyPoint.Name,
-            20 + index, DateTimeOffset.Now.AddSeconds(-index))).ToArray());
-        // 截图也使用临时库中的真实列表记录，覆盖启用、停用和报警详情外观。
-        var screenUsers = new UserStore(path);
-        screenUsers.TryCreateFirstAdministrator(user.UserName, "UiAdmin123!");
-        screenUsers.TryCreateOperator(user, "operator-01", "UiOperator123!");
-        screenUsers.TryCreateOperator(user, "operator-02", "UiOperator123!");
-        UserAccount disabledOperator = screenUsers.GetUsers(user).Single(item => item.UserName == "operator-02");
-        screenUsers.TrySetOperatorEnabled(user, disabledOperator.Id, false);
-        DateTimeOffset alarmAt = DateTimeOffset.UtcNow.AddMinutes(-3);
-        new AlarmStore(path).SaveRecords(user, new[] { AlarmState.Active, AlarmState.Recovered }.Select(state => new AlarmRecord
-        {
-            DeviceId = historyDevice.Id, DeviceName = historyDevice.Name,
-            PointId = historyPoint.Id, PointName = historyPoint.Name,
-            Kind = AlarmKind.HighLimit, State = state, Value = 28.6, Limit = 26, Unit = "℃",
-            StartedAt = alarmAt, LastSeenAt = alarmAt.AddMinutes(1),
-            EndedAt = state == AlarmState.Active ? null : alarmAt.AddMinutes(2), Occurrences = 3,
-            Message = state == AlarmState.Active ? "温度 28.6 ℃ 高于上限 26 ℃。"
-                : "温度已回到允许范围，本次报警已恢复。"
-        }).ToArray());
-        await CheckPointLoadingAsync(user, store, new HistoryStore(path));
-        await CheckCreateUserAsync(user, new UserStore(path));
-        await CheckFailedStopCleanupAsync(user, store, new HistoryStore(path));
-        var app = new App(); app.InitializeComponent();
-        var window = new MainWindow(user, new UserStore(path), store, new HistoryStore(path));
-        var main = (MainViewModel)window.DataContext;
-        var management = main.Pages.OfType<DeviceManagementViewModel>().Single();
-        await management.RefreshDevicesCommand.ExecuteAsync(null);
-        var acquisition = main.Pages.OfType<PointConfigurationViewModel>().Single();
-        var monitoring = main.Pages.OfType<MonitoringViewModel>().Single();
-
-        var status = new TextBlock { Style = (Style)app.FindResource("StatusMessageTextStyle") };
-        Check(status.Visibility == Visibility.Collapsed, "空提示自动收起");
-        status.Text = "读取失败：连接已断开";
-        Check(status.Visibility == Visibility.Visible, "错误提示仍正常显示");
-        status.Text = "";
-        Check(status.Visibility == Visibility.Collapsed, "清空状态后不留下空白提示行");
-        try
-        {
-            Check(management.SelectedDevice?.Id == management.Devices.First().Id,
-                "设备管理首次载入默认选中首行，只显示详情，不启动通信");
-            var changes = new HashSet<string?>();
-            management.PropertyChanged += (_, e) => changes.Add(e.PropertyName);
-            management.SelectedDevice = management.Devices.Single(d => d.CommunicationMode == DeviceCommunicationMode.Rtu);
-            Check(changes.Contains(nameof(management.SelectedDeviceTitle)) && changes.Contains(nameof(management.SelectedDeviceConnectionDetails))
-                && changes.Contains(nameof(management.SelectedDeviceTimeoutDetails)), "选择设备会通知三项详情重新显示");
-            Check(management.SelectedDeviceConnectionDetails.Contains("COM10") && management.SelectedDeviceConnectionDetails.Contains("站号 1")
-                && management.SelectedDeviceTimeoutDetails.Contains("RTU 不使用 TCP"), "RTU 详情不冒充网络地址和连接超时");
-            long selectedDeviceId = management.SelectedDevice!.Id;
-            await management.RefreshDevicesCommand.ExecuteAsync(null);
-            Check(management.SelectedDevice?.Id == selectedDeviceId
-                && management.Devices.Contains(management.SelectedDevice), "刷新设备后按编号恢复实际新行对象");
-            main.CurrentPage = management;
-            Render(window, new Size(1424, 861), "devices-rtu-large");
-            Check(window.Icon is not null, "主窗口已加载自定义应用图标");
-            Check(window.ResizeMode == ResizeMode.CanMinimize && window.WindowStyle == WindowStyle.SingleBorderWindow,
-                "主窗口保留原生标题栏，不开放任意缩放");
-            Check(window.Width == 1440 && window.Height == 900, "保留原来的初始窗口大小，不强制启动即最大化");
-
-            IntPtr handle = new WindowInteropHelper(window).EnsureHandle();
-            int nativeStyle = GetWindowLong(handle, -16);
-            Check((nativeStyle & 0x00010000) != 0 && (nativeStyle & 0x00020000) != 0,
-                "原生窗口保留最大化、还原和最小化入口");
-            Check((nativeStyle & 0x00040000) == 0, "原生窗口禁用边框拖动缩放");
-            var footer = (Border)window.FindName("WorkspaceFooter");
-            var logout = (Button)window.FindName("LogoutButton");
-            var workspace = (FrameworkElement)window.Content;
-            Check(Grid.GetRow(footer) == 2 && footer.TranslatePoint(new Point(), workspace).Y > workspace.RenderSize.Height * 0.75,
-                "退出入口固定在左侧工作空间底部");
-            Check(ReferenceEquals(logout.Command, main.LogoutCommand), "退出仍绑定原命令，不绕过确认与采集收尾");
-            Check(Descendants<Button>(workspace).Count(b => Equals(b.Content, "退出登录")) == 1,
-                "界面只保留左下角一个退出入口");
-            CheckDevicePage(window, "正常窗口");
-            CheckNoPageTitle((DependencyObject)window.Content, "设备管理");
-            Render(window, new Size(1240, 681), "devices-rtu-small");
-            CheckDevicePage(window, "小工作区");
-            management.SelectedDevice = management.Devices.Single(d => d.CommunicationMode == DeviceCommunicationMode.Tcp);
-            Render(window, new Size(1424, 861), "devices-tcp-large");
-            Check(management.SelectedDeviceTimeoutDetails.Contains("连接超时 750 ms"), "TCP 详情保留连接超时");
-            management.SelectedDevice = null;
-            Check(management.SelectedDeviceTitle == "设备详情" && management.SelectedDeviceConnectionDetails.Contains("选择"), "未选择设备时显示提示而不是旧参数");
-
-            await acquisition.RefreshDevicesCommand.ExecuteAsync(null);
-            Check(acquisition.SelectedDevice is not null && acquisition.SelectedPoint is not null
-                && acquisition.SelectedPoint.DeviceId == acquisition.SelectedDevice.Id,
-                "采集点页面首次刷新默认选设备和该设备的首个点位");
-            acquisition.SelectedDevice = acquisition.Devices.Single(d => d.CommunicationMode == DeviceCommunicationMode.Rtu);
-            await acquisition.RefreshPointsCommand.ExecuteAsync(null);
-
-            for (int i = 0; i < 100 && acquisition.IsLoadingPoints; i++) await Task.Delay(10);
-            acquisition.SelectedPoint = acquisition.Points.First();
-            long selectedPointId = acquisition.SelectedPoint.Id;
-            long acquisitionDeviceId = acquisition.SelectedDevice!.Id;
-            await acquisition.RefreshDevicesCommand.ExecuteAsync(null);
-            Check(acquisition.SelectedDevice?.Id == acquisitionDeviceId && acquisition.SelectedPoint?.Id == selectedPointId
-                && acquisition.Points.Contains(acquisition.SelectedPoint), "刷新采集点页面后保留设备和点位选择");
-            main.CurrentPage = acquisition;
-            foreach (SingleReadState state in Enum.GetValues<SingleReadState>())
-            {
-                Set(acquisition, nameof(acquisition.IsReading), state == SingleReadState.Reading);
-                Set(acquisition, nameof(acquisition.ReadState), state);
-                Set(acquisition, nameof(acquisition.ReadValueText), state == SingleReadState.Succeeded ? "-32768" : "—");
-                Set(acquisition, nameof(acquisition.ReadTimeText), state == SingleReadState.Succeeded ? "15:42:08.123" : "—");
-                Set(acquisition, nameof(acquisition.ReadTargetText), "一号温湿度传感器 / 低温温度检测点 · 地址 1");
-                Set(acquisition, nameof(acquisition.ReadResultText), state switch
-                {
-                    SingleReadState.Succeeded => "整数 -32768 · Int16 · 原始值 0x8000",
-                    SingleReadState.Failed => "COM10 通信失败，请检查转换器、接线和串口是否存在。若串口被其他软件占用，请先关闭调试软件。",
-                    SingleReadState.TimedOut => "等待 RTU 设备响应超时（1000 ms）。请检查供电、A/B、站号和串口参数。",
-                    SingleReadState.Canceled => "本次读取已取消，没有新的读数。",
-                    _ => "选择点位后点击读取一次。"
-                });
-                Render(window, new Size(1424, 861), $"read-{state}-large");
-                CheckReadPage(window, acquisition, state, "正常窗口");
-                Render(window, new Size(1240, 681), $"read-{state}-small");
-                CheckReadPage(window, acquisition, state, "小工作区");
-            }
-            CheckNoPageTitle((DependencyObject)window.Content, "采集点配置");
-
-            await monitoring.RefreshDevicesCommand.ExecuteAsync(null);
-            MonitoringDeviceViewModel rtuRow = monitoring.Devices.Single(d => d.Device.CommunicationMode == DeviceCommunicationMode.Rtu);
-            Check(rtuRow.ConnectionSummary == "RTU · COM10 · 站号 1" && !rtuRow.ConnectionSummary.Contains("4800")
-                && rtuRow.ConnectionDetails.Contains("4800,8,N,1"), "监控设备行简写目标，完整串口参数保留在详情");
-            foreach (MonitoringDeviceViewModel row in monitoring.Devices) row.IsChecked = true;
-            PrepareMonitoringSamples(monitoring, store, user);
-            main.CurrentPage = monitoring;
-            Render(window, new Size(1424, 861), "monitor-connections-large");
-            Check(monitoring.Readings.Count == 4 && monitoring.Trend.Samples.Count > 30,
-                "监控离屏截图包含模拟读数和已有波形，不启动真实采集");
-            Render(window, new Size(1920, 1040), "monitor-maximized");
-            CheckTables((DependencyObject)window.Content, "最大化工作区");
-            Render(window, new Size(1240, 681), "monitor-connections-small");
-            var monitorView = Descendants<MonitoringView>((DependencyObject)window.Content).Single();
-            var deviceList = (ItemsControl)monitorView.FindName("MonitoringDevicesList");
-            Check(deviceList is not Selector && Descendants<CheckBox>(deviceList).Count() == monitoring.Devices.Count,
-                "监控设备卡片只用勾选，不再叠加表格高亮选择");
-            Check(Descendants<CheckBox>(deviceList).All(check => check.HorizontalContentAlignment == HorizontalAlignment.Stretch
-                && check.Content is StackPanel), "设备名称和状态都是勾选框内容，整张卡片可勾选");
-            Check(Descendants<Button>(monitorView).Any(button => ReferenceEquals(button.Command, monitoring.StopAllSamplingCommand)),
-                "监控工具栏提供不受勾选范围影响的停止全部入口");
-            monitoring.ClearDeviceChecksCommand.Execute(null);
-            Check(monitoring.Devices.All(row => !row.IsChecked), "清空勾选只清除唯一一套设备选择");
-            monitoring.CheckAllDevicesCommand.Execute(null);
-            long[] checkedIds = monitoring.Devices.Where(row => row.IsChecked).Select(row => row.Device.Id).Order().ToArray();
-            await monitoring.RefreshDevicesCommand.ExecuteAsync(null);
-            Check(checkedIds.SequenceEqual(monitoring.Devices.Where(row => row.IsChecked).Select(row => row.Device.Id).Order()),
-                "监控刷新保留原有设备勾选，不擅自改采集范围");
-            Render(window, new Size(1240, 681), "monitor-refreshed-small");
-            Check(!Descendants<TextBlock>(monitorView).Any(t => t.Text.Contains("取消勾选不会停采")
-                || t.Text.Contains("点击行查看波形") || t.Text.Contains("勾选设备批量启停")),
-                "监控页不再显示重复操作说明");
-            Check(Descendants<TextBlock>(monitorView).Any(t => t.Text == rtuRow.ConnectionSummary), "监控 XAML 已绑定新的连接简写");
-            CheckTables(monitorView, "监控设备表");
-            CheckNoPageTitle(monitorView, "实时监控");
-
-            main.CurrentPage = main.Pages.OfType<UserManagementViewModel>().Single();
-            await ((UserManagementViewModel)main.CurrentPage).RefreshUsersCommand.ExecuteAsync(null);
-            Render(window, new Size(1424, 861), "users-clean");
-            CheckNoPageTitle((DependencyObject)window.Content, "用户管理");
-            Render(window, new Size(1240, 681), "users-small");
-            CheckTables((DependencyObject)window.Content, "用户管理小工作区");
-            var userView = Descendants<UserManagementView>((DependencyObject)window.Content).Single();
-            var createPanel = (Expander)userView.FindName("CreateOperatorExpander");
-            createPanel.IsExpanded = true;
-            Render(window, new Size(1240, 681), "users-create-small");
-            Check(Descendants<PasswordBox>(createPanel).Count() == 2 && Descendants<Button>(createPanel).Any(button => button.ActualHeight >= 32),
-                "账号创建区展开后保留两个密码输入和创建入口");
-            createPanel.IsExpanded = false;
-            var history = main.Pages.OfType<HistoryViewModel>().Single();
-            await history.RefreshRecordsCommand.ExecuteAsync(null);
-            await history.Alarms.RefreshRecordsCommand.ExecuteAsync(null);
-            Check(history.SelectedRecord is not null && history.Records.Contains(history.SelectedRecord),
-                "历史查询后默认选中实际记录，趋势入口可直接使用");
-            history.SelectedRecord = history.Records.Last();
-            long selectedRecordId = history.SelectedRecord.Id;
-            await history.RefreshRecordsCommand.ExecuteAsync(null);
-            Check(history.SelectedRecord?.Id == selectedRecordId && history.Records.Contains(history.SelectedRecord),
-                "历史刷新后按记录编号保留选择，不持有旧行对象");
-            main.CurrentPage = history;
-            Render(window, new Size(1424, 861), "history-clean");
-            CheckNoPageTitle((DependencyObject)window.Content, "历史记录");
-            history.UseTimeFilter = true;
-            Render(window, new Size(1240, 681), "history-filters-small");
-            CheckHistoryFilters(Descendants<HistoryView>((DependencyObject)window.Content).Single(), "采集历史小工作区");
-            Render(window, new Size(1424, 861), "history-filters-large");
-            CheckHistoryFilters(Descendants<HistoryView>((DependencyObject)window.Content).Single(), "采集历史正常窗口");
-            var trend = new HistoryTrendViewModel(user, seededHistory, history.SelectedRecord!, new HistoryFilter(), history.Records.Max(item => item.Id));
-            await trend.LoadTrendCommand.ExecuteAsync(null);
-            var trendWindow = new HistoryTrendWindow(trend);
-            Render(trendWindow, new Size(960, 620), "history-trend-clean");
-            Check(trend.Records.Count > 0 && Descendants<HistoryTrendChart>((DependencyObject)trendWindow.Content).Single().Records.Count > 0,
-                "历史趋势沿用临时库记录，统计和曲线仍绑定原数据");
-            trendWindow.Close();
-            var tabs = Descendants<TabControl>((DependencyObject)window.Content).Single();
-            tabs.SelectedIndex = 1;
-            history.Alarms.UseTimeFilter = true;
-            Render(window, new Size(1424, 861), "alarms-clean");
-            var alarmView = Descendants<AlarmHistoryView>((DependencyObject)window.Content).Single();
-            var alarmGrid = (DataGrid)alarmView.FindName("AlarmRecordsGrid");
-            Check(alarmGrid.Columns.Count == 6 && alarmGrid.RowDetailsVisibilityMode == DataGridRowDetailsVisibilityMode.VisibleWhenSelected,
-                "报警列表保留六个关键列，完整字段放选中行详情而非另增弹窗");
-            foreach (AlarmRecord record in history.Alarms.Records)
-            {
-                alarmGrid.SelectedItem = record;
-                Render(window, new Size(1424, 861), $"alarm-{record.State}-details");
-                string[] detailTexts = Descendants<TextBlock>(alarmGrid).Select(text =>
-                    new System.Windows.Documents.TextRange(text.ContentStart, text.ContentEnd).Text).ToArray();
-                Check(detailTexts.Any(text => text == record.Message)
-                    && detailTexts.Any(text => text.StartsWith("最近发生："))
-                    && detailTexts.Any(text => text.StartsWith("结束时间：")),
-                    record.State + " 报警选中后可读说明、最近发生及结束时间");
-                Check(Descendants<DataGridDetailsPresenter>(alarmGrid).Count(detail => detail.Visibility == Visibility.Visible) == 1,
-                    record.State + " 报警切换只展开当前行详情");
-            }
-            CheckHistoryFilters(Descendants<AlarmHistoryView>((DependencyObject)window.Content).Single(), "报警历史正常窗口");
-            Render(window, new Size(1240, 681), "alarms-filters-small");
-            CheckHistoryFilters(Descendants<AlarmHistoryView>((DependencyObject)window.Content).Single(), "报警历史小工作区");
-            Check(!Descendants<TextBlock>((DependencyObject)window.Content).Any(t => t.Text.Contains("正常采集不会生成报警")),
-                "报警页保留空结果状态，不显示冗余说明");
-
-            using var points = acquisition.CreatePointManagementViewModel(acquisition.Devices.First());
-            await points.RefreshPointsCommand.ExecuteAsync(null);
-            var pointWindow = new PointManagementWindow(points);
-            Render(pointWindow, new Size(1040, 720), "points-clean");
-            CheckPointWindow(pointWindow, "点位窗口正常大小");
-            points.SelectedPoint = points.Points.First();
-            Render(pointWindow, new Size(940, 660), "points-conversion");
-            CheckPointWindow(pointWindow, "点位窗口小工作区");
-            pointWindow.Close();
-            var deviceEditor = new DeviceEditorWindow(management,
-                management.Devices.Single(device => device.CommunicationMode == DeviceCommunicationMode.Rtu));
-            Render(deviceEditor, new Size(704, 721), "device-form-clean");
-            CheckEditableSerialPort(deviceEditor);
-            deviceEditor.Close();
-            Render(new PasswordWindow(new PasswordEditViewModel(user, new UserStore(path))), new Size(520, 430), "password-clean");
-            Render(new PasswordWindow(new PasswordEditViewModel(user, screenUsers, disabledOperator)), new Size(480, 430), "password-reset-clean");
-            var login = new LoginWindow(new UserStore(path), store, new HistoryStore(path));
-            await ((LoginViewModel)login.DataContext).InitializeAsync();
-            Render(login, new Size(500, 530), "login-clean");
-            Check(login.Icon is not null && login.ResizeMode == ResizeMode.NoResize,
-                "登录窗口使用同一图标并保留固定大小");
-            string freshPath = Path.Combine(Output, $"first-login-only-{Guid.NewGuid():N}.db");
-            new DatabaseInitializer(freshPath).Initialize();
-            var firstLogin = new LoginWindow(new UserStore(freshPath), new DeviceStore(freshPath), new HistoryStore(freshPath));
-            var firstLoginModel = (LoginViewModel)firstLogin.DataContext;
-            await firstLoginModel.InitializeAsync();
-            firstLoginModel.ShowAdminSetupCommand.Execute(null);
-            Render(firstLogin, new Size(500, 560), "first-admin-clean");
-            Check(firstLoginModel.IsAdminSetupVisible && Descendants<PasswordBox>((DependencyObject)firstLogin.Content).Count(box => box.ActualHeight > 0) >= 2,
-                "首次管理员创建面板保留密码确认和固定窗口内滚动能力");
-            var stopBeforeExit = typeof(MainWindow).GetMethod("StopBeforeExitAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
-            await (Task)stopBeforeExit.Invoke(window, null)!;
-            Check(main.DeviceTasks.IsShuttingDown && !history.RefreshRecordsCommand.CanExecute(null),
-                "简化退出仍等待后台收尾，并禁止旧主窗口发起新查询或采集");
-            Check(typeof(MainWindow).GetMethod("ShowLoginWindowOrExit", BindingFlags.NonPublic | BindingFlags.Instance) is null,
-                "退出不再保留循环重建登录窗口的方法");
-        }
-        finally { await main.StopBackgroundWorkAsync(); }
-        Console.WriteLine($"Temporary database only: {path}");
-    }
 
     private static async Task CheckPointManagementInteractionsAsync(UserAccount user)
     {
@@ -593,10 +561,10 @@ internal static partial class Program
         var store = new DeviceStore(path);
         Seed(store, user);
         DeviceInfo device = store.GetDevices(user).First();
-        using var points = new PointManagementViewModel(user, store, device);
+        using var points = new PointEditorViewModel(user, store, device);
         await points.RefreshPointsCommand.ExecuteAsync(null);
         bool allowDelete = false;
-        points.DeleteConfirmationRequested += request => request.Confirmed = allowDelete;
+        points.DeleteConfirmationRequested += _ => allowDelete;
 
         PointInfo first = points.Points.First();
         PointInfo second = points.Points.Last();
@@ -612,6 +580,21 @@ internal static partial class Program
         points.SelectedPoint = first;
         Check(points.SelectedPoint == first && points.PointName == first.Name,
             "切换点位直接载入目标，放弃未保存输入，不保留另一份表单快照");
+
+        // 编辑时撞到别的点，只清地址，不丢失名称、单位，也不能写进数据库。
+        points.PointName = "待保存名称";
+        points.UnitText = "kPa";
+        points.AddressText = second.Address.ToString();
+        points.SelectedRegisterType = second.RegisterType;
+        await points.SavePointCommand.ExecuteAsync(null);
+        Check(points.AddressText == "" && points.PageMessage.Contains(second.Name)
+            && points.PageMessage.Contains(second.RegisterTypeDescription)
+            && points.PageMessage.Contains($"地址 {second.Address}") && points.PageMessage.Contains("未保存")
+            && points.SelectedPoint == first && points.PointName == "待保存名称" && points.UnitText == "kPa",
+            "编辑地址冲突时指出占用点和寄存器类型，只清地址，保留其他输入");
+        Check(store.GetPoints(user, device.Id).Single(point => point.Id == first.Id).Address == first.Address,
+            "地址冲突直接返回，不改变原点位的数据库地址");
+        points.RevertPointCommand.Execute(null);
 
         points.ScaleText = "NaN";
         await points.SavePointCommand.ExecuteAsync(null);
@@ -645,6 +628,16 @@ internal static partial class Program
         Check(!points.IsEditing && points.SelectedPoint is null && points.PointName == "" && points.AddressText == ""
             && points.ScaleText == "1" && points.OffsetText == "0" && points.UnitText == "",
             "新增采集点入口清除选择，恢复空表单和不换算默认值");
+
+        points.PointName = "重复地址测试";
+        points.AddressText = first.Address.ToString();
+        points.SelectedRegisterType = first.RegisterType;
+        await points.SavePointCommand.ExecuteAsync(null);
+        Check(points.AddressText == "" && points.PointName == "重复地址测试" && points.PageMessage.Contains(first.Name),
+            "新增地址冲突时同样清空地址并提示占用点，不清名称");
+        Check(store.GetPoints(user, device.Id).Count == originalCount,
+            "新增地址冲突不插入数据库记录");
+
         points.PointName = "新建测试点"; points.AddressText = "2";
         points.SelectedRegisterType = RegisterType.Holding; points.SelectedDataType = PointDataType.UInt16;
         await points.SavePointCommand.ExecuteAsync(null);
@@ -672,47 +665,21 @@ internal static partial class Program
         points.RevertPointCommand.Execute(null);
         Check(points.PointName == "",
             "新增状态撤销输入恢复空表单，不误修改之前选中过的点");
+
+        points.PointName = "不同寄存器区测试";
+        points.AddressText = first.Address.ToString();
+        points.SelectedRegisterType = first.RegisterType == RegisterType.Holding
+            ? RegisterType.Input : RegisterType.Holding;
+        await points.SavePointCommand.ExecuteAsync(null);
+        Check(points.SelectedPoint?.Name == "不同寄存器区测试" && points.SelectedPoint.Address == first.Address
+            && points.AddressText == first.Address.ToString() && points.Points.Count == originalCount + 1,
+            "03和04属于不同寄存器区，数值相同的地址仍能保存，不误清输入");
     }
 
-    private static async Task CheckPointLoadingAsync(UserAccount user, DeviceStore store, HistoryStore history)
-    {
-        var runtime = new DeviceTasks(user, store, history);
-        var vm = new PointConfigurationViewModel(user, store, runtime);
-        var pendingField = typeof(PointConfigurationViewModel).GetField("_pointLoadTask", BindingFlags.Instance | BindingFlags.NonPublic)!;
-        DeviceInfo[] devices = store.GetDevices(user).ToArray();
-        try
-        {
-            vm.SelectedDevice = devices[0];
-            Task pending = (Task)pendingField.GetValue(vm)!;
-            Check(vm.IsLoadingPoints && !vm.CanChooseDevice && vm.Points.Count == 0,
-                "查询点位期间禁用设备选择，不再给旧选择排队");
-            await pending.WaitAsync(TimeSpan.FromSeconds(5));
-            Check(vm.Points.Count == 2 && vm.Points.All(p => p.DeviceId == devices[0].Id) && vm.CanChooseDevice,
-                "查询结束显示当前设备点位，恢复选择");
-
-            vm.SelectedDevice = devices[1];
-            pending = (Task)pendingField.GetValue(vm)!;
-            vm.SelectedDevice = null;
-            await pending.WaitAsync(TimeSpan.FromSeconds(5));
-            Check(vm.Points.Count == 0 && vm.SelectedPoint is null && !vm.IsLoadingPoints,
-                "程序清空选择后，尚未结束的旧查询不会把点位放回来");
-
-            vm.SelectedDevice = devices[0];
-            Task stopping = vm.StopOperationsAsync();
-            Check(!stopping.IsCompleted, "退出时等待当前查询收尾，不等待旧选择队列");
-            await stopping.WaitAsync(TimeSpan.FromSeconds(5));
-            Check(vm.Points.Count == 0 && !vm.CanChooseDevice, "退出后查询不再回填页面或恢复操作");
-        }
-        finally
-        {
-            await vm.StopOperationsAsync();
-            await runtime.StopAllAsync();
-        }
-    }
 
     private static async Task CheckFailedStopCleanupAsync(UserAccount user, DeviceStore store, HistoryStore history)
     {
-        var tasks = new DeviceTasks(user, store, history);
+        var tasks = new SamplingTasks(user, store, history);
         var session = tasks.GetOrCreateSession(9999);
         typeof(DeviceSamplingViewModel).GetField("_samplingTask", BindingFlags.NonPublic | BindingFlags.Instance)!
             .SetValue(session, Task.FromException(new InvalidOperationException("模拟停止收尾异常")));
@@ -729,11 +696,10 @@ internal static partial class Program
     {
         var vm = new UserManagementViewModel(user, store) { NewUserName = "async-worker" };
         int messages = 0;
-        vm.PasswordsRequested += input => { input.Password = "Worker123!"; input.Confirmation = "Worker123!"; };
         vm.MessageRequested += (_, _) => messages++;
-        Task creating = vm.CreateOperatorCommand.ExecuteAsync(null);
-        Check(!creating.IsCompleted, "创建操作员的密码计算在后台进行，命令异步返回");
-        Check(!vm.RefreshUsersCommand.CanExecute(null) && !vm.CreateOperatorCommand.CanExecute(null)
+        Task creating = vm.CreateOperatorAsync("Worker123!", "Worker123!");
+        Check(!creating.IsCompleted, "创建操作员的密码计算在后台进行，方法异步返回");
+        Check(!vm.RefreshUsersCommand.CanExecute(null) && !vm.CanCreateOperator
             && !vm.CanEditNewUser && !vm.CanChooseUser,
             "账户写入期间不重复创建或修改同一份页面状态");
         PageViewModel page = vm;
@@ -749,7 +715,7 @@ internal static partial class Program
         {
             store.TryAddDevice(user, new DeviceInput
             {
-                Name = rtu ? "一号温湿度传感器" : "TCP 采集试验设备",
+                Name = rtu ? "装配区温湿度" : "环境采集站",
                 Host = "127.0.0.1",
                 Port = 502,
                 UnitId = 1,
@@ -764,7 +730,7 @@ internal static partial class Program
         }
         foreach (DeviceInfo device in store.GetDevices(user))
         {
-            store.TrySetDeviceEnabled(user, device.Id, true);
+
             foreach (ushort address in new ushort[] { 0, 1 }) store.TryAddPoint(user, device.Id, new PointInput
             {
                 Name = address == 0 ? "湿度原始值" : "温度原始值",
@@ -775,40 +741,6 @@ internal static partial class Program
         }
     }
 
-    private static void CheckDevicePage(Window window, string name)
-    {
-        DeviceManagementView view = Descendants<DeviceManagementView>((DependencyObject)window.Content).Single();
-        var table = (DataGrid)view.FindName("DevicesGrid");
-        Check(table.Columns.Count == 6 && table.Columns.All(c => !c.Header.ToString()!.Contains("超时")), name + "设备主表只保留六个常用字段");
-        var details = (Border)view.FindName("SelectedDeviceDetails");
-        Check(details.ActualHeight > 60 && table.ActualHeight >= 100, name + "详情可见且表格仍有高度");
-        CheckTables(view, name + "设备表");
-    }
-
-    private static void PrepareMonitoringSamples(MonitoringViewModel monitoring, DeviceStore store, UserAccount user)
-    {
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-        foreach (MonitoringDeviceViewModel deviceRow in monitoring.Devices)
-        {
-            DeviceSamplingViewModel session = monitoring.DeviceTasks.GetOrCreateSession(deviceRow.Device.Id);
-            foreach (PointInfo savedPoint in store.GetPoints(user, deviceRow.Device.Id))
-            {
-                bool humidity = savedPoint.DataType == PointDataType.UInt16;
-                var point = new PointInfo(savedPoint.Id, savedPoint.DeviceId, humidity ? "湿度" : "温度",
-                    savedPoint.RegisterType, savedPoint.Address, savedPoint.DataType,
-                    scale: 0.1, unit: humidity ? "%RH" : "℃");
-                var reading = new PointMonitorViewModel(deviceRow.Device, point, monitoring.DeviceTasks.Alarms, session);
-                session.Readings.Add(reading);
-                for (int index = 0; index < 120; index++)
-                {
-                    int raw = (humidity ? 450 : 235) + (int)Math.Round(8 * Math.Sin(index / 8.0));
-                    reading.ShowResult(new PointReadResult(point, (ushort)raw, raw, now.AddSeconds((index - 119) * 2.5)));
-                }
-            }
-        }
-        Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
-        monitoring.SelectedReading = monitoring.Readings.FirstOrDefault(reading => reading.Point.Unit == "℃");
-    }
 
     private static void CheckNoPageTitle(DependencyObject root, string name)
     {
@@ -817,78 +749,6 @@ internal static partial class Program
             name + "不再重复占一行显示页面大标题");
     }
 
-    private static void CheckPointWindow(PointManagementWindow window, string name)
-    {
-        var root = (DependencyObject)window.Content;
-        var table = Descendants<DataGrid>(root).Single();
-        Check(table.Columns.Count == 3, name + "左表保留三列识别信息，完整配置放右侧");
-        Check(!Descendants<Button>(root).Any(button => Equals(button.Content, "编辑选中点"))
-            && Descendants<Button>(root).Any(button => Equals(button.Content, "新增采集点")),
-            name + "没有重复编辑按钮，新增有明确入口");
-        CheckNoPageTitle(root, name);
-        CheckTables(root, name);
-    }
-
-    private static void CheckHistoryFilters(FrameworkElement view, string name)
-    {
-        var expander = (Expander)view.FindName("FilterExpander");
-        DatePicker[] dates = Descendants<DatePicker>(expander).ToArray();
-        Check(expander.IsExpanded && dates.Length == 2 && dates.All(date => date.ActualWidth >= 130 && date.ActualHeight >= 25),
-            name + "时间筛选展开后开始与结束日期控件完整显示");
-        var dateText = (TextBox)dates[0].Template.FindName("PART_TextBox", dates[0]);
-        Check(!dateText.IsReadOnly, name + "使用标准日期输入，不再查模板并强制锁住文本框");
-        DateTime? originalDate = dates[0].SelectedDate;
-        dates[0].SetCurrentValue(DatePicker.TextProperty, "2026/10/29");
-        Check(dates[0].SelectedDate == new DateTime(2026, 10, 29), name + "手动输入日期可正常转换为筛选日期");
-        dates[0].SetCurrentValue(DatePicker.SelectedDateProperty, originalDate);
-        var filterScroll = Descendants<ScrollViewer>(expander).First();
-        Check(filterScroll.HorizontalScrollBarVisibility == ScrollBarVisibility.Disabled && filterScroll.ScrollableWidth < 1,
-            name + "筛选区按宽度换行，不产生横向滚动");
-        Check(Descendants<Button>(view).Any(button => Equals(button.Content, "重置条件") && button.ActualHeight >= 28)
-            && Descendants<Button>(view).Any(button => Equals(button.Content, "查询 / 刷新") && button.ActualHeight >= 28),
-            name + "查询和重置按钮固定可见");
-        Check(Descendants<DataGrid>(view).Single().ActualHeight >= 70, name + "筛选展开后仍给结果表保留高度");
-        CheckNoPageTitle(view, name);
-        CheckTables(view, name);
-    }
-
-    private static void CheckEditableSerialPort(DeviceEditorWindow window)
-    {
-        var combo = (ComboBox)window.FindName("SerialPortNameInput");
-        combo.ApplyTemplate();
-        var textBox = combo.Template.FindName("PART_EditableTextBox", combo) as TextBox;
-        Check(combo.IsEditable && textBox is not null, "串口下拉模板保留可编辑输入区，不只是显示选中项");
-        textBox!.SetCurrentValue(TextBox.TextProperty, "COM77");
-        Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
-        var vm = (DeviceEditorViewModel)window.DataContext;
-        Check(vm.SerialPortName == "COM77", "手动输入未枚举出的COM号能写回设备表单");
-        vm.SerialPortName = "COM88";
-        Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
-        Check(textBox.Text == "COM88", "设备表单重新赋串口值时，可编辑下拉同步显示");
-        CheckNoPageTitle((DependencyObject)window.Content, "设备编辑表单");
-    }
-
-    private static void CheckReadPage(Window window, PointConfigurationViewModel vm, SingleReadState state, string name)
-    {
-        PointConfigurationView view = Descendants<PointConfigurationView>((DependencyObject)window.Content).Single();
-        var value = (TextBlock)view.FindName("ReadValueDisplay");
-        var target = (TextBlock)view.FindName("ReadTargetDisplay");
-        var badge = (Border)view.FindName("ReadStatusBadge");
-        var status = (TextBlock)badge.Child;
-        Check(value.Text == vm.ReadValueText && target.Text == vm.ReadTargetText && status.Text == vm.ReadStatusText,
-            $"{name}/{state} 数值、目标和状态绑定正确");
-        Border card = (Border)view.FindName("SingleReadResultCard");
-        Point position = value.TranslatePoint(new Point(), card);
-        Check(position.X >= 0 && position.Y >= 0 && position.X + value.ActualWidth <= card.ActualWidth
-            && position.Y + value.ActualHeight <= card.ActualHeight, $"{name}/{state} 大号读数不越出结果卡片");
-        if (state is SingleReadState.Succeeded or SingleReadState.Failed or SingleReadState.TimedOut)
-        {
-            Color expected = state == SingleReadState.Succeeded ? Color.FromRgb(39, 102, 78)
-                : state == SingleReadState.Failed ? Color.FromRgb(180, 35, 24) : Color.FromRgb(149, 85, 0);
-            Check(status.Foreground is SolidColorBrush brush && brush.Color == expected, $"{name}/{state} 状态文字使用对应颜色");
-        }
-        CheckTables(view, name + "/" + state);
-    }
 
     private static void CheckTables(DependencyObject root, string name)
     {
@@ -903,6 +763,11 @@ internal static partial class Program
 
     private static void Render(Window window, Size size, string name)
     {
+        if (window.IsVisible)
+        {
+            window.Width = size.Width + 16;
+            window.Height = size.Height + 39;
+        }
         var root = (FrameworkElement)window.Content;
         root.DataContext = window.DataContext;
         if (root is Grid grid) grid.Background = window.Background;
@@ -911,7 +776,12 @@ internal static partial class Program
             root.Measure(size); root.Arrange(new Rect(size)); root.UpdateLayout();
             Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
         }
-        var bitmap = new RenderTargetBitmap((int)size.Width, (int)size.Height, 96, 96, PixelFormats.Pbgra32); bitmap.Render(root);
+        var bitmap = new RenderTargetBitmap((int)size.Width, (int)size.Height, 96, 96, PixelFormats.Pbgra32);
+        var background = new DrawingVisual();
+        using (var drawing = background.RenderOpen())
+            drawing.DrawRectangle(window.Background ?? Brushes.White, null, new Rect(size));
+        bitmap.Render(background);
+        bitmap.Render(root);
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
         using var stream = File.Create(Path.Combine(Output, name + ".png")); encoder.Save(stream);
     }

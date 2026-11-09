@@ -56,7 +56,7 @@
                              Margin="0,7,0,24" />
 
                 <Button x:Name="LoginButton"
-                        Command="{Binding LoginCommand}"
+                        Click="LoginButton_Click"
                         Content="登录"
                         Style="{StaticResource PrimaryActionButtonStyle}"
                         Height="42" />
@@ -101,7 +101,7 @@
                              Margin="0,7,0,22" />
 
                 <Button x:Name="CreateAdminButton"
-                        Command="{Binding CreateFirstAdminCommand}"
+                        Click="CreateAdminButton_Click"
                         Content="创建管理员"
                         Style="{StaticResource PrimaryActionButtonStyle}"
                         Height="42" />

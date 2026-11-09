@@ -1,4 +1,5 @@
 // 管理操作员账户、启用状态和密码重置。
+using DeviceMonitor.Services;
 using System;
 using System.Linq;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -14,25 +15,38 @@ namespace DeviceMonitor.ViewModel
     {
         private readonly UserAccount _currentUser;
         private readonly UserStore _userStore;
+        // 账户页的忙碌标记：刷新用户、创建账户、启停账户时打上，拦住重复操作和切换用户；finally 中清掉。
         private bool _isWorking;
+        // 账户页开始退出收尾时打上，拒绝新账户操作；加载等异步结果回来时也用它判断是否还要更新页面。
+        // 这个页面对象以后不再使用，所以不清回 false。
         private bool _isClosing;
+        // 创建账户改为直接接收密码参数；退出时仍要等这次保存真正结束。
+        // 保存最近一次创建操作员的 Task；退出时等它真正结束，避免窗口关了但账户还在写入；下次创建换新任务。
+        private Task _createOperatorTask = Task.CompletedTask;
 
+        // 上方创建输入区能否操作
         public bool CanEditNewUser => CanManageUsers();
         public string CreateButtonText => _isWorking ? "处理中…" : "创建操作员";
         public bool CanChooseUser => CanManageUsers();
+        public bool CanCreateOperator => CanManageUsers() && !string.IsNullOrWhiteSpace(NewUserName);
 
         [ObservableProperty]
-        [NotifyCanExecuteChangedFor(nameof(CreateOperatorCommand))]
+        [NotifyPropertyChangedFor(nameof(CanCreateOperator))]
         private string _newUserName = string.Empty;
 
+        /*
+        启用／停用命令重新检查条件。
+        按钮文字重新取值。
+        重置密码命令重新检查条件。*/
         [ObservableProperty]
-        [NotifyCanExecuteChangedFor(nameof(EnableOperatorCommand))]
-        [NotifyCanExecuteChangedFor(nameof(DisableOperatorCommand))]
+        [NotifyCanExecuteChangedFor(nameof(ToggleOperatorCommand))]
+        [NotifyPropertyChangedFor(nameof(OperatorActionText))]
         [NotifyCanExecuteChangedFor(nameof(ResetOperatorPasswordCommand))]
         private UserAccount? _selectedUser;
 
-        public event Action<UserPasswordsRequest>? PasswordsRequested;
-        public event Action<ConfirmationRequest>? ConfirmationRequested;
+        public string OperatorActionText => SelectedUser?.IsEnabled == true ? "停用账户" : "启用账户";
+
+        public event Func<string, string, bool>? ConfirmationRequested;
         public event Action<string, string>? MessageRequested;
         public event Action? FormResetRequested;
         public event Action<PasswordEditViewModel>? PasswordEditorRequested;
@@ -47,8 +61,8 @@ namespace DeviceMonitor.ViewModel
         public ObservableCollection<UserAccount> Users { get; } = new();
 
         public UserManagementViewModel(
-    UserAccount currentUser,
-    UserStore userStore) : base("用户管理")
+            UserAccount currentUser,
+            UserStore userStore) : base("用户管理")
         {
             _currentUser = currentUser
                 ?? throw new ArgumentNullException(nameof(currentUser));
@@ -87,13 +101,19 @@ namespace DeviceMonitor.ViewModel
             }
         }
 
+        /// <summary>
+        /// 加载用户列表
+        /// </summary>
+        /// <returns></returns>
         private async Task LoadUsersAsync()
         {
+            // 得到用户列表
             var latestUsers = await Task.Run(() => _userStore.GetUsers(_currentUser));
 
             if (_isClosing)
                 return;
 
+            // 如果有选中用户，先保存
             long? selectedId = SelectedUser?.Id;
 
             Users.Clear();
@@ -102,18 +122,24 @@ namespace DeviceMonitor.ViewModel
                 Users.Add(user);
             }
 
+            // 恢复选择
             SelectedUser = Users.FirstOrDefault(user => user.Id == selectedId)
                 ?? Users.FirstOrDefault();
         }
 
-        /// <summary>读取两次密码，检查并创建操作员；成功后清空密码框并提示。</summary>
-        [RelayCommand(CanExecute = nameof(CanCreateOperator))]
-        private async Task CreateOperatorAsync()
+        /// <summary>由创建操作员的后台事件调用，这里没用命令。</summary>
+        public Task CreateOperatorAsync(string password, string confirmation)
         {
             if (!CanManageUsers())
-                return;
+                return Task.CompletedTask;
 
-            var passwords = new UserPasswordsRequest();
+            _createOperatorTask = CreateOperatorCoreAsync(password, confirmation);
+            return _createOperatorTask;
+        }
+
+        /// <summary>真正校验并创建账户，检查输入后创建操作员；保存期间不接受第二次账户操作。</summary>
+        private async Task CreateOperatorCoreAsync(string password, string confirmation)
+        {
             try
             {
                 string userName = NewUserName.Trim();
@@ -123,20 +149,13 @@ namespace DeviceMonitor.ViewModel
                     return;
                 }
 
-                if (PasswordsRequested is null)
-                {
-                    MessageRequested?.Invoke("用户管理页面尚未准备好。", "创建操作员");
-                    return;
-                }
-
-                PasswordsRequested.Invoke(passwords);
-                if (passwords.Password.Length < 6)
+                if (string.IsNullOrWhiteSpace(password) || password.Length < 6)
                 {
                     MessageRequested?.Invoke("密码至少需要 6 个字符。", "创建操作员");
                     return;
                 }
 
-                if (passwords.Password != passwords.Confirmation)
+                if (password != confirmation)
                 {
                     MessageRequested?.Invoke("两次输入的密码不一致。", "创建操作员");
                     return;
@@ -146,7 +165,6 @@ namespace DeviceMonitor.ViewModel
                 NotifyUserCommands();
                 PageMessage = "正在创建操作员…";
 
-                string password = passwords.Password;
                 bool created = await Task.Run(() => _userStore.TryCreateOperator(_currentUser, userName, password));
                 if (_isClosing)
                     return;
@@ -163,9 +181,8 @@ namespace DeviceMonitor.ViewModel
 
                 NewUserName = string.Empty;
 
+                // 创建结果已显示在 PageMessage，只通知界面清空密码框，不重复弹成功消息。
                 FormResetRequested?.Invoke();
-
-                MessageRequested?.Invoke(PageMessage, "创建操作员");
             }
             catch (Exception ex)
             {
@@ -175,80 +192,44 @@ namespace DeviceMonitor.ViewModel
             }
             finally
             {
-                passwords.Password = string.Empty;
-                passwords.Confirmation = string.Empty;
+                // 任务会被记住用于退出等待，结束时清掉本次输入引用。
+                password = confirmation = string.Empty;
                 _isWorking = false;
                 NotifyUserCommands();
             }
         }
 
-        /// <summary>启用选中的操作员，传 true。</summary>
-        [RelayCommand(CanExecute = nameof(CanEnableOperator))]
-        private async Task EnableOperatorAsync()
+        /// <summary>
+        /// 确认后启用或停用账户
+        /// </summary>
+        /// <returns></returns>
+        [RelayCommand(CanExecute = nameof(CanToggleOperator))]
+        private async Task ToggleOperatorAsync()
         {
-            await ChangeSelectedOperatorStatusAsync(true);
-        }
-
-        private bool CanEnableOperator() =>
-            CanManageUsers() && SelectedUser is { Role: UserRole.Operator, IsEnabled: false };
-
-        /// <summary>停用选中的操作员，传 false。</summary>
-        [RelayCommand(CanExecute = nameof(CanDisableOperator))]
-        private async Task DisableOperatorAsync()
-        {
-            await ChangeSelectedOperatorStatusAsync(false);
-        }
-
-        private bool CanDisableOperator() =>
-            CanManageUsers() && SelectedUser is { Role: UserRole.Operator, IsEnabled: true };
-
-        /// <summary>确认后保存操作员的启停状态。</summary>
-        private async Task ChangeSelectedOperatorStatusAsync(bool enabled)
-        {
-            UserAccount? selected = SelectedUser;
-            if (!CanManageUsers() || selected is not { Role: UserRole.Operator } ||
-                selected.IsEnabled == enabled)
+            UserAccount selected = SelectedUser!;
+            bool enabled = !selected.IsEnabled;
+            // 判断启用还是停用
+            string action = enabled ? "启用" : "停用";
+            // 窗口直接返回是否确认，不创建对象再回填 Confirmed。
+            bool confirmed = ConfirmationRequested?.Invoke(
+                $"确定{action}操作员“{selected.UserName}”吗？", "账户状态") == true;
+            if (!confirmed)
                 return;
 
-            string action = enabled ? "启用" : "停用";
-            try
-            {
-                var confirmation = new ConfirmationRequest(
-                    $"确定{action}操作员“{selected.UserName}”吗？", "确认账户操作");
-
-                ConfirmationRequested?.Invoke(confirmation);
-                if (!confirmation.Confirmed)
-                    return;
-
-                await TrySetOperatorEnabledAsync(selected.Id, enabled);
-
-                if (!_isClosing)
-                    MessageRequested?.Invoke(PageMessage, "账户操作");
-            }
-            catch (Exception ex)
-            {
-                MessageRequested?.Invoke($"{action}操作员失败：{ex.Message}", "操作失败");
-            }
-        }
-
-        /// <summary>保存操作员启停状态，再刷新列表显示实际状态。</summary>
-        public async Task<bool> TrySetOperatorEnabledAsync(long operatorId, bool enabled)
-        {
-            if (!CanManageUsers())
-                return false;
-            string target = Users.FirstOrDefault(user => user.Id == operatorId)?.UserName
-                ?? $"编号 {operatorId}";
             _isWorking = true;
             NotifyUserCommands();
             try
             {
-                bool changed = await Task.Run(() => _userStore.TrySetOperatorEnabled(_currentUser, operatorId, enabled));
-
+                // 
+                bool saved = await Task.Run(() => _userStore.TrySetOperatorEnabled(_currentUser, selected.Id, enabled));
                 if (!_isClosing)
-                    await RefreshUsersAfterOperationAsync(changed
-                    ? $"操作员“{target}”已{(enabled ? "启用" : "停用")}。"
-                    : "账户不存在或状态已变化。");
-                return changed;
+                    await RefreshUsersAfterOperationAsync(saved
+                        ? $"已{action}“{selected.UserName}”。" : "账户不存在或状态已变化。");
+            }
+            catch (Exception ex)
+            {
+                PageMessage = $"账户状态保存失败：{ex.Message}";
+                AppLog.Error("账户状态保存失败", $"账户={selected.Id}", ex);
             }
             finally
             {
@@ -257,6 +238,9 @@ namespace DeviceMonitor.ViewModel
             }
         }
 
+        // 通过角色和状态判断能否启停账户
+        private bool CanToggleOperator() => CanManageUsers() && SelectedUser is { Role: UserRole.Operator };
+
         /// <summary>打开选中操作员的密码重置表单，不读取旧密码，也不重新启用账户。</summary>
         [RelayCommand(CanExecute = nameof(CanResetOperatorPassword))]
         private void ResetOperatorPassword()
@@ -264,7 +248,7 @@ namespace DeviceMonitor.ViewModel
             if (!CanResetOperatorPassword() || PasswordEditorRequested is null)
                 return;
             var editor = new PasswordEditViewModel(_currentUser, _userStore, SelectedUser);
-            // 模态窗口关闭后才返回；不额外保存一份“弹窗正在打开”的状态。
+            // 打开修改窗口。
             PasswordEditorRequested.Invoke(editor);
             if (editor.IsSaved && !_isClosing)
                 PageMessage = "操作员密码已重置，下次登录使用新密码。账户启停状态未改变，已登录会话不会被强制退出。";
@@ -289,11 +273,8 @@ namespace DeviceMonitor.ViewModel
         }
 
         /// <summary>没在退出或执行账户操作，才接受下一次操作。</summary>
-
         private bool CanManageUsers() =>
             !_isClosing && !_isWorking;
-
-        private bool CanCreateOperator() => CanManageUsers() && !string.IsNullOrWhiteSpace(NewUserName);
 
         /// <summary>让账户按钮重新判断能不能点，不执行账户操作。</summary>
         private void NotifyUserCommands()
@@ -302,9 +283,8 @@ namespace DeviceMonitor.ViewModel
             OnPropertyChanged(nameof(CreateButtonText));
             OnPropertyChanged(nameof(CanChooseUser));
             RefreshUsersCommand.NotifyCanExecuteChanged();
-            CreateOperatorCommand.NotifyCanExecuteChanged();
-            EnableOperatorCommand.NotifyCanExecuteChanged();
-            DisableOperatorCommand.NotifyCanExecuteChanged();
+            OnPropertyChanged(nameof(CanCreateOperator));
+            ToggleOperatorCommand.NotifyCanExecuteChanged();
             ResetOperatorPasswordCommand.NotifyCanExecuteChanged();
         }
 
@@ -312,10 +292,9 @@ namespace DeviceMonitor.ViewModel
         {
             _isClosing = true;
             NotifyUserCommands();
-            await Task.WhenAll(CreateOperatorCommand.ExecutionTask ?? Task.CompletedTask,
+            await Task.WhenAll(_createOperatorTask,
                 RefreshUsersCommand.ExecutionTask ?? Task.CompletedTask,
-                EnableOperatorCommand.ExecutionTask ?? Task.CompletedTask,
-                DisableOperatorCommand.ExecutionTask ?? Task.CompletedTask);
+                ToggleOperatorCommand.ExecutionTask ?? Task.CompletedTask);
         }
     }
 }

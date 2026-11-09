@@ -1,4 +1,5 @@
 // 处理登录和首次管理员创建。
+using DeviceMonitor.Services;
 using System;
 using System.Threading.Tasks;
 using DeviceMonitor;
@@ -12,10 +13,12 @@ namespace DeviceMonitor.ViewModel
     {
         private readonly UserStore _userStore;
 
-        // iswork代表忙的状态
+        // IsWorking 代表正在检查或登录，等待期间禁用提交，避免同一次操作重复执行。
         [ObservableProperty]
-        [NotifyCanExecuteChangedFor(nameof(LoginCommand), nameof(ShowAdminSetupCommand), nameof(CreateFirstAdminCommand), nameof(BackToLoginCommand))]
+        [NotifyCanExecuteChangedFor(nameof(ShowAdminSetupCommand), nameof(BackToLoginCommand))]
         [NotifyPropertyChangedFor(nameof(CanEdit))]
+        // 登录页的忙碌标记：初始先为 true，账户检查、登录验证、创建首个管理员期间也打上，拦住重复提交。
+        // 这些操作结束后清掉；登录成功时会先清掉，再通知窗口跳转。
         private bool _isWorking = true;
 
         public bool CanEdit => !IsWorking;
@@ -26,6 +29,7 @@ namespace DeviceMonitor.ViewModel
         [ObservableProperty]
         private string _adminUserName = string.Empty;
 
+        // 面板显示标记：打开首次创建管理员面板时为 true，返回登录面板时清掉；不代表管理员已经创建成功。
         private bool _isAdminSetupVisible;
         public bool IsAdminSetupVisible
         {
@@ -38,7 +42,9 @@ namespace DeviceMonitor.ViewModel
         }
         public bool IsLoginVisible => !IsAdminSetupVisible;
 
-        // CanCreateFirstAdministrator是判断要不要开创建管理员窗口的属性
+        // CanCreateFirstAdministrator 是查库得到的结果，决定是否允许展开首次管理员面板。
+        // 首次创建入口的允许标记：初始化查到数据库还没有任何账户时打上，尝试创建返回后清掉。
+        // 它用于决定能否打开创建面板，真正写数据库时还会再检查，不是当前用户的管理员权限。
         private bool _canCreateFirstAdministrator;
         public bool CanCreateFirstAdministrator
         {
@@ -48,13 +54,10 @@ namespace DeviceMonitor.ViewModel
                 if (SetProperty(ref _canCreateFirstAdministrator, value))
                 {
                     ShowAdminSetupCommand.NotifyCanExecuteChanged();
-                    CreateFirstAdminCommand.NotifyCanExecuteChanged();
                 }
             }
         }
 
-        public event Action<UserPasswordsRequest>? LoginPasswordRequested;
-        public event Action<UserPasswordsRequest>? AdminPasswordsRequested;
         public event Action? LoginPasswordClearRequested;
         public event Action? AdminPasswordsClearRequested;
         public event Action<string, string>? MessageRequested;
@@ -86,22 +89,19 @@ namespace DeviceMonitor.ViewModel
             }
         }
 
-        /// <summary>读取密码并验证登录，成功后请求打开主窗口MainWindow。</summary>
-        [RelayCommand(CanExecute = nameof(CanAcceptInput))]
-        private async Task LoginAsync()
+        /// <summary>窗口直接传入本次密码；验证成功后通知窗口打开主界面。</summary>
+        public async Task LoginAsync(string password)
         {
-            // 创建密码请求对象，而不是直接来绑定属性读取
-            var passwords = new UserPasswordsRequest();
+            // 方法也会被窗口直接调用，忙碌时不接受第二次提交。
+            if (IsWorking)
+                return;
+
             try
             {
-                // 通过事件来读取控件中的密码并且传入密码请求对象接收
-                // 不直接让控件PasswordBox.Password绑定viewmodel属性是因为不允许，username可以
-                LoginPasswordRequested?.Invoke(passwords);
-
                 string userName = UserName.Trim();
 
                 if (string.IsNullOrWhiteSpace(userName) ||
-                    string.IsNullOrWhiteSpace(passwords.Password))
+                    string.IsNullOrWhiteSpace(password))
                 {
                     MessageRequested?.Invoke("请输入用户名和密码。", "登录");
                     return;
@@ -114,10 +114,11 @@ namespace DeviceMonitor.ViewModel
                     IsWorking = true;
 
                     // 数据库查询和密码计算在后台执行，界面等待结果。
-                    account = await Task.Run(() => _userStore.CheckLogin(userName, passwords.Password));
+                    account = await Task.Run(() => _userStore.CheckLogin(userName, password));
                 }
                 finally
                 {
+
                     LoginPasswordClearRequested?.Invoke();
                 }
 
@@ -130,8 +131,10 @@ namespace DeviceMonitor.ViewModel
                 }
 
                 IsWorking = false;
-                // 先解除忙状态，再交给窗口跳转和关闭。进入MainWindow
+
+                // 先解除忙状态，再交给窗口跳转和关闭。这里进入MainWindow
                 LoginSucceeded?.Invoke(account);
+
                 AppLog.Info("登录成功", $"用户={account.Id} 角色={(account.Role == UserRole.Administrator ? "管理员" : "操作员")}");
             }
             catch (Exception ex)
@@ -142,14 +145,13 @@ namespace DeviceMonitor.ViewModel
             }
             finally
             {
-                // 本次密码不参与长期绑定，操作结束后清除输入引用。
-                passwords.Password = string.Empty;
-                passwords.Confirmation = string.Empty;
                 IsWorking = false;
             }
         }
 
-        /// <summary>没有任何账户才展开创建管理员面板，不另开窗口。</summary>
+        /// <summary>
+        /// 创建管理员的按钮命令
+        /// </summary>
         [RelayCommand(CanExecute = nameof(CanOpenAdminSetup))]
         private void ShowAdminSetup()
         {
@@ -161,18 +163,16 @@ namespace DeviceMonitor.ViewModel
             IsAdminSetupVisible = true;
         }
 
-        // 决定要不要开创建管理员窗口
+        // 决定能否展开创建管理员面板，不负责检查数据库。
         private bool CanOpenAdminSetup() => !IsWorking && CanCreateFirstAdministrator;
         private bool CanAcceptInput() => !IsWorking;
 
-        /// <summary>检查用户名和两次密码，创建首个管理员；成功后回登录面板，不自动登录。</summary>
-        [RelayCommand(CanExecute = nameof(CanOpenAdminSetup))]
-        private async Task CreateFirstAdminAsync()
+        /// <summary>检查窗口传来的两次密码，创建首个管理员；成功后回登录面板。</summary>
+        public async Task CreateFirstAdminAsync(string password, string confirmation)
         {
             if (!CanOpenAdminSetup())
                 return;
 
-            var passwords = new UserPasswordsRequest();
             try
             {
                 string userName = AdminUserName.Trim();
@@ -183,21 +183,20 @@ namespace DeviceMonitor.ViewModel
                     return;
                 }
 
-                AdminPasswordsRequested?.Invoke(passwords);
-                if (passwords.Password.Length < 6)
+                if (string.IsNullOrWhiteSpace(password) || password.Length < 6)
                 {
                     MessageRequested?.Invoke("密码至少需要 6 个字符。", "创建管理员");
                     return;
                 }
 
-                if (passwords.Password != passwords.Confirmation)
+                if (password != confirmation)
                 {
                     MessageRequested?.Invoke("两次输入的密码不一致。", "创建管理员");
                     return;
                 }
 
                 IsWorking = true;
-                bool created = await Task.Run(() => _userStore.TryCreateFirstAdministrator(userName, passwords.Password));
+                bool created = await Task.Run(() => _userStore.TryCreateFirstAdministrator(userName, password));
                 CanCreateFirstAdministrator = false;
                 BackToLogin();
                 if (!created)
@@ -216,8 +215,6 @@ namespace DeviceMonitor.ViewModel
             }
             finally
             {
-                passwords.Password = string.Empty;
-                passwords.Confirmation = string.Empty;
                 IsWorking = false;
             }
         }

@@ -6,7 +6,9 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using System.Globalization;
 using System.IO.Ports;
 
-namespace DeviceMonitor.Model;
+using DeviceMonitor.Model;
+
+namespace DeviceMonitor.Services;
 
 /// <summary>EF 的数据库操作入口：提供各表的 DbSet 和对象到表的映射。</summary>
 internal sealed class MonitorDbContext : DbContext
@@ -36,6 +38,7 @@ internal sealed class MonitorDbContext : DbContext
     protected override void OnModelCreating(ModelBuilder model)
     {
         // 集中描述表结构、约束及索引，变更通过 EF 迁移应用。
+        // Users：登录信息；唯一用户名避免重复账户。
         var users = model.Entity<UserRow>();
         users.ToTable("Users", table =>
         {
@@ -48,6 +51,7 @@ internal sealed class MonitorDbContext : DbContext
         users.Property(x => x.UserName).UseCollation("NOCASE");
         users.HasIndex(x => x.UserName).IsUnique();
 
+        // Devices：连接参数；实际连接和采集状态不保存到这张表。
         var devices = model.Entity<DeviceRow>();
         devices.ToTable("Devices", table =>
         {
@@ -57,7 +61,6 @@ internal sealed class MonitorDbContext : DbContext
             table.HasCheckConstraint("CK_Devices_ConnectTimeout", "ConnectTimeoutMilliseconds > 0");
             table.HasCheckConstraint("CK_Devices_ReadTimeout", "ReadTimeoutMilliseconds > 0");
             table.HasCheckConstraint("CK_Devices_WriteTimeout", "WriteTimeoutMilliseconds > 0");
-            table.HasCheckConstraint("CK_Devices_IsEnabled", "IsEnabled IN (0, 1)");
             table.HasCheckConstraint("CK_Devices_CommunicationMode", "CommunicationMode IN (0, 1)");
             table.HasCheckConstraint("CK_Devices_BaudRate", "BaudRate > 0");
             table.HasCheckConstraint("CK_Devices_Parity", "Parity IN (0, 1, 2)");
@@ -66,7 +69,6 @@ internal sealed class MonitorDbContext : DbContext
         devices.HasKey(x => x.Id);
         devices.Property(x => x.Id).ValueGeneratedOnAdd();
         devices.Property(x => x.Name).UseCollation("NOCASE");
-        devices.Property(x => x.IsEnabled).HasDefaultValue(false);
         devices.Property(x => x.CommunicationMode).HasDefaultValue(DeviceCommunicationMode.Tcp);
         devices.Property(x => x.SerialPortName).UseCollation("NOCASE").HasDefaultValue("");
         devices.Property(x => x.BaudRate).HasDefaultValue(4800);
@@ -77,6 +79,7 @@ internal sealed class MonitorDbContext : DbContext
         devices.HasIndex(x => new { x.SerialPortName, x.UnitId }).IsUnique()
             .HasDatabaseName("IX_Devices_RtuStation").HasFilter("CommunicationMode = 1");
 
+        // DevicePoints：每个点读哪里、怎样换算、上下限是多少，归属于某台设备。
         var points = model.Entity<PointRow>();
         points.ToTable("DevicePoints", table =>
         {
@@ -98,6 +101,7 @@ internal sealed class MonitorDbContext : DbContext
             value => new DateTimeOffset(DateTime.SpecifyKind(value, DateTimeKind.Utc)).ToString("O", CultureInfo.InvariantCulture),
             value => DateTimeOffset.ParseExact(value, "O", CultureInfo.InvariantCulture).UtcDateTime);
 
+        // HistoryRecords：保存采集当时的名称、值和单位，配置被删除后历史仍可查询。
         var history = model.Entity<HistoryRow>();
         history.ToTable("HistoryRecords", table =>
         {
@@ -112,6 +116,7 @@ internal sealed class MonitorDbContext : DbContext
         history.HasIndex(x => new { x.ReadAtUtc, x.Id }).IsDescending(true, true)
             .HasDatabaseName("IX_HistoryRecords_ReadAtUtc_Id");
 
+        // AlarmRecords：EventId 区分持续事件；同事件恢复时更新原记录，不另记一次故障。
         var alarms = model.Entity<AlarmRow>();
         alarms.ToTable("AlarmRecords", table =>
         {
@@ -135,7 +140,7 @@ internal sealed class MonitorDbContext : DbContext
     }
 }
 
-/// <summary>供 Store 创建上下文：只长期保存连接配置，每次数据库操作单独 new 上下文，用完释放。</summary>
+/// <summary>供 Store 使用创建上下文操作数据库：只长期保存连接配置，每次数据库操作单独 new 上下文，用完释放。</summary>
 internal sealed class MonitorDbContextFactory
 {
     private readonly DbContextOptions<MonitorDbContext> _options;

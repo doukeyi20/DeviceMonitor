@@ -14,18 +14,16 @@ public partial class PasswordWindow : Window
     {
         _viewModel = viewModel ?? throw new ArgumentNullException(nameof(viewModel));
         InitializeComponent();
-        _viewModel.PasswordsRequested += ReadPasswords;
         _viewModel.PasswordsClearRequested += ClearPasswords;
         _viewModel.SaveSucceeded += CompleteSave;
         DataContext = viewModel;
     }
 
-    /// <summary>把三个密码框的值写回 request，SaveAsync 返回后继续验证。</summary>
-    private void ReadPasswords(PasswordInputRequest request)
+    /// <summary>直接读取三个密码框，验证和保存仍由 ViewModel 完成。</summary>
+    private async void SavePasswordButton_Click(object sender, RoutedEventArgs e)
     {
-        request.OldPassword = OldPasswordInput.Password;
-        request.NewPassword = NewPasswordInput.Password;
-        request.Confirmation = ConfirmPasswordInput.Password;
+        await _viewModel.SaveAsync(OldPasswordInput.Password, NewPasswordInput.Password,
+            ConfirmPasswordInput.Password);
     }
 
     /// <summary>只清控件，不修改数据库密码。</summary>
@@ -51,7 +49,6 @@ public partial class PasswordWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         ClearPasswords();
-        _viewModel.PasswordsRequested -= ReadPasswords;
         _viewModel.PasswordsClearRequested -= ClearPasswords;
         _viewModel.SaveSucceeded -= CompleteSave;
         base.OnClosed(e);

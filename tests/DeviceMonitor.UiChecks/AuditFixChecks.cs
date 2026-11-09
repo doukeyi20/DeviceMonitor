@@ -1,4 +1,5 @@
 // 验证项目功能及异常处理的回归检查。
+using DeviceMonitor.Services;
 using System.IO;
 using DeviceMonitor;
 using DeviceMonitor.Model;
@@ -15,23 +16,31 @@ internal static partial class Program
         new DatabaseInitializer(path).Initialize();
         var store = new DeviceStore(path);
         Seed(store, user);
-        var page = new DeviceManagementViewModel(user, store);
+        var page = new DeviceManagementViewModel(user, store, new SamplingTasks(user, store, new HistoryStore(path)));
         await page.RefreshDevicesCommand.ExecuteAsync(null);
         DeviceInfo device = page.Devices.First();
 
         var acquired = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Task holder = HoldAuditWriteLockAsync(path, acquired);
         await acquired.Task;
-        Task<bool> saving = page.TrySetDeviceEnabledAsync(device.Id, false);
+        Task<bool> saving = page.SaveDeviceAsync(device.Id, new DeviceInput
+        {
+            Name = device.Name + "-已改", Host = device.Host, Port = device.Port, UnitId = device.UnitId,
+            CommunicationMode = device.CommunicationMode, SerialPortName = device.SerialPortName,
+            BaudRate = device.BaudRate, Parity = device.Parity, StopBits = device.StopBits,
+            SamplingIntervalMilliseconds = device.SamplingIntervalMilliseconds,
+            ConnectTimeoutMilliseconds = device.ConnectTimeoutMilliseconds,
+            ReadTimeoutMilliseconds = device.ReadTimeoutMilliseconds, WriteTimeoutMilliseconds = device.WriteTimeoutMilliseconds
+        });
         Check(!saving.IsCompleted && !page.RefreshDevicesCommand.CanExecute(null), "设备写入等待数据库时异步返回，并禁止重复配置操作");
         await Task.Delay(40);
         Check(!saving.IsCompleted, "数据库仍被占用时，界面已经能处理其他回调");
         await Task.WhenAll(saving, holder);
-        Check(saving.Result && !store.GetDevice(user, device.Id)!.IsEnabled
+        Check(saving.Result && store.GetDevice(user, device.Id)!.Name.EndsWith("-已改")
             && page.RefreshDevicesCommand.CanExecute(null), "后台写入完成后显示真实状态并恢复按钮");
 
-        device = store.GetDevices(user).First(item => item.IsEnabled);
-        using var points = new PointManagementViewModel(user, store, device);
+        device = store.GetDevices(user).First();
+        using var points = new PointEditorViewModel(user, store, device);
         await points.RefreshPointsCommand.ExecuteAsync(null);
         points.SelectedPoint = points.Points.First();
         points.UnitText = "audit-unit";
@@ -51,28 +60,21 @@ internal static partial class Program
         Check(login.IsAdminSetupVisible && !login.IsWorking,
             "打开首次管理员面板只切换显示，不再重复查询数据库");
         login.AdminUserName = "audit-admin";
-        login.AdminPasswordsRequested += request => { request.Password = "Audit123!"; request.Confirmation = "Audit123!"; };
-        await login.CreateFirstAdminCommand.ExecuteAsync(null);
+        await login.CreateFirstAdminAsync("Audit123!", "Audit123!");
         Check(!login.IsWorking && !login.CanCreateFirstAdministrator && login.IsLoginVisible,
             "首个管理员后台创建完成后恢复登录表单");
-        login.LoginPasswordRequested += request => request.Password = "Audit123!";
         bool loginSucceeded = false;
         login.LoginSucceeded += _ => loginSucceeded = !login.IsWorking;
-        await login.LoginCommand.ExecuteAsync(null);
+        await login.LoginAsync("Audit123!");
         Check(loginSucceeded, "异步验证成功先解除忙状态，再通知登录窗口关闭");
 
         var users = new UserStore(path);
         var admin = users.CheckLogin("audit-admin", "Audit123!")!;
         var password = new PasswordEditViewModel(admin, users);
-        password.PasswordsRequested += request =>
-        {
-            request.OldPassword = "Audit123!";
-            request.NewPassword = request.Confirmation = "Changed123!";
-        };
         bool completed = false;
         password.SaveSucceeded += () => completed = !password.IsSaving;
-        Task passwordSave = password.SaveCommand.ExecuteAsync(null);
-        Check(password.IsSaving && !password.CanEditInputs && !password.SaveCommand.CanExecute(null),
+        Task passwordSave = password.SaveAsync("Audit123!", "Changed123!", "Changed123!");
+        Check(password.IsSaving && !password.CanEditInputs && !password.CanSave,
             "密码保存期间仍锁定输入，防止重复提交");
         await passwordSave;
         Check(completed && password.IsSaved && users.CheckLogin("audit-admin", "Changed123!") is not null,
@@ -83,6 +85,7 @@ internal static partial class Program
         AppLog.Warning("采集失败", "设备=1", new TimeoutException("不能记录的密码/SQL"), "read-1");
         AppLog.Warning("采集失败", "设备=1", new TimeoutException(), "read-1");
         AppLog.Warning("采集失败", "设备=1", new IOException(), "read-1");
+        AppLog.Close();
         string[] lines = Directory.GetFiles(logs).SelectMany(File.ReadAllLines).ToArray();
         Check(lines.Length == 2 && lines[0].Contains("等待超时") && lines[1].Contains("读写失败"),
             "同错误限频，新原因立即记录，日志保留简短原因");
@@ -91,20 +94,21 @@ internal static partial class Program
 
         string cleanup = Path.Combine(directory, "cleanup-logs");
         Directory.CreateDirectory(cleanup);
-        for (int i = 1; i <= 14; i++)
+        for (int i = 1; i <= 20; i++)
         {
-            string old = Path.Combine(cleanup, $"device-monitor-20261020-120000000-1-{i:D4}.log");
+            string old = Path.Combine(cleanup, $"device-monitor-202601{i:D2}.log");
             using (File.Create(old)) { }
             File.SetLastWriteTimeUtc(old, DateTime.UtcNow.AddDays(-2).AddMinutes(i));
         }
-        string locked = Path.Combine(cleanup, "device-monitor-20261020-120000000-1-0001.log");
+        string locked = Path.Combine(cleanup, "device-monitor-20260101.log");
         using (var held = new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.Read))
         {
             AppLog.Initialize(cleanup);
             AppLog.Info("写入成功");
-            Check(AppLog.LastWriteError is null && Directory.GetFiles(cleanup).Any(file =>
+            AppLog.Close();
+            Check(Directory.GetFiles(cleanup).Any(file =>
                 file != locked && File.ReadAllText(file).Contains("写入成功")),
-                "旧日志无法删除不再误报成新日志写入失败");
+                "旧日志暂时被占用时，新日志仍正常写入");
         }
 
         await page.StopOperationsAsync();

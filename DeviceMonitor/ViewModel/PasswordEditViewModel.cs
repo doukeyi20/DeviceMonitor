@@ -1,8 +1,8 @@
 // 处理个人密码修改和管理员重置密码。
+using DeviceMonitor.Services;
 using System;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
-using CommunityToolkit.Mvvm.Input;
 using DeviceMonitor;
 using DeviceMonitor.Model;
 
@@ -16,7 +16,8 @@ public partial class PasswordEditViewModel : ObservableObject
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanEditInputs))]
-    [NotifyCanExecuteChangedFor(nameof(SaveCommand))]
+    [NotifyPropertyChangedFor(nameof(CanSave))]
+    // 密码正在保存的标记：开始写库前打上，完成或失败后清掉；期间不接受再次提交和修改输入。
     private bool _isSaving;
 
     [ObservableProperty]
@@ -25,15 +26,15 @@ public partial class PasswordEditViewModel : ObservableObject
     public bool IsReset => _operatorToReset is not null;
     public bool ShowCurrentPassword => !IsReset;
     public bool CanEditInputs => !IsSaving;
-    public bool IsSaved
-    {
-        get; private set;
-    }
+
+    // 没在保存、没保存成功过，才允许提交；窗口会等保存结束再关闭。
+    public bool CanSave => !IsSaving && !IsSaved;
+    // 密码保存成功标记：数据库确认修改成功才设为 true，用来阻止同一表单再次提交；不等于正在保存。
+    public bool IsSaved { get; private set; }
     public string TargetUserName => (_operatorToReset ?? _currentUser).UserName;
     public string WindowTitle => IsReset ? "重置操作员密码" : "修改我的密码";
     public string SaveButtonText => IsReset ? "重置密码" : "保存密码";
 
-    public event Action<PasswordInputRequest>? PasswordsRequested;
     public event Action? PasswordsClearRequested;
     public event Action? SaveSucceeded;
 
@@ -49,33 +50,31 @@ public partial class PasswordEditViewModel : ObservableObject
         _operatorToReset = operatorToReset;
     }
 
-    /// <summary>读取并检查密码，在后台保存；保存期间不能关闭表单。</summary>
-    [RelayCommand(CanExecute = nameof(CanSave))]
-    private async Task SaveAsync()
+    /// <summary>检查窗口直接传来的密码，在后台保存；保存期间不能关闭表单。</summary>
+    public async Task SaveAsync(string oldPassword, string newPassword, string confirmation)
     {
-        if (!CanSave())
+        if (!CanSave)
             return;
-        var input = new PasswordInputRequest();
+
         try
         {
             PageMessage = string.Empty;
-            PasswordsRequested?.Invoke(input);
-            if (!IsReset && string.IsNullOrWhiteSpace(input.OldPassword))
+            if (!IsReset && string.IsNullOrWhiteSpace(oldPassword))
             {
                 PageMessage = "请输入原密码。";
                 return;
             }
-            if (string.IsNullOrWhiteSpace(input.NewPassword) || input.NewPassword.Length < 6)
+            if (string.IsNullOrWhiteSpace(newPassword) || newPassword.Length < 6)
             {
                 PageMessage = "新密码至少需要 6 个字符，不能全是空白。";
                 return;
             }
-            if (input.NewPassword != input.Confirmation)
+            if (newPassword != confirmation)
             {
                 PageMessage = "两次输入的新密码不一致。";
                 return;
             }
-            if (!IsReset && input.OldPassword == input.NewPassword)
+            if (!IsReset && oldPassword == newPassword)
             {
                 PageMessage = "新密码不能和原密码相同。";
                 return;
@@ -84,8 +83,8 @@ public partial class PasswordEditViewModel : ObservableObject
             IsSaving = true;
             PageMessage = "正在保存，请稍候…";
             bool changed = await Task.Run(() => IsReset
-                ? _userStore.TryResetOperatorPassword(_currentUser, _operatorToReset!.Id, input.NewPassword)
-                : _userStore.TryChangePassword(_currentUser, input.OldPassword, input.NewPassword));
+                ? _userStore.TryResetOperatorPassword(_currentUser, _operatorToReset!.Id, newPassword)
+                : _userStore.TryChangePassword(_currentUser, oldPassword, newPassword));
             IsSaved = changed;
             if (!changed)
             {
@@ -109,11 +108,7 @@ public partial class PasswordEditViewModel : ObservableObject
         }
         finally
         {
-            input.OldPassword = input.NewPassword = input.Confirmation = string.Empty;
             IsSaving = false;
         }
     }
-
-    /// <summary>没在保存、没保存成功过，才允许提交；窗口会等保存结束再关闭。</summary>
-    private bool CanSave() => !IsSaving && !IsSaved;
 }

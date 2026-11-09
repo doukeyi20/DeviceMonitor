@@ -1,39 +1,39 @@
-// 校验并保存寄存器、数值换算和报警配置。
+// 管理设备的点位表单、配置保存和单点测试。
+using DeviceMonitor.Services;
 using System;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using DeviceMonitor.Model;
 
 namespace DeviceMonitor.ViewModel
 {
-    public partial class PointManagementViewModel : ObservableObject, IDisposable
+    /// <summary>维护当前设备的点位表单；保存只改配置，ReadOnceAsync 才真正访问设备。</summary>
+    public partial class PointEditorViewModel : ObservableObject, IDisposable
     {
         private readonly UserAccount _currentUser;
         private readonly DeviceStore _deviceStore;
-        private readonly DeviceTasks? _deviceTasks;
+        private readonly SamplingTasks? _samplingTasks;
+        // 旧点位编辑器已不用的标记：切换设备或退出时在 Dispose 中打上，拦住后续配置操作和重复清理。
         private bool _isClosed;
 
+        // 一次测试只保留一份结果；大数字、单位和说明都从它取得。
+        private PointReadResult? _testResult;
+        private Func<DeviceInfo, IReadOnlyList<PointInfo>, ModbusPointReader> _createReader =
+            (device, points) => new ModbusPointReader(device, points);
+
         [ObservableProperty]
+        // 点位编辑器的忙碌标记：加载、保存、删除或单点测试时打上，避免操作撞在一起；finally 中清掉。
         private bool _isBusy;
+
         public bool CanChoosePoint => !IsBusy;
 
-        partial void OnIsBusyChanged(bool value)
-        {
-            OnPropertyChanged(nameof(CanChoosePoint));
-            NotifyConfigurationCommands();
-        }
-
         public DeviceInfo Device { get; }
-
-        public string WindowTitle => $"{Device.Name} - 采集点管理";
-
-        public string DeviceEndpoint =>
-            $"{Device.CommunicationText} · {Device.Endpoint} · {(Device.CommunicationMode == DeviceCommunicationMode.Rtu ? "站号" : "Unit ID")}：{Device.UnitId}";
 
         public ObservableCollection<PointInfo> Points { get; } = new();
 
@@ -44,7 +44,7 @@ namespace DeviceMonitor.ViewModel
             get => _selectedPoint;
             set
             {
-                if (ReferenceEquals(_selectedPoint, value))
+                if (IsBusy || ReferenceEquals(_selectedPoint, value))
                     return;
                 if (value is not null && (value.DeviceId != Device.Id || !Points.Contains(value)))
                     return;
@@ -53,7 +53,7 @@ namespace DeviceMonitor.ViewModel
             }
         }
 
-        public event Action<PointDeleteRequest>? DeleteConfirmationRequested;
+        public event Func<PointInfo, bool>? DeleteConfirmationRequested;
 
         public bool IsEditing => SelectedPoint is not null;
         public bool CanEditConfiguration => CanChangeConfiguration();
@@ -97,23 +97,46 @@ namespace DeviceMonitor.ViewModel
             private set => SetProperty(ref _pageMessage, value);
         }
 
-        public PointManagementViewModel(UserAccount currentUser, DeviceStore deviceStore, DeviceInfo device,
-    DeviceTasks? deviceTasks = null)
+        // 单次测试的显示属性；只有成功结果保存在 _testResult 中。
+        [ObservableProperty]
+        private SingleReadState _readState;
+
+        [ObservableProperty]
+        private string _readMessage = "";
+
+        public string ReadValueText => _testResult?.ValueText ?? "—";
+        public string ReadDetails => _testResult is null ? ReadMessage
+            : $"原始值 {_testResult.DecodedValue} · {_testResult.Point.ConversionDescription} · {_testResult.ReadAt.LocalDateTime:HH:mm:ss.fff}";
+        public string ReadStatusText => ReadState switch
+        {
+            SingleReadState.Reading => "读取中",
+            SingleReadState.Succeeded => "读取成功",
+            SingleReadState.TimedOut => "读取超时",
+            SingleReadState.Failed => "读取失败",
+            SingleReadState.Canceled => "已取消",
+            _ => "单点测试"
+        };
+        public PointEditorViewModel(UserAccount currentUser, DeviceStore deviceStore, DeviceInfo device,
+            SamplingTasks? deviceTasks = null)
         {
             _currentUser = currentUser ?? throw new ArgumentNullException(nameof(currentUser));
             _deviceStore = deviceStore ?? throw new ArgumentNullException(nameof(deviceStore));
             Device = device ?? throw new ArgumentNullException(nameof(device));
-            _deviceTasks = deviceTasks;
+            _samplingTasks = deviceTasks;
             if (_currentUser.Role != UserRole.Administrator || !_currentUser.IsEnabled)
                 throw new UnauthorizedAccessException("只有已启用的管理员可以配置采集点。");
 
-            if (_deviceTasks is not null)
-                _deviceTasks.PropertyChanged += DeviceTasks_PropertyChanged;
+            if (_samplingTasks is not null)
+                _samplingTasks.PropertyChanged += SamplingTasks_PropertyChanged;
 
+            // 载入配置，传入null时，清空配置单
             LoadForm(null);
         }
 
-        /// <summary>查询最新配置；按编号保留选择，表单同步载入新配置。</summary>
+     /// <summary>
+     /// 刷新点位列表的按钮
+     /// </summary>
+     /// <returns></returns>
         [RelayCommand(CanExecute = nameof(CanRefreshPoints))]
         private async Task RefreshPointsAsync()
         {
@@ -122,6 +145,7 @@ namespace DeviceMonitor.ViewModel
             try
             {
                 IsBusy = true;
+                // 不仅查询还恢复选择
                 await LoadPointsAsync();
                 PageMessage = Points.Count == 0
                     ? "当前设备尚无采集点。"
@@ -139,7 +163,11 @@ namespace DeviceMonitor.ViewModel
 
         private bool CanRefreshPoints() => !_isClosed && !IsBusy;
 
-        /// <summary>查询这台设备的点位并填入 Points，再按编号恢复选择。</summary>
+        /// <summary>
+        /// 查询这台设备的点位并填入 Points,让左侧列表展示，再按选择的点位的编号恢复展示选择的点位的展示
+        /// </summary>
+        /// <param name="savedPointName"></param>
+        /// <returns></returns>
         private async Task LoadPointsAsync(string? savedPointName = null)
         {
             var latestPoints = await Task.Run(() => _deviceStore.GetPoints(_currentUser, Device.Id));
@@ -150,15 +178,19 @@ namespace DeviceMonitor.ViewModel
             foreach (PointInfo point in latestPoints)
                 Points.Add(point);
 
+            // 如果选择了某个点位同时刷新列表，刷新后尽量保持原来选中的点位，并继续在右侧显示它的配置。
             PointInfo? selected = savedPointName is not null
                 ? Points.FirstOrDefault(point => point.Name == savedPointName)
                 : selectedId.HasValue
                 ? Points.FirstOrDefault(point => point.Id == selectedId.Value)
                 : null;
+            // 相当于重新选择了相同的点位，执行了一次载入
             SelectPointAndLoadForm(selected);
         }
 
-        /// <summary>明确切到新增，不会把原来的选中点误当成新增。</summary>
+        /// <summary>
+        /// 新增点位按钮，直接给SelectPointAndLoadForm传入null，清空表单
+        /// </summary>
         [RelayCommand(CanExecute = nameof(CanChangeConfiguration))]
         private void NewPoint()
         {
@@ -168,7 +200,10 @@ namespace DeviceMonitor.ViewModel
             PageMessage = string.Empty;
         }
 
-        /// <summary>检查输入，新增或修改点位配置；成功后选中保存的点，表单与列表始终指向同一条。</summary>
+        /// <summary>
+        /// 保存点位配置按钮
+        /// </summary>
+        /// <returns></returns>
         [RelayCommand(CanExecute = nameof(CanChangeConfiguration))]
         private async Task SavePointAsync()
         {
@@ -193,6 +228,16 @@ namespace DeviceMonitor.ViewModel
                 CultureInfo.InvariantCulture, out ushort address))
             {
                 PageMessage = "协议地址必须是 0 到 65535 的十进制整数。";
+                return;
+            }
+            PointInfo? duplicatePoint = Points.FirstOrDefault(point => point.Id != SelectedPoint?.Id
+                && point.RegisterType == registerType && point.Address == address);
+            if (duplicatePoint is not null)
+            {
+                // 指出哪个点占用了地址；只清地址，其他输入保留，方便改正后重存。
+                PageMessage = $"未保存：{duplicatePoint.RegisterTypeDescription}地址 {address} 已被“{duplicatePoint.Name}”使用。" +
+                    "地址已清空，请重新输入未占用的地址。";
+                AddressText = string.Empty;
                 return;
             }
             if (SelectedDataType is not PointDataType dataType || !Enum.IsDefined(dataType))
@@ -255,8 +300,8 @@ namespace DeviceMonitor.ViewModel
                 if (!saved)
                 {
                     PageMessage = pointIdToUpdate.HasValue
-                        ? "未保存：点位已不存在、名称重复，或设备已停用。输入已保留。"
-                        : "未保存：本设备已有同名采集点，或设备已停用 / 不存在。";
+                        ? "未保存：点位已不存在、名称重复，或设备不存在。输入已保留。"
+                        : "未保存：本设备已有同名采集点，或设备不存在。";
                     return;
                 }
 
@@ -283,6 +328,7 @@ namespace DeviceMonitor.ViewModel
             }
         }
 
+        /// <summary>留空表示不设限；填写时必须是有限数字，数值按换算后的单位理解。</summary>
         private bool TryReadLimit(string text, string label, out double? limit)
         {
             limit = null;
@@ -299,6 +345,9 @@ namespace DeviceMonitor.ViewModel
             return true;
         }
 
+        /// <summary>
+        /// 撤销输入的按钮，恢复选择的点位配置
+        /// </summary>
         [RelayCommand(CanExecute = nameof(CanChangeConfiguration))]
         private void RevertPoint()
         {
@@ -308,13 +357,16 @@ namespace DeviceMonitor.ViewModel
             PageMessage = IsEditing ? "已恢复为保存的配置。" : "已清空新增输入。";
         }
 
-        /// <summary>选中点就载入原配置；新增时填空表单和默认倍率。这里不访问数据库。</summary>
+        /// <summary>
+        /// 选择某点时载入其配置,传入null时清空表单,用于修改配置或者清空表单新增点位
+        /// </summary>
+        /// <param name="point"></param>
         private void LoadForm(PointInfo? point)
         {
             PointName = point?.Name ?? string.Empty;
             AddressText = point?.Address.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
-            SelectedRegisterType = point?.RegisterType;
-            SelectedDataType = point?.DataType;
+            SelectedRegisterType = point?.RegisterType ?? RegisterType.Holding;
+            SelectedDataType = point?.DataType ?? PointDataType.UInt16;
             ScaleText = point?.Scale.ToString(CultureInfo.InvariantCulture) ?? "1";
             OffsetText = point?.Offset.ToString(CultureInfo.InvariantCulture) ?? "0";
             UnitText = point?.Unit ?? string.Empty;
@@ -322,16 +374,25 @@ namespace DeviceMonitor.ViewModel
             UpperLimitText = point?.UpperLimit?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
         }
 
-        /// <summary>统一更新选择、输入、标题和按钮，避免各处漏改。</summary>
+        /// <summary>
+        /// 统一处理选点后的变化,选择不同点位时和各种操作都会调用
+        /// </summary>
+        /// <param name="point"></param>
         private void SelectPointAndLoadForm(PointInfo? point)
         {
             _selectedPoint = point;
+            // 加载点位配置
             LoadForm(point);
             OnPropertyChanged(nameof(SelectedPoint));
             OnPropertyChanged(nameof(IsEditing));
             OnPropertyChanged(nameof(FormTitle));
             OnPropertyChanged(nameof(SaveButtonText));
             DeletePointCommand.NotifyCanExecuteChanged();
+            ReadOnceCommand.NotifyCanExecuteChanged();
+            _testResult = null;
+            ReadState = SingleReadState.NotRead;
+            ReadMessage = "";
+            NotifyReadResult();
         }
 
         /// <summary>确认后删除选中点位的配置，再刷新列表；不清除设备寄存器里的数值。</summary>
@@ -344,11 +405,10 @@ namespace DeviceMonitor.ViewModel
             if (!CanDeletePoint() || point is null)
                 return;
 
-            PointDeleteRequest request = new PointDeleteRequest(Device, point);
             try
             {
-                DeleteConfirmationRequested?.Invoke(request);
-                if (!request.Confirmed)
+                // point 已经是本次要删除的对象；窗口只需要返回“是否确认”。
+                if (DeleteConfirmationRequested?.Invoke(point) != true)
                 {
                     PageMessage = "未确认删除，采集点配置没有改变。";
                     return;
@@ -360,10 +420,10 @@ namespace DeviceMonitor.ViewModel
 
                 if (!await Task.Run(() => _deviceStore.TryDeletePoint(_currentUser, Device.Id, point.Id)))
                 {
-                    PageMessage = "未删除：点位已不存在，或设备已停用 / 不存在。请刷新列表。";
+                    PageMessage = "未删除：点位已不存在，或设备不存在。请刷新列表。";
                     return;
                 }
-
+                // 清空配置表单
                 SelectPointAndLoadForm(null);
 
                 try
@@ -392,11 +452,10 @@ namespace DeviceMonitor.ViewModel
             && Points.Contains(SelectedPoint);
 
         private bool CanChangeConfiguration() => !_isClosed && !IsBusy
-            && Device.IsEnabled
-            && (_deviceTasks is null
-                || (!_deviceTasks.IsShuttingDown
-                    && !_deviceTasks.IsDeletingDevice(Device.Id)
-                    && !_deviceTasks.IsRunning(Device.Id)));
+            && (_samplingTasks is null
+                || (!_samplingTasks.IsShuttingDown
+                    && !_samplingTasks.IsDeletingDevice(Device.Id)
+                    && !_samplingTasks.IsRunning(Device.Id)));
 
         private bool CheckConfigurationCanChange()
         {
@@ -406,12 +465,21 @@ namespace DeviceMonitor.ViewModel
             return false;
         }
 
-        private void DeviceTasks_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+        private void SamplingTasks_PropertyChanged(object? sender, PropertyChangedEventArgs e)
         {
-            if (e.PropertyName is nameof(DeviceTasks.ActiveSamplingCount)
-                or nameof(DeviceTasks.IsShuttingDown) or nameof(DeviceTasks.IsDeletingDevices))
+            if (e.PropertyName is nameof(SamplingTasks.ActiveSamplingCount)
+                or nameof(SamplingTasks.IsShuttingDown) or nameof(SamplingTasks.IsDeletingDevices))
                 NotifyConfigurationCommands();
         }
+
+        partial void OnIsBusyChanged(bool value)
+        {
+            OnPropertyChanged(nameof(CanChoosePoint));
+            NotifyConfigurationCommands();
+        }
+
+        partial void OnReadStateChanged(SingleReadState value) => OnPropertyChanged(nameof(ReadStatusText));
+        partial void OnReadMessageChanged(string value) => OnPropertyChanged(nameof(ReadDetails));
 
         private void NotifyConfigurationCommands()
         {
@@ -421,15 +489,77 @@ namespace DeviceMonitor.ViewModel
             SavePointCommand.NotifyCanExecuteChanged();
             DeletePointCommand.NotifyCanExecuteChanged();
             RefreshPointsCommand.NotifyCanExecuteChanged();
+            ReadOnceCommand.NotifyCanExecuteChanged();
         }
 
+        /// <summary>测试的是已保存配置；不保存历史，也不启动连续采集。</summary>
+        [RelayCommand(CanExecute = nameof(CanReadOnce), IncludeCancelCommand = true)]
+        private async Task ReadOnceAsync(CancellationToken token)
+        {
+            var point = SelectedPoint;
+            if (point is null || !CanReadOnce())
+                return;
+            IsBusy = true;
+            _testResult = null;
+            ReadState = SingleReadState.Reading;
+            ReadMessage = "等待设备响应…";
+            NotifyReadResult();
+            if (_samplingTasks is not null)
+                // 得到设备编号
+                _samplingTasks.SingleReadDeviceId = Device.Id;
+            try
+            {
+                // 得到设备配置，知道连接参数和寄存器类型；如果设备已被删除，抛出异常。
+                var device = await Task.Run(() => _deviceStore.GetDevice(_currentUser, Device.Id), token)
+                    ?? throw new InvalidOperationException("设备配置已不存在。");
+                // 只把选中点交给共用通信代码；await using 会在本次测试结束后释放连接。
+                await using var reader = _createReader(device, [point]);
+                _testResult = (await reader.ReadAsync(token))[0];
+                token.ThrowIfCancellationRequested();
+                ReadState = SingleReadState.Succeeded;
+                ReadMessage = "";
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                ReadState = SingleReadState.Canceled;
+                ReadMessage = "读取已取消，未保存历史。";
+            }
+            catch (TimeoutException ex)
+            {
+                ReadState = SingleReadState.TimedOut;
+                ReadMessage = ex.Message;
+            }
+            catch (Exception ex)
+            {
+                ReadState = SingleReadState.Failed;
+                ReadMessage = ex.Message;
+            }
+            finally
+            {
+                if (ReadState != SingleReadState.Succeeded)
+                    _testResult = null;
+                if (_samplingTasks is not null)
+                    _samplingTasks.SingleReadDeviceId = null;
+                IsBusy = false;
+                NotifyReadResult();
+            }
+        }
+
+        private bool CanReadOnce() => CanChangeConfiguration() && SelectedPoint is not null;
+        private void NotifyReadResult()
+        {
+            OnPropertyChanged(nameof(ReadValueText));
+            OnPropertyChanged(nameof(ReadDetails));
+        }
+
+        /// <summary>解除任务状态通知；父页面已等测试完成后才调用，不在这里强行中断读写。</summary>
         public void Dispose()
         {
             if (_isClosed)
                 return;
             _isClosed = true;
-            if (_deviceTasks is not null)
-                _deviceTasks.PropertyChanged -= DeviceTasks_PropertyChanged;
+            if (_samplingTasks is not null)
+                _samplingTasks.PropertyChanged -= SamplingTasks_PropertyChanged;
             NotifyConfigurationCommands();
         }
     }

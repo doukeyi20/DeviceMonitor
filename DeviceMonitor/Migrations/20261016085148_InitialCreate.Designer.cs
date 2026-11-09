@@ -1,5 +1,6 @@
 // EF 自动生成的迁移结构说明；与同名迁移配套，不手工修改里面的表结构。
 using DeviceMonitor.Model;
+using DeviceMonitor.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;

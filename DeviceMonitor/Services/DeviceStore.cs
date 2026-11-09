@@ -1,7 +1,9 @@
 // 使用 EF Core 管理设备和点位配置。
 using Microsoft.EntityFrameworkCore;
 
-namespace DeviceMonitor.Model;
+using DeviceMonitor.Model;
+
+namespace DeviceMonitor.Services;
 
 public class DeviceStore
 {
@@ -10,29 +12,32 @@ public class DeviceStore
 
     public DeviceStore(string databasePath) => _database = new(databasePath);
 
-    /// <summary>默认包含停用设备。</summary>
-    public IReadOnlyList<DeviceInfo> GetDevices(UserAccount currentUser, bool enabledOnly = false)
+    /// <summary>
+    /// 查询数据库，得到设备列表
+    /// </summary>
+    /// <param name="currentUser"></param>
+    /// <returns>DeviceInfo设备配置对象列表</returns>
+    public IReadOnlyList<DeviceInfo> GetDevices(UserAccount currentUser)
     {
         CheckDeviceReadPermission(currentUser);
         using var db = _database.Create();
 
         var rows = db.Devices.AsNoTracking()
-            .Where(x => !enabledOnly || x.IsEnabled)
             .OrderBy(x => EF.Functions.Collate(x.Name, "NOCASE")).ToList();
         return rows.Select(ToDeviceInfo).ToList();
     }
 
-    /// <summary>查不到或被启用条件排除时返回 null。</summary>
-    public DeviceInfo? GetDevice(UserAccount currentUser, long deviceId, bool enabledOnly = false)
+    /// <summary>查不到设备时返回 null。</summary>
+    public DeviceInfo? GetDevice(UserAccount currentUser, long deviceId)
     {
         CheckDeviceReadPermission(currentUser);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(deviceId);
         using var db = _database.Create();
-        var row = db.Devices.AsNoTracking().FirstOrDefault(x => x.Id == deviceId && (!enabledOnly || x.IsEnabled));
+        var row = db.Devices.AsNoTracking().FirstOrDefault(x => x.Id == deviceId);
         return row is null ? null : ToDeviceInfo(row);
     }
 
-    /// <summary>同名返回 false，新设备仍先停用。</summary>
+    /// <summary>同名返回 false，新增后即可配置点位。</summary>
     public bool TryAddDevice(UserAccount currentUser, DeviceInput input)
     {
         CheckAdministrator(currentUser, "只有管理员可以新增设备。");
@@ -45,7 +50,7 @@ public class DeviceStore
         if (db.Devices.Any(x => x.Name == name))
             return false;
 
-        var row = new DeviceRow { IsEnabled = false };
+        var row = new DeviceRow();
         FillDevice(row, input);
         db.Devices.Add(row);
         db.SaveChanges();
@@ -53,7 +58,7 @@ public class DeviceStore
         return true;
     }
 
-    /// <summary>按原编号更新，不改变启停状态。</summary>
+    /// <summary>按原编号保存连接参数，不另存一份设备。</summary>
     public bool TryUpdateDevice(UserAccount currentUser, long deviceId, DeviceInput input)
     {
         CheckAdministrator(currentUser, "只有管理员可以修改设备。");
@@ -73,17 +78,6 @@ public class DeviceStore
         db.SaveChanges();
         transaction.Commit();
         return true;
-    }
-
-    /// <summary>只有状态确实变化才返回 true，不启动通信。</summary>
-    public bool TrySetDeviceEnabled(UserAccount currentUser, long deviceId, bool enabled)
-    {
-        CheckAdministrator(currentUser, "只有管理员可以修改设备启停状态。");
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(deviceId);
-        using var db = _database.Create();
-
-        return db.Devices.Where(x => x.Id == deviceId && x.IsEnabled != enabled)
-            .ExecuteUpdate(setters => setters.SetProperty(x => x.IsEnabled, enabled)) == 1;
     }
 
     /// <summary>只删除设备和点位配置，保留读数历史和报警。</summary>
@@ -113,7 +107,7 @@ public class DeviceStore
         return rows.Select(ToPointInfo).ToList();
     }
 
-    /// <summary>同名、设备停用或不存在时返回 false。</summary>
+    /// <summary>同名、设备不存在时返回 false。</summary>
     public bool TryAddPoint(UserAccount currentUser, long deviceId, PointInput input)
     {
         CheckAdministrator(currentUser, "只有已启用的管理员可以新增采集点。");
@@ -122,7 +116,7 @@ public class DeviceStore
         using var db = _database.Create();
         using var transaction = db.Database.BeginTransaction();
         string name = input.Name.Trim();
-        if (!db.Devices.Any(x => x.Id == deviceId && x.IsEnabled) ||
+        if (!db.Devices.Any(x => x.Id == deviceId) ||
             db.Points.Any(x => x.DeviceId == deviceId && x.Name == name))
             return false;
 
@@ -145,7 +139,7 @@ public class DeviceStore
         using var db = _database.Create();
         using var transaction = db.Database.BeginTransaction();
         string name = input.Name.Trim();
-        if (!db.Devices.Any(x => x.Id == deviceId && x.IsEnabled) ||
+        if (!db.Devices.Any(x => x.Id == deviceId) ||
             db.Points.Any(x => x.DeviceId == deviceId && x.Id != pointId && x.Name == name))
             return false;
         var row = db.Points.FirstOrDefault(x => x.DeviceId == deviceId && x.Id == pointId);
@@ -165,7 +159,7 @@ public class DeviceStore
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(pointId);
         using var db = _database.Create();
         return db.Points.Where(x => x.Id == pointId && x.DeviceId == deviceId &&
-            db.Devices.Any(d => d.Id == deviceId && d.IsEnabled)).ExecuteDelete() == 1;
+            db.Devices.Any(d => d.Id == deviceId)).ExecuteDelete() == 1;
     }
 
     /// <summary>新增和编辑设备共用：检查输入；TCP、RTU 仍按各自规则检查。</summary>
@@ -200,7 +194,7 @@ public class DeviceStore
         PointInfo.ValidateConversion(input.DataType, input.Scale, input.Offset, input.Unit);
     }
 
-    /// <summary>把表单值填到 EF 对象；不改 Id、IsEnabled。</summary>
+    /// <summary>把表单值填到 EF 对象；不改 Id。</summary>
     private static void FillDevice(DeviceRow row, DeviceInput input)
     {
         bool rtu = input.CommunicationMode == DeviceCommunicationMode.Rtu;
@@ -246,7 +240,7 @@ public class DeviceStore
 
     private static DeviceInfo ToDeviceInfo(DeviceRow x) => new(x.Id, x.Name, x.Host, x.Port,
         checked((byte)x.UnitId), x.SamplingIntervalMilliseconds, x.ConnectTimeoutMilliseconds,
-        x.ReadTimeoutMilliseconds, x.WriteTimeoutMilliseconds, x.IsEnabled, x.CommunicationMode,
+        x.ReadTimeoutMilliseconds, x.WriteTimeoutMilliseconds, x.CommunicationMode,
         x.SerialPortName, x.BaudRate, x.Parity, x.StopBits);
 
     private static PointInfo ToPointInfo(PointRow x) => new(x.Id, x.DeviceId, x.Name, x.RegisterType,

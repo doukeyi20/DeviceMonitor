@@ -22,14 +22,13 @@ namespace DeviceMonitor.View
                 await vm.RefreshUsersCommand.ExecuteAsync(null);
         }
 
-        /// <summary>先断开旧订阅，再订阅当前数据源的取密码和弹窗等请求。</summary>
+        /// <summary>先断开旧订阅，再订阅当前数据源的确认、提示和清空表单通知。</summary>
         private void SubscribeViewModel()
         {
             UnsubscribeViewModel();
             if (DataContext is UserManagementViewModel viewModel)
             {
                 _subscribedViewModel = viewModel;
-                viewModel.PasswordsRequested += ReadPasswords;
                 viewModel.ConfirmationRequested += ConfirmAction;
                 viewModel.MessageRequested += ShowMessage;
                 viewModel.FormResetRequested += ClearPasswords;
@@ -37,11 +36,12 @@ namespace DeviceMonitor.View
             }
         }
 
-        /// <summary>从两个密码框取值，写回 request，让创建账户命令继续检查。</summary>
-        private void ReadPasswords(UserPasswordsRequest request)
+        /// <summary>创建操作员的点击事件，窗口直接传入两次密码；用户列表和数据库操作留在 ViewModel。</summary>
+        private async void CreateOperatorButton_Click(object sender, RoutedEventArgs e)
         {
-            request.Password = NewPasswordInput.Password;
-            request.Confirmation = ConfirmPasswordInput.Password;
+            
+            if (DataContext is UserManagementViewModel viewModel)
+                await viewModel.CreateOperatorAsync(NewPasswordInput.Password, ConfirmPasswordInput.Password);
         }
 
         /// <summary>清空两个密码框，不改数据库密码。</summary>
@@ -51,17 +51,17 @@ namespace DeviceMonitor.View
             ConfirmPasswordInput?.Clear();
         }
 
-        /// <summary>弹出确认框，把是否点了“是”写回 request.Confirmed，供命令判断。</summary>
-        private void ConfirmAction(ConfirmationRequest request)
+        /// <summary>弹出确认框，直接返回是否点了“是”。</summary>
+        private bool ConfirmAction(string message, string title)
         {
             Window? owner = Window.GetWindow(this);
 
             MessageBoxResult answer = owner is not null
-                ? MessageBox.Show(owner, request.Message, request.Title,
+                ? MessageBox.Show(owner, message, title,
                     MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No)
-                : MessageBox.Show(request.Message, request.Title,
+                : MessageBox.Show(message, title,
                     MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
-            request.Confirmed = answer == MessageBoxResult.Yes;
+            return answer == MessageBoxResult.Yes;
         }
 
         /// <summary>在页面所属窗口上弹出提示消息。</summary>
@@ -76,6 +76,7 @@ namespace DeviceMonitor.View
 
         private void OpenPasswordEditor(PasswordEditViewModel viewModel)
         {
+            // 修改密码的界面
             var dialog = new PasswordWindow(viewModel) { Owner = Window.GetWindow(this) };
             dialog.ShowDialog();
         }
@@ -92,7 +93,6 @@ namespace DeviceMonitor.View
         {
             if (_subscribedViewModel is not null)
             {
-                _subscribedViewModel.PasswordsRequested -= ReadPasswords;
                 _subscribedViewModel.ConfirmationRequested -= ConfirmAction;
                 _subscribedViewModel.MessageRequested -= ShowMessage;
                 _subscribedViewModel.FormResetRequested -= ClearPasswords;

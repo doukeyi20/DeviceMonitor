@@ -1,15 +1,14 @@
-// 使用 EF Core 保存、分页查询和读取历史趋势。
+// 使用 EF Core 保存、按条件分页查询和分批导出历史记录。
 using Microsoft.EntityFrameworkCore;
 
-namespace DeviceMonitor.Model;
+using DeviceMonitor.Model;
+
+namespace DeviceMonitor.Services;
 
 public sealed class HistoryStore
 {
     private readonly MonitorDbContextFactory _database;
-    public string DatabasePath
-    {
-        get;
-    }
+    public string DatabasePath { get; }
 
     public HistoryStore(string databasePath)
     {
@@ -21,7 +20,11 @@ public sealed class HistoryStore
     /// <summary>保留单条保存入口，测试和少量调用使用；仍复用下面的批量保存。</summary>
     public void SaveRecord(UserAccount currentUser, HistoryRecord record) => SaveRecords(currentUser, new[] { record });
 
-    /// <summary>单个上下文批量提交本轮记录，失败整批回滚。</summary>
+    /// <summary>
+    /// 采集得到的结果在这里存入
+    /// </summary>
+    /// <param name="currentUser"></param>
+    /// <param name="records"></param>
     public void SaveRecords(UserAccount currentUser, IReadOnlyList<HistoryRecord> records)
     {
         CheckUser(currentUser);
@@ -29,7 +32,7 @@ public sealed class HistoryStore
         if (records.Count == 0)
             return;
 
-        // 一轮结果统一转换实体，再由一次 SaveChanges 整批提交。
+        // 把HistoryRecord对象转成HistoryRow对象，用于存库
         var rows = records.Select(record =>
         {
             ArgumentNullException.ThrowIfNull(record);
@@ -49,7 +52,7 @@ public sealed class HistoryStore
         db.SaveChanges();
     }
 
-    /// <summary>从历史里取每台设备最后一次保存的名称。</summary>
+    /// <summary>查历史界面的设备下拉框内容。</summary>
     public IReadOnlyList<DeviceFilterOption> GetDeviceOptions(UserAccount currentUser)
     {
         CheckUser(currentUser);
@@ -60,7 +63,7 @@ public sealed class HistoryStore
             .Select(x => new DeviceFilterOption(x.DeviceId, x.DeviceName)).ToList();
     }
 
-    /// <summary>按快照范围筛选、统计并读取历史分页。</summary>
+    /// <summary>按照筛选条件查询历史分页,得到当前页的记录，符合条件的总记录，当前页码，本次查询的记录Id上限。</summary>
     public HistoryPage GetPage(UserAccount currentUser, HistoryFilter filter, int pageNumber = 1,
         int pageSize = 200, long? snapshotId = null)
     {
@@ -91,32 +94,6 @@ public sealed class HistoryStore
     /// <summary>仍共用分页的筛选和数量检查。</summary>
     public IReadOnlyList<HistoryRecord> GetRecentRecords(UserAccount currentUser, int limit = 200) =>
         GetPage(currentUser, new HistoryFilter(), pageSize: limit).Records;
-
-    /// <summary>只查指定设备、指定点的最近一段历史。</summary>
-    public HistoryTrendData GetPointTrend(UserAccount currentUser, long deviceId, long pointId,
-        HistoryFilter filter, long snapshotId, int limit = 1000, string? unit = null)
-    {
-        CheckUser(currentUser);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(deviceId);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(pointId);
-        ArgumentNullException.ThrowIfNull(filter);
-        ArgumentOutOfRangeException.ThrowIfNegative(snapshotId);
-        CheckPageSize(limit);
-        using var db = _database.Create();
-        using var transaction = db.BeginReadTransaction();
-        var query = ApplyFilter(db.History.AsNoTracking(), filter, snapshotId)
-            .Where(x => x.DeviceId == deviceId && x.PointId == pointId);
-
-        if (unit is not null)
-            query = query.Where(x => x.Unit == unit);
-        long count = query.LongCount();
-        var rows = query.OrderByDescending(x => x.ReadAtUtc).ThenByDescending(x => x.Id).Take(limit).ToList();
-        var records = rows.Select(ToHistoryRecord).ToList();
-        transaction.Commit();
-        // 先截取最近数据，再转为时间正序供曲线绘制。
-        records.Reverse();
-        return new HistoryTrendData(records, count);
-    }
 
     /// <summary>接着上一批的位置查，不一次加载全部历史。</summary>
     internal IReadOnlyList<HistoryRecord> GetExportBatch(UserAccount currentUser, HistoryFilter filter,

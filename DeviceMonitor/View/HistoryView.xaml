@@ -1,6 +1,6 @@
 
 
-<!-- 历史记录页：采集历史筛选、分页和趋势入口，与报警历史分标签显示。 -->
+<!-- 采集历史：按条件查询、分页和导出 CSV；报警历史使用独立标签。 -->
 <UserControl x:Class="DeviceMonitor.View.HistoryView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -17,59 +17,60 @@
                 Style="{StaticResource ToolbarCardStyle}">
             <Grid>
 
-                <Expander x:Name="FilterExpander" IsExpanded="True" IsEnabled="{Binding CanEditFilters}">
-                    <Expander.Header>
-                        <TextBlock Text="筛选条件" Margin="0,3,205,3"
-                                   Style="{StaticResource SectionHeadingStyle}"
-                                   ToolTip="按设备、点位名称和时间筛选。折叠不会重置条件。" />
-                    </Expander.Header>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <TextBlock Text="筛选条件" Margin="0,3,205,3" VerticalAlignment="Center"
+                           Style="{StaticResource SectionHeadingStyle}"
+                           ToolTip="按设备、点位名称和时间筛选。" />
 
-                    <ScrollViewer MaxHeight="170" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                        <StackPanel Margin="0,6,4,0">
-                            <WrapPanel>
-                                <StackPanel Width="210" Margin="0,0,14,8">
-                                    <TextBlock Text="设备" Margin="0,0,0,5" />
-                                    <ComboBox ItemsSource="{Binding DeviceOptions}" DisplayMemberPath="DisplayName"
-                                              SelectedItem="{Binding SelectedDevice, Mode=TwoWay}" MinHeight="32"
-                                              ToolTip="来自历史数据；已删除或停用的设备仍可查询旧记录。" />
-                                </StackPanel>
-                                <StackPanel Width="190" Margin="0,0,0,8">
-                                    <TextBlock Text="点位名称（包含，可留空）" Margin="0,0,0,5" />
-                                    <TextBox Text="{Binding PointNameFilter, UpdateSourceTrigger=PropertyChanged}"
-                                             MinHeight="32" MaxLength="128" />
-                                </StackPanel>
-                                <CheckBox Content="按时间筛选" IsChecked="{Binding UseTimeFilter}"
-                                          Margin="14,23,0,8" VerticalAlignment="Center"
-                                          ToolTip="勾选后按本机时间查询；不勾选则查询全部时间。" />
-                            </WrapPanel>
-                            <WrapPanel Margin="0,4,0,0">
-                                <WrapPanel.Style>
-                                    <Style TargetType="WrapPanel">
-                                        <Setter Property="Visibility" Value="Collapsed" />
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding UseTimeFilter}" Value="True">
-                                                <Setter Property="Visibility" Value="Visible" />
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </WrapPanel.Style>
-                                <StackPanel Orientation="Horizontal" Margin="0,0,14,8">
-                                        <TextBlock Text="开始" VerticalAlignment="Center" Margin="0,0,6,0" />
+                <ScrollViewer Grid.Row="1" IsEnabled="{Binding CanEditFilters}" MaxHeight="210"
+                              VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel Margin="0,6,4,0">
+                        <WrapPanel>
+                            <StackPanel Width="210" Margin="0,0,14,8">
+                                <TextBlock Text="设备" Margin="0,0,0,5" />
+                                <ComboBox ItemsSource="{Binding DeviceOptions}" DisplayMemberPath="DisplayName"
+                                          SelectedItem="{Binding SelectedDevice, Mode=TwoWay}" MinHeight="32"
+                                          ToolTip="来自历史数据；已删除的设备仍可查询旧记录。" />
+                            </StackPanel>
+                            <StackPanel Width="190" Margin="0,0,0,8">
+                                <TextBlock Text="点位名称（包含，可留空）" Margin="0,0,0,5" />
+                                <TextBox Text="{Binding PointNameFilter, UpdateSourceTrigger=PropertyChanged}"
+                                         MinHeight="32" MaxLength="128" />
+                            </StackPanel>
+                            <CheckBox Content="按时间筛选" IsChecked="{Binding UseTimeFilter}"
+                                      Margin="14,23,0,8" VerticalAlignment="Center"
+                                      ToolTip="勾选后按本机时间查询；不勾选则查询全部时间。" />
+                        </WrapPanel>
+                        <WrapPanel Margin="0,4,0,0">
+                            <WrapPanel.Style>
+                                <Style TargetType="WrapPanel">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding UseTimeFilter}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </WrapPanel.Style>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,14,8">
+                                    <TextBlock Text="开始" VerticalAlignment="Center" Margin="0,0,6,0" />
 
-                                        <DatePicker SelectedDate="{Binding StartDate, Mode=TwoWay}" Width="135" MinHeight="32" />
-                                        <TextBox Text="{Binding StartTimeText, UpdateSourceTrigger=PropertyChanged}"
-                                                 Width="86" Margin="6,0,0,0" MaxLength="8" ToolTip="HH:mm:ss，例如 08:30:00" />
-                                </StackPanel>
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                        <TextBlock Text="结束" VerticalAlignment="Center" Margin="0,0,6,0" ToolTip="包含结束时间这一秒内的全部记录。" />
-                                        <DatePicker SelectedDate="{Binding EndDate, Mode=TwoWay}" Width="135" MinHeight="32" />
-                                        <TextBox Text="{Binding EndTimeText, UpdateSourceTrigger=PropertyChanged}"
-                                                 Width="86" Margin="6,0,0,0" MaxLength="8" ToolTip="HH:mm:ss，例如 17:30:00；包含结束秒内的毫秒。" />
-                                </StackPanel>
-                            </WrapPanel>
-                        </StackPanel>
-                    </ScrollViewer>
-                </Expander>
+                                    <DatePicker SelectedDate="{Binding StartDate, Mode=TwoWay}" Width="135" MinHeight="32" />
+                                    <TextBox Text="{Binding StartTimeText, UpdateSourceTrigger=PropertyChanged}"
+                                             Width="86" Margin="6,0,0,0" MaxLength="8" ToolTip="HH:mm:ss，例如 08:30:00" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                    <TextBlock Text="结束" VerticalAlignment="Center" Margin="0,0,6,0" ToolTip="包含结束时间这一秒内的全部记录。" />
+                                    <DatePicker SelectedDate="{Binding EndDate, Mode=TwoWay}" Width="135" MinHeight="32" />
+                                    <TextBox Text="{Binding EndTimeText, UpdateSourceTrigger=PropertyChanged}"
+                                             Width="86" Margin="6,0,0,0" MaxLength="8" ToolTip="HH:mm:ss，例如 17:30:00；包含结束秒内的毫秒。" />
+                            </StackPanel>
+                        </WrapPanel>
+                    </StackPanel>
+                </ScrollViewer>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
                     <Button Content="{Binding RefreshButtonText}" Command="{Binding RefreshRecordsCommand}"
                             Height="32" Width="105" Padding="8,4" Margin="0,0,8,0" Style="{StaticResource PrimaryActionButtonStyle}" />
@@ -91,10 +92,7 @@
             </Grid>
 
             <StackPanel Grid.Column="1" Orientation="Horizontal">
-                <Button Content="点位趋势" Command="{Binding ShowTrendCommand}"
-                        ToolTip="先选中一条记录；查看该点位在本次查询范围中的最近 1000 条读数，不限当前页。"
-                        Height="32" Padding="10,4" Margin="0,0,8,0" Style="{StaticResource SecondaryActionButtonStyle}" />
-                <Button Content="导出全部结果" Command="{Binding ExportRecordsCommand}"
+                <Button Content="Csv导出" Command="{Binding ExportRecordsCommand}"
                         ToolTip="导出本次查询匹配的全部页；查询后的新增记录需重新查询后才纳入。"
                         Height="32" Padding="10,4" Style="{StaticResource SecondaryActionButtonStyle}" />
                 <Button Content="取消导出" Command="{Binding ExportRecordsCancelCommand}"
@@ -115,8 +113,8 @@
         <Border Grid.Row="2" Padding="0" Style="{StaticResource SectionCardStyle}">
             <Grid MinHeight="70">
 
-            <DataGrid BorderThickness="0" RowHeight="38" ColumnHeaderHeight="36" ItemsSource="{Binding Records}" SelectedItem="{Binding SelectedRecord, Mode=TwoWay}"
-                          SelectionMode="Single" SelectionUnit="FullRow"
+            <DataGrid BorderThickness="0" RowHeight="38" ColumnHeaderHeight="36" ItemsSource="{Binding Records}"
+                          SelectionMode="Single" SelectionUnit="FullRow" IsSynchronizedWithCurrentItem="False"
                           AutoGenerateColumns="False" IsReadOnly="True"
                           CanUserAddRows="False" CanUserDeleteRows="False" CanUserReorderColumns="False"
                           CanUserResizeColumns="False" HeadersVisibility="Column"

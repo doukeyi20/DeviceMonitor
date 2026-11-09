@@ -6,23 +6,14 @@ namespace DeviceMonitor.Model;
 /// <summary>点位配置对象，每个对象对应一个点位。</summary>
 public sealed class PointInfo
 {
-    public long Id
-    {
-        get;
-    }
+    public long Id { get; }
 
     public long DeviceId { get; }
     public string Name { get; }
-    public RegisterType RegisterType
-    {
-        get;
-    }
+    public RegisterType RegisterType { get; }
 
     public ushort Address { get; }
-    public PointDataType DataType
-    {
-        get;
-    }
+    public PointDataType DataType { get; }
 
     public double? LowerLimit { get; }
     public double? UpperLimit { get; }
@@ -103,7 +94,9 @@ public sealed class PointInfo
     }
 }
 
-/// <summary>采集点表单检查后的数据。设备编号和编辑点编号另外传。</summary>
+/// <summary>
+/// 采集点表单输入的配置
+/// </summary>
 public sealed class PointInput
 {
     public string Name { get; set; } = string.Empty;
@@ -121,23 +114,14 @@ public sealed class PointInput
 /// <summary>一个点的一次成功读取结果：点位配置、原始值、解释后的值和读取时间。</summary>
 public sealed class PointReadResult
 {
-    public PointInfo Point
-    {
-        get;
-    }
-    public ushort RawValue
-    {
-        get;
-    }
+    public PointInfo Point { get; }
+    public ushort RawValue { get; }
 
     public int DecodedValue { get; }
 
     public double Value { get; }
     public string ValueText => NumericValue.Format(Value, Point.Unit);
-    public DateTimeOffset ReadAt
-    {
-        get;
-    }
+    public DateTimeOffset ReadAt { get; }
 
     public PointReadResult(PointInfo point, ushort rawValue, int value, DateTimeOffset readAt)
     {

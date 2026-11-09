@@ -50,19 +50,10 @@ public sealed record AlarmRecord
 /// <summary>记住本次报警查询的条件，翻页和导出继续用这份条件。</summary>
 public sealed class AlarmFilter
 {
-    public long? DeviceId
-    {
-        get;
-    }
-    public AlarmCategory? Category
-    {
-        get;
-    }
+    public long? DeviceId { get; }
+    public AlarmCategory? Category { get; }
     public DateTimeOffset? StartUtc { get; }
-    public DateTimeOffset? EndUtcExclusive
-    {
-        get;
-    }
+    public DateTimeOffset? EndUtcExclusive { get; }
 
     public AlarmFilter(long? deviceId = null, AlarmCategory? category = null,
         DateTimeOffset? startUtc = null, DateTimeOffset? endUtcExclusive = null)
@@ -83,22 +74,10 @@ public sealed class AlarmFilter
 /// <summary>一页报警查询结果：本页记录、总数、页码、最大记录编号。</summary>
 public sealed class AlarmPage
 {
-    public IReadOnlyList<AlarmRecord> Records
-    {
-        get;
-    }
-    public long TotalRecords
-    {
-        get;
-    }
-    public int PageNumber
-    {
-        get;
-    }
-    public long SnapshotId
-    {
-        get;
-    }
+    public IReadOnlyList<AlarmRecord> Records { get; }
+    public long TotalRecords { get; }
+    public int PageNumber { get; }
+    public long SnapshotId { get; }
 
     public AlarmPage(IReadOnlyList<AlarmRecord> records, long totalRecords, int pageNumber, long snapshotId)
     {

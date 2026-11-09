@@ -1,7 +1,7 @@
 
 
 <!-- 主窗口布局：账户菜单、工作空间导航及当前功能页。 -->
-<Window x:Class="DeviceMonitor.MainWindow"
+<Window x:Class="DeviceMonitor.View.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="clr-namespace:DeviceMonitor.ViewModel"
@@ -31,19 +31,19 @@
             <views:UserManagementView />
         </DataTemplate>
 
-        <DataTemplate DataType="{x:Type vm:PointConfigurationViewModel}">
-            <views:PointConfigurationView />
-        </DataTemplate>
 
         <DataTemplate DataType="{x:Type vm:HistoryViewModel}">
 
             <TabControl>
-                <TabItem Header="采集数据">
+                    <!-- 不同的记录对应不同的标签页 -->
+                    <TabItem Header="采集数据">
                     <views:HistoryView />
                 </TabItem>
+                
                 <TabItem Header="报警历史">
                     <views:AlarmHistoryView DataContext="{Binding Alarms}" />
                 </TabItem>
+                
             </TabControl>
         </DataTemplate>
 
@@ -93,8 +93,8 @@
                             BorderThickness="1"
                             VerticalAlignment="Center">
                         <Button.ContextMenu>
-
-                            <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                            <!-- 菜单,单独指定了DataContext，但是还是Mainviewmodel -->
+                                <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
                                 <MenuItem Header="修改密码" Command="{Binding ChangePasswordCommand}" />
                                 <MenuItem Header="打开日志文件夹" Command="{Binding OpenLogsCommand}" />
                             </ContextMenu>
@@ -135,7 +135,7 @@
                      SelectedItem="{Binding CurrentPage, Mode=TwoWay}"
                      SelectionMode="Single"
                      HorizontalContentAlignment="Stretch">
-
+                
                 <ListBox.ItemTemplate>
                     <DataTemplate>
                         <StackPanel Orientation="Horizontal">
@@ -149,8 +149,7 @@
                                         <Setter Property="Data" Value="M 2,3 L 18,3 18,17 2,17 Z" />
                                         <Style.Triggers>
                                             <DataTrigger Binding="{Binding Title}" Value="实时监控"><Setter Property="Data" Value="M 1,10 L 5,10 8,3 12,17 15,9 20,9 M 2,20 L 18,20" /></DataTrigger>
-                                            <DataTrigger Binding="{Binding Title}" Value="设备管理"><Setter Property="Data" Value="M 2,2 L 18,2 18,14 2,14 Z M 7,19 L 13,19 M 10,14 L 10,19 M 5,6 L 8,6 M 5,10 L 13,10" /></DataTrigger>
-                                            <DataTrigger Binding="{Binding Title}" Value="采集点配置"><Setter Property="Data" Value="M 5,1 L 5,19 M 10,1 L 10,19 M 15,1 L 15,19 M 2,6 L 8,6 M 7,14 L 13,14 M 12,8 L 18,8" /></DataTrigger>
+                                            <DataTrigger Binding="{Binding Title}" Value="设备配置"><Setter Property="Data" Value="M 2,2 L 18,2 18,14 2,14 Z M 7,19 L 13,19 M 10,14 L 10,19 M 5,6 L 8,6 M 5,10 L 13,10" /></DataTrigger>
                                             <DataTrigger Binding="{Binding Title}" Value="历史记录"><Setter Property="Data" Value="M 3,5 A 8,8 0 1 1 2,13 M 3,1 L 3,6 8,6 M 10,5 L 10,11 14,13" /></DataTrigger>
                                             <DataTrigger Binding="{Binding Title}" Value="用户管理"><Setter Property="Data" Value="M 6,6 A 4,4 0 1 1 14,6 A 4,4 0 1 1 6,6 M 2,20 C 2,12 18,12 18,20" /></DataTrigger>
                                         </Style.Triggers>

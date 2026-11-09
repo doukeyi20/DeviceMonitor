@@ -1,4 +1,5 @@
 // 初始化日志、数据库和登录窗口，记录程序级异常。
+using DeviceMonitor.Services;
 using DeviceMonitor.Model;
 using System.Windows;
 using DeviceMonitor.View;
@@ -18,13 +19,9 @@ namespace DeviceMonitor
 
             try
             {
-                // 获取当前用户的本地应用数据目录，再拼上项目和日志文件夹名称。。
-                AppLog.Initialize(
-                    Path.Combine(
-                        Environment.GetFolderPath(
-                            Environment.SpecialFolder.LocalApplicationData),
-                    "DeviceMonitor", "Logs")
-                    );
+                // 日志保存在当前 Windows 用户的本地数据目录，不写进源码目录。
+                string appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                AppLog.Initialize(Path.Combine(appData, "DeviceMonitor", "Logs"));
 
                 AppLog.Info("程序启动");
 
@@ -32,21 +29,20 @@ namespace DeviceMonitor
                 AppDomain.CurrentDomain.UnhandledException += RecordDomainError;
                 TaskScheduler.UnobservedTaskException += RecordTaskError;
 
-                // 数据库初始化器，负责创建数据库文件、应用迁移和建表
+                // Initialize 首次按迁移建库建表，以后只补执行新迁移。
                 DatabaseInitializer initializer = new DatabaseInitializer();
 
-                // 启动时第一次应用待执行迁移，不重复建表或清空已有数据。
+                // 这一步成功后才显示登录窗口；不会清空已有数据。
                 initializer.Initialize();
 
                 // 创建数据库操作入口
                 UserStore userStore = new UserStore(initializer.DatabasePath);
-
                 DeviceStore deviceStore = new DeviceStore(initializer.DatabasePath);
-
                 HistoryStore historyStore = new HistoryStore(initializer.DatabasePath);
 
                 LoginWindow loginWindow = new LoginWindow(userStore, deviceStore, historyStore);
 
+                // MainWindow 指定主窗口；下一句 Show 才让它出现在屏幕上。
                 this.MainWindow = loginWindow;
 
                 loginWindow.Show();
@@ -86,6 +82,7 @@ namespace DeviceMonitor
             DispatcherUnhandledException -= RecordDispatcherError;
             AppDomain.CurrentDomain.UnhandledException -= RecordDomainError;
             TaskScheduler.UnobservedTaskException -= RecordTaskError;
+            AppLog.Close();
             base.OnExit(e);
         }
     }

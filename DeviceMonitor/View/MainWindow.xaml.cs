@@ -1,4 +1,5 @@
 // 处理主窗口弹窗、日志目录、退出登录和关闭收尾。
+using DeviceMonitor.Services;
 using System;
 using System.ComponentModel;
 using System.Threading.Tasks;
@@ -10,9 +11,8 @@ using System.Runtime.InteropServices;
 using System.Windows.Interop;
 using DeviceMonitor.Model;
 using DeviceMonitor.ViewModel;
-using DeviceMonitor.View;
 
-namespace DeviceMonitor;
+namespace DeviceMonitor.View;
 
 public partial class MainWindow : Window
 {
@@ -20,11 +20,17 @@ public partial class MainWindow : Window
     private readonly DeviceStore _deviceStore;
     private readonly HistoryStore _historyStore;
     private readonly MainViewModel _viewModel;
+
+    // 这俩都是用来避免重复触发关闭事件的标记，_isLeavingWindow 是正在退出登录或关闭窗口的状态，_canClose 是已经完成收尾可以直接关闭的状态。
+    // 退出处理标记：开始退出登录或关窗时打上，防止重复确认、重复收尾。
+    // 如果取消退出、窗口还要继续用，就清掉；真正要关窗时不用再清。
     private bool _isLeavingWindow;
+    // 最终关窗放行标记：退出流程决定继续关窗后设为 true，下一次 OnClosing 就不再拦截。
+    // 收尾出错、提示后继续退出时也会打上，所以它不代表所有数据都保存成功。
     private bool _canClose;
 
     public MainWindow(UserAccount currentUser, UserStore userStore, DeviceStore deviceStore,
-    HistoryStore historyStore)
+        HistoryStore historyStore)
     {
         _userStore = userStore ?? throw new ArgumentNullException(nameof(userStore));
         _deviceStore = deviceStore ?? throw new ArgumentNullException(nameof(deviceStore));
@@ -33,12 +39,16 @@ public partial class MainWindow : Window
         FitWindowToWorkArea();
 
         _viewModel = new MainViewModel(currentUser, userStore, deviceStore, historyStore);
+        
+        // 退出
         _viewModel.LogoutRequested += HandleLogoutRequested;
+        // 登记修改密码和打开日志目录的事件，由窗口负责弹窗
         _viewModel.PasswordEditorRequested += OpenPasswordEditor;
         _viewModel.LogsFolderRequested += OpenLogsFolder;
         DataContext = _viewModel;
     }
 
+    // 让窗口适应屏幕可用区域。
     private void FitWindowToWorkArea()
     {
         Rect workArea = SystemParameters.WorkArea;
@@ -64,6 +74,7 @@ public partial class MainWindow : Window
             throw new Win32Exception(Marshal.GetLastWin32Error());
     }
 
+    // 左键点击账户菜单按钮时，弹出上下文菜单。
     private void AccountMenuButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is Button { ContextMenu: { } menu } button)
@@ -101,15 +112,18 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>确认后先等后台工作结束，再打开一次登录窗口。</summary>
+    /// <summary>退出当前登录，返回登录窗口，由viewmodel调用</summary>
     private async void HandleLogoutRequested()
     {
+        // 已经在退出，或者已经准备直接关闭了，就忽略这次重复的退出登录请求。
         if (_isLeavingWindow || _canClose)
             return;
+
         _isLeavingWindow = true;
         LoginWindow? login = null;
         try
         {
+            // 弹窗提醒
             MessageBoxResult answer = MessageBox.Show(this,
                 "退出登录会停止所有设备采集，并等待正在保存、查询的操作结束。\n\n确定返回登录窗口吗？",
                 "退出登录", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
@@ -117,6 +131,7 @@ public partial class MainWindow : Window
                 return;
 
             IsEnabled = false;
+            // 执行收尾工作
             await StopBeforeExitAsync();
 
             login = new LoginWindow(_userStore, _deviceStore, _historyStore);
@@ -146,12 +161,15 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>退出登录和关闭程序共用：等采集、保存、查询及导出结束。</summary>
+    /// <summary>退出登录和关闭程序共用的收尾准备：等采集、保存、查询及导出结束。</summary>
     private async Task StopBeforeExitAsync()
     {
-        // 先等待采集、保存和查询收尾，再检查是否仍有报警未保存。
+        // 真正执行收尾，停止并等待全部业务操作
         await _viewModel.StopBackgroundWorkAsync();
-        var alarms = _viewModel.DeviceTasks.Alarms;
+
+        // 检查是否有未保存的报警，弹窗提醒
+
+        var alarms = _viewModel.SamplingTasks.Alarms;
         if (alarms.PendingSaveCount == 0 && alarms.DroppedUpdateCount == 0)
             return;
 
@@ -161,14 +179,17 @@ public partial class MainWindow : Window
             "报警保存提醒", MessageBoxButton.OK, MessageBoxImage.Warning);
     }
 
-    /// <summary>点关闭先拦住这次关窗，等后台正常收尾，再发起真正关闭。</summary>
+
+    /// <summary>关闭中，点关闭先拦住这次关窗，等后台正常收尾，再发起真正关闭。</summary>
     protected override async void OnClosing(CancelEventArgs e)
     {
         base.OnClosing(e);
+        // e.Cancel 或者_canClose为 true 时，说明已经在收尾中
         if (e.Cancel || _canClose)
             return;
         // 拦截首次关闭，完成异步收尾后由第二次 Close 真正退出。
         e.Cancel = true;
+        // 如果已经在退出，或者已经准备直接关闭了，就忽略这次重复的关闭请求。
         if (_isLeavingWindow)
             return;
 

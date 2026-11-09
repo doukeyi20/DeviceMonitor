@@ -17,59 +17,60 @@
                 Style="{StaticResource ToolbarCardStyle}">
             <Grid>
 
-                <Expander x:Name="FilterExpander" IsExpanded="True" IsEnabled="{Binding CanEditFilters}">
-                    <Expander.Header>
-                        <TextBlock Text="筛选条件" Margin="0,3,205,3"
-                                   Style="{StaticResource SectionHeadingStyle}"
-                                   ToolTip="按设备、报警类别和发生时间筛选。折叠不会重置条件。" />
-                    </Expander.Header>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <TextBlock Text="筛选条件" Margin="0,3,205,3" VerticalAlignment="Center"
+                           Style="{StaticResource SectionHeadingStyle}"
+                           ToolTip="按设备、报警类别和发生时间筛选。" />
 
-                    <ScrollViewer MaxHeight="170" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                        <StackPanel Margin="0,6,4,0">
-                            <WrapPanel>
-                                <StackPanel Width="210" Margin="0,0,14,8">
-                                    <TextBlock Text="设备" Margin="0,0,0,5" />
-                                    <ComboBox ItemsSource="{Binding DeviceOptions}" DisplayMemberPath="DisplayName"
-                                              SelectedItem="{Binding SelectedDevice, Mode=TwoWay}" MinHeight="32"
-                                              ToolTip="来自报警历史；已删除的设备也能查询以前的报警。" />
-                                </StackPanel>
-                                <StackPanel Width="180" Margin="0,0,0,8">
-                                    <TextBlock Text="类别" Margin="0,0,0,5" />
-                                    <ComboBox ItemsSource="{Binding CategoryOptions}" DisplayMemberPath="DisplayName"
-                                              SelectedItem="{Binding SelectedCategory, Mode=TwoWay}" MinHeight="32" />
-                                </StackPanel>
-                                <CheckBox Content="按发生时间筛选" IsChecked="{Binding UseTimeFilter}"
-                                          Margin="14,23,0,8" VerticalAlignment="Center"
-                                          ToolTip="使用本机时间；不勾选则查询全部发生时间。" />
-                            </WrapPanel>
+                <ScrollViewer Grid.Row="1" IsEnabled="{Binding CanEditFilters}" MaxHeight="210"
+                              VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel Margin="0,6,4,0">
+                        <WrapPanel>
+                            <StackPanel Width="210" Margin="0,0,14,8">
+                                <TextBlock Text="设备" Margin="0,0,0,5" />
+                                <ComboBox ItemsSource="{Binding DeviceOptions}" DisplayMemberPath="DisplayName"
+                                          SelectedItem="{Binding SelectedDevice, Mode=TwoWay}" MinHeight="32"
+                                          ToolTip="来自报警历史；已删除的设备也能查询以前的报警。" />
+                            </StackPanel>
+                            <StackPanel Width="180" Margin="0,0,0,8">
+                                <TextBlock Text="类别" Margin="0,0,0,5" />
+                                <ComboBox ItemsSource="{Binding CategoryOptions}" DisplayMemberPath="DisplayName"
+                                          SelectedItem="{Binding SelectedCategory, Mode=TwoWay}" MinHeight="32" />
+                            </StackPanel>
+                            <CheckBox Content="按发生时间筛选" IsChecked="{Binding UseTimeFilter}"
+                                      Margin="14,23,0,8" VerticalAlignment="Center"
+                                      ToolTip="使用本机时间；不勾选则查询全部发生时间。" />
+                        </WrapPanel>
 
-                            <WrapPanel Margin="0,4,0,0">
-                                <WrapPanel.Style>
-                                    <Style TargetType="WrapPanel">
-                                        <Setter Property="Visibility" Value="Collapsed" />
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding UseTimeFilter}" Value="True">
-                                                <Setter Property="Visibility" Value="Visible" />
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </WrapPanel.Style>
-                                <StackPanel Orientation="Horizontal" Margin="0,0,14,8">
-                                    <TextBlock Text="开始" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                    <DatePicker SelectedDate="{Binding StartDate, Mode=TwoWay}" Width="135" MinHeight="32" />
-                                    <TextBox Text="{Binding StartTimeText, UpdateSourceTrigger=PropertyChanged}"
-                                             Width="86" Margin="6,0,0,0" MaxLength="8" ToolTip="HH:mm:ss，例如 08:30:00" />
-                                </StackPanel>
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                    <TextBlock Text="结束" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                    <DatePicker SelectedDate="{Binding EndDate, Mode=TwoWay}" Width="135" MinHeight="32" />
-                                    <TextBox Text="{Binding EndTimeText, UpdateSourceTrigger=PropertyChanged}"
-                                             Width="86" Margin="6,0,0,0" MaxLength="8" ToolTip="HH:mm:ss；包含结束这一秒内的全部记录。" />
-                                </StackPanel>
-                            </WrapPanel>
-                        </StackPanel>
-                    </ScrollViewer>
-                </Expander>
+                        <WrapPanel Margin="0,4,0,0">
+                            <WrapPanel.Style>
+                                <Style TargetType="WrapPanel">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding UseTimeFilter}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </WrapPanel.Style>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,14,8">
+                                <TextBlock Text="开始" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                <DatePicker SelectedDate="{Binding StartDate, Mode=TwoWay}" Width="135" MinHeight="32" />
+                                <TextBox Text="{Binding StartTimeText, UpdateSourceTrigger=PropertyChanged}"
+                                         Width="86" Margin="6,0,0,0" MaxLength="8" ToolTip="HH:mm:ss，例如 08:30:00" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <TextBlock Text="结束" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                <DatePicker SelectedDate="{Binding EndDate, Mode=TwoWay}" Width="135" MinHeight="32" />
+                                <TextBox Text="{Binding EndTimeText, UpdateSourceTrigger=PropertyChanged}"
+                                         Width="86" Margin="6,0,0,0" MaxLength="8" ToolTip="HH:mm:ss；包含结束这一秒内的全部记录。" />
+                            </StackPanel>
+                        </WrapPanel>
+                    </StackPanel>
+                </ScrollViewer>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
                     <Button Content="{Binding RefreshButtonText}" Command="{Binding RefreshRecordsCommand}"
                             Height="32" Width="105" Padding="8,4" Margin="0,0,8,0" Style="{StaticResource PrimaryActionButtonStyle}" />
@@ -112,7 +113,7 @@
         <Border Grid.Row="2" Padding="0" Style="{StaticResource SectionCardStyle}">
             <Grid MinHeight="70">
 
-            <!-- 列表只展示识别报警的关键信息；选中行可展开全部细节，不影响导出内容。 -->
+            <!-- 表格显示基本信息；选中后只补充说明、限值和结束时间。 -->
             <DataGrid x:Name="AlarmRecordsGrid" BorderThickness="0" RowHeight="38" ColumnHeaderHeight="36"
                           ItemsSource="{Binding Records}" AutoGenerateColumns="False" IsReadOnly="True"
                           RowDetailsVisibilityMode="VisibleWhenSelected" AreRowDetailsFrozen="True"
@@ -152,19 +153,13 @@
                     <DataTemplate>
                         <Border Margin="12,0,12,12" Padding="14,10" Background="{StaticResource SoftSurfaceBrush}" CornerRadius="6">
                             <StackPanel>
-                                <TextBlock Text="{Binding DeviceName}" FontWeight="SemiBold" TextWrapping="Wrap" />
-                                <TextBlock Text="{Binding PointName}" Margin="0,3,0,8" TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}" />
-                                <UniformGrid Columns="2">
-                                    <TextBlock Margin="0,0,12,6"><Run Text="类别：" /><Run Text="{Binding CategoryText, Mode=OneWay}" /></TextBlock>
-                                    <TextBlock Margin="0,0,0,6"><Run Text="出现次数：" /><Run Text="{Binding Occurrences, Mode=OneWay}" /></TextBlock>
-                                    <TextBlock Margin="0,0,12,6"><Run Text="界限：" /><Run Text="{Binding LimitText, Mode=OneWay}" /></TextBlock>
-                                    <TextBlock Margin="0,0,0,6" ToolTip="最近一次越限时的值，不是当前实时值。"><Run Text="异常值：" /><Run Text="{Binding ValueText, Mode=OneWay}" /></TextBlock>
-                                    <TextBlock Margin="0,0,12,6"><Run Text="最近发生：" /><Run Text="{Binding LastSeenAtLocal, Mode=OneWay, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}}" /></TextBlock>
-                                    <TextBlock Margin="0,0,0,6"><Run Text="结束时间：" /><Run Text="{Binding EndedAtLocal, Mode=OneWay, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}, TargetNullValue=—}" /></TextBlock>
-                                </UniformGrid>
-                                <ScrollViewer MaxHeight="100" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                <ScrollViewer MaxHeight="100" Margin="0,0,0,8" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                                     <TextBlock Text="{Binding Message}" TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}" />
                                 </ScrollViewer>
+                                <WrapPanel>
+                                    <TextBlock Margin="0,0,20,0"><Run Text="限值：" /><Run Text="{Binding LimitText, Mode=OneWay}" /></TextBlock>
+                                    <TextBlock><Run Text="结束时间：" /><Run Text="{Binding EndedAtLocal, Mode=OneWay, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}, TargetNullValue=—}" /></TextBlock>
+                                </WrapPanel>
                             </StackPanel>
                         </Border>
                     </DataTemplate>

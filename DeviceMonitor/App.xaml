@@ -9,15 +9,15 @@
     <Application.Resources>
 
         <!-- 蓝色只强调操作和选择；运行、报警仍使用各自的状态色。 -->
-        <SolidColorBrush x:Key="PageBackgroundBrush" Color="#F3F6FA" />
+        <SolidColorBrush x:Key="PageBackgroundBrush" Color="#F1F3F6" />
         <SolidColorBrush x:Key="SurfaceBrush" Color="#FFFFFF" />
         <SolidColorBrush x:Key="SoftSurfaceBrush" Color="#F8FAFC" />
-        <SolidColorBrush x:Key="BorderBrushNeutral" Color="#E2E8F0" />
-        <SolidColorBrush x:Key="PrimaryTextBrush" Color="#1E293B" />
-        <SolidColorBrush x:Key="SecondaryTextBrush" Color="#64748B" />
-        <SolidColorBrush x:Key="AccentBrush" Color="#2563EB" />
-        <SolidColorBrush x:Key="AccentHoverBrush" Color="#1D4ED8" />
-        <SolidColorBrush x:Key="AccentSoftBrush" Color="#EFF6FF" />
+        <SolidColorBrush x:Key="BorderBrushNeutral" Color="#DDE4EB" />
+        <SolidColorBrush x:Key="PrimaryTextBrush" Color="#273848" />
+        <SolidColorBrush x:Key="SecondaryTextBrush" Color="#687B8E" />
+        <SolidColorBrush x:Key="AccentBrush" Color="#526D86" />
+        <SolidColorBrush x:Key="AccentHoverBrush" Color="#405B73" />
+        <SolidColorBrush x:Key="AccentSoftBrush" Color="#EAF0F5" />
 
         <ImageSource x:Key="ApplicationIcon">pack://application:,,,/DeviceMonitor;component/AppIcon.ico</ImageSource>
         <Geometry x:Key="ApplicationMarkGeometry">M 0,10 L 5,10 8,2 13,18 17,8 23,8</Geometry>
@@ -312,7 +312,7 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsSelected" Value="True"><Setter TargetName="OptionBorder" Property="Background" Value="{StaticResource AccentSoftBrush}" /></Trigger>
-                            <Trigger Property="IsHighlighted" Value="True"><Setter TargetName="OptionBorder" Property="Background" Value="#DBEAFE" /></Trigger>
+                            <Trigger Property="IsHighlighted" Value="True"><Setter TargetName="OptionBorder" Property="Background" Value="#DCE5ED" /></Trigger>
                             <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5" /></Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>

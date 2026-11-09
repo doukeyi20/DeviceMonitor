@@ -3,7 +3,9 @@ using System.Security.Cryptography;
 using DeviceMonitor;
 using Microsoft.EntityFrameworkCore;
 
-namespace DeviceMonitor.Model;
+using DeviceMonitor.Model;
+
+namespace DeviceMonitor.Services;
 
 /// <summary>账户的 EF 数据库操作。页面仍得到 UserAccount，不会得到密码盐和哈希。</summary>
 public sealed class UserStore

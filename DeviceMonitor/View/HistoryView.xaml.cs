@@ -1,4 +1,4 @@
-// 处理历史页面初始化、导出路径和趋势窗口。
+// 处理历史页面初始化和导出路径选择。
 using System;
 using System.Windows;
 using System.Windows.Controls;
@@ -17,7 +17,9 @@ public partial class HistoryView : UserControl
     private async void HistoryView_Loaded(object sender, RoutedEventArgs e)
     {
         SubscribeViewModel();
-        if (DataContext is HistoryViewModel viewModel && !viewModel.HasLoadedRecords
+
+        // 先查询一次
+        if (DataContext is HistoryViewModel viewModel && !viewModel.HasQueried
             && viewModel.RefreshRecordsCommand.CanExecute(null))
             await viewModel.RefreshRecordsCommand.ExecuteAsync(null);
     }
@@ -26,13 +28,14 @@ public partial class HistoryView : UserControl
     {
         if (ReferenceEquals(_subscribedViewModel, DataContext))
             return;
+        // 先断开旧订阅，再接上当前数据源的导出路径请求。
         UnsubscribeViewModel();
         if (DataContext is HistoryViewModel viewModel)
         {
             _subscribedViewModel = viewModel;
 
+            // 选择保存路径；真正写 CSV 由 VM 调用导出器。
             viewModel.ExportPathRequested += ChooseExportPath;
-            viewModel.TrendRequested += OpenTrendWindow;
         }
     }
 
@@ -55,16 +58,6 @@ public partial class HistoryView : UserControl
         return accepted == true ? dialog.FileName : null;
     }
 
-    /// <summary>用准备好的趋势数据源打开窗口。</summary>
-    private void OpenTrendWindow(HistoryTrendViewModel viewModel)
-    {
-        var dialog = new HistoryTrendWindow(viewModel);
-        Window? owner = Window.GetWindow(this);
-        if (owner is not null)
-            dialog.Owner = owner;
-        dialog.ShowDialog();
-    }
-
     /// <summary>离开页面时解除订阅并取消导出，不停止设备采集。</summary>
     private void HistoryView_Unloaded(object sender, RoutedEventArgs e) => UnsubscribeViewModel();
 
@@ -75,7 +68,6 @@ public partial class HistoryView : UserControl
             return;
         _subscribedViewModel.ExportRecordsCommand.Cancel();
         _subscribedViewModel.ExportPathRequested -= ChooseExportPath;
-        _subscribedViewModel.TrendRequested -= OpenTrendWindow;
         _subscribedViewModel = null;
     }
 

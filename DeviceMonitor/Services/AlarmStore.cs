@@ -1,16 +1,15 @@
 // 使用 EF Core 查询和保存报警历史。
 using Microsoft.EntityFrameworkCore;
 
-namespace DeviceMonitor.Model;
+using DeviceMonitor.Model;
+
+namespace DeviceMonitor.Services;
 
 public sealed class AlarmStore
 {
     // 上下文按操作创建，调用者不跨线程共用同一份 DbContext。
     private readonly MonitorDbContextFactory _database;
-    public string DatabasePath
-    {
-        get;
-    }
+    public string DatabasePath { get; }
 
     public AlarmStore(string databasePath)
     {

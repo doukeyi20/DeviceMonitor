@@ -1,4 +1,5 @@
 // 处理登录窗口、密码控件和登录后的窗口切换。
+using DeviceMonitor.Services;
 using DeviceMonitor.ViewModel;
 using System;
 using System.ComponentModel;
@@ -11,7 +12,6 @@ namespace DeviceMonitor.View
     {
         private readonly UserStore _userStore;
         private readonly DeviceStore _deviceStore;
-
         private readonly HistoryStore _historyStore;
 
         private readonly LoginViewModel _viewModel;
@@ -41,9 +41,7 @@ namespace DeviceMonitor.View
                 throw;
             }
 
-            // ViewModel 请求读取密码时，由窗口负责读取密码控件或清空密码。
-            _viewModel.LoginPasswordRequested += ReadLoginPassword;
-            _viewModel.AdminPasswordsRequested += ReadAdminPasswords;
+            // 读取密码由按钮事件直接完成；这里仅订阅清空控件和显示窗口的通知。
             _viewModel.LoginPasswordClearRequested += ClearLoginPassword;
             _viewModel.AdminPasswordsClearRequested += ClearAdminPasswords;
             // ViewModel 请求显示消息时，由窗口负责弹出 MessageBox。
@@ -58,22 +56,27 @@ namespace DeviceMonitor.View
             {
                 // 窗口加载时，检查数据库中是否已有账户决定首次创建管理员。
                 await _viewModel.InitializeAsync();
-
             };
         }
-        /// <summary>从登录密码框取密码，写回 request，让 Login 命令继续验证。</summary>
-        private void ReadLoginPassword(UserPasswordsRequest request)
+
+        /// <summary>直接读取密码框，作为参数交给 ViewModel；窗口不查数据库。</summary>
+        private async void LoginButton_Click(object sender, RoutedEventArgs e)
         {
-            request.Password = PasswordInput.Password;
+            await _viewModel.LoginAsync(PasswordInput.Password);
         }
 
-        /// <summary>登录成功后，用账户和共用 Store 打开主窗口，再关闭登录窗口。</summary>
+        /// <summary>
+        /// 登陆成功，打开主窗口
+        /// </summary>
+        /// <param name="account"></param>
         private void OpenMainWindow(UserAccount account)
         {
-            var mainWindow = new DeviceMonitor.MainWindow(account, _userStore, _deviceStore, _historyStore);
+            // 传入登录成功的账户和共用的 Store，避免在主窗口中直接创建 DbContext，保证每次数据库操作都是独立上下文。
+            var mainWindow = new DeviceMonitor.View.MainWindow(account, _userStore, _deviceStore, _historyStore);
 
             Application application = Application.Current;
 
+            // 保存LoginWindow的引用
             Window previousMainWindow = application.MainWindow;
 
             application.MainWindow = mainWindow;
@@ -84,6 +87,8 @@ namespace DeviceMonitor.View
             }
             catch
             {
+                // 如果打开主窗口失败，恢复原来的 MainWindow 并关闭新窗口，避免应用程序没有主窗口而退出。
+                // 注意MainWindow是Application的属性，我们这个mainWindow是主界面的名，不一样
                 application.MainWindow = previousMainWindow;
                 mainWindow.Close();
                 throw;
@@ -92,11 +97,10 @@ namespace DeviceMonitor.View
             Close();
         }
 
-        /// <summary>取出管理员的密码和确认密码，写回 request 供命令检查。</summary>
-        private void ReadAdminPasswords(UserPasswordsRequest request)
+        /// <summary>两次密码都是本次调用的参数，不再创建对象来回填。</summary>
+        private async void CreateAdminButton_Click(object sender, RoutedEventArgs e)
         {
-            request.Password = AdminPasswordInput.Password;
-            request.Confirmation = ConfirmPasswordInput.Password;
+            await _viewModel.CreateFirstAdminAsync(AdminPasswordInput.Password, ConfirmPasswordInput.Password);
         }
 
         /// <summary>在当前登录窗口上弹出提示消息。</summary>
@@ -115,7 +119,7 @@ namespace DeviceMonitor.View
             ConfirmPasswordInput.Clear();
         }
 
-        /// <summary>清空密码并解除事件订阅。</summary>
+        /// <summary>登录或创建还没结束时，先不让关窗，等待当前操作完成。</summary>
         protected override void OnClosing(CancelEventArgs e)
         {
             base.OnClosing(e);
@@ -123,6 +127,7 @@ namespace DeviceMonitor.View
                 e.Cancel = true;
         }
 
+        /// <summary>关窗后清空密码，并解除界面通知订阅。</summary>
         protected override void OnClosed(EventArgs e)
         {
             PasswordInput?.Clear();
@@ -130,8 +135,6 @@ namespace DeviceMonitor.View
             ConfirmPasswordInput?.Clear();
             if (_viewModel is not null)
             {
-                _viewModel.LoginPasswordRequested -= ReadLoginPassword;
-                _viewModel.AdminPasswordsRequested -= ReadAdminPasswords;
                 _viewModel.LoginPasswordClearRequested -= ClearLoginPassword;
                 _viewModel.AdminPasswordsClearRequested -= ClearAdminPasswords;
                 _viewModel.MessageRequested -= ShowMessage;

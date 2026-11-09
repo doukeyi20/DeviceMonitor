@@ -1,4 +1,5 @@
-// 管理采集历史筛选、分页、导出和趋势查询。
+// 管理采集历史的条件查询、分页和 CSV 导出。
+using DeviceMonitor.Services;
 using System.Globalization;
 using System;
 using DeviceMonitor;
@@ -12,52 +13,71 @@ using DeviceMonitor.Model;
 
 namespace DeviceMonitor.ViewModel;
 
-/// <summary>读数历史页面的数据和命令：查询、翻页、导出，以及打开点位趋势。</summary>
+/// <summary>查询得到一批历史结果，翻页和导出继续使用这次查询的范围。</summary>
 public sealed partial class HistoryViewModel : PageViewModel
 {
     public const int PageSize = 200;
 
     private readonly UserAccount _currentUser;
     private readonly HistoryStore _historyStore;
+
+    // Csv导出器
     private readonly HistoryCsvExporter _csvExporter;
+    //下拉框选项中的写死的全部设备选项
     private readonly DeviceFilterOption _allDevices = new(null, "全部设备");
 
-    // 输入框和已应用条件分开，翻页、导出沿用上次成功查询。
-    private HistoryFilter? _appliedFilter;
+    // 查询条件
+    private HistoryFilter? _queryFilter;
 
-    // 固定查询编号上限，排除后续新记录，避免翻页漂移。
-    private long _snapshotId;
+    // 本次查询允许的最大记录编号,记录编号不等于记录数量，只是每条记录的编号，删除后不会排序
+    // 这个值在查询时就确定了，后续翻页和导出都用这个值，避免混入后来新增的记录。也就是防止正在采集时查询记录导致的变化
+    private long _queryMaxRecordId;
+    // 本次查询的记录数量
     private long _totalRecords;
+    // 当前页码
     private int _currentPage;
+
+    // 采集历史页的退出标记：收尾开始时打上，禁止新查询、翻页、导出，不再把晚返回的查询结果填入列表。
+    // 旧任务仍要等它结束；这个页面对象以后不再使用，所以不清回 false。
     private bool _isShuttingDown;
 
+    // 设备下拉框选项保存选中的设备和当前页查询结果列表
     public ObservableCollection<DeviceFilterOption> DeviceOptions { get; } = new();
     public ObservableCollection<HistoryRecord> Records { get; } = new();
 
     public AlarmHistoryViewModel Alarms { get; }
 
+    // 当前选中的设备筛选项；null 表示“全部设备”
     [ObservableProperty] private DeviceFilterOption? _selectedDevice;
-    [ObservableProperty] private string _pointNameFilter = string.Empty;
-    [ObservableProperty] private bool _useTimeFilter;
-    [ObservableProperty] private DateTime? _startDate = DateTime.Today;
-    [ObservableProperty] private DateTime? _endDate = DateTime.Today;
-    [ObservableProperty] private string _startTimeText = "00:00:00";
-    [ObservableProperty] private string _endTimeText = "23:59:59";
-    [ObservableProperty] private bool _isLoading;
-    [ObservableProperty] private bool _isExporting;
 
-    [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(ShowTrendCommand))]
-    private HistoryRecord? _selectedRecord;
+    // 点位名称输入框的文字
+    [ObservableProperty] private string _pointNameFilter = string.Empty;
+
+    // 勾选才使用起止时间；重置时清掉，查询全部时间。
+    [ObservableProperty] private bool _useTimeFilter;
+
+    [ObservableProperty] private DateTime? _startDate = DateTime.Today;
+
+    [ObservableProperty] private DateTime? _endDate = DateTime.Today;
+
+    [ObservableProperty] private string _startTimeText = "00:00:00";
+
+    [ObservableProperty] private string _endTimeText = "23:59:59";
+
+    // 正在查询或翻页取数的标记：查询前打上，完成或失败后在 finally 清掉，避免查询没回来又发起一轮。
+    [ObservableProperty] private bool _isLoading;
+
+    // 正在导出采集历史的标记：导出开始时打上，完成、失败或取消后清掉；期间挡住重复导出和修改筛选。
+    [ObservableProperty] private bool _isExporting;
 
     public int CurrentPage => _currentPage;
 
-    public bool HasLoadedRecords => _appliedFilter is not null;
+    public bool HasQueried => _queryFilter is not null;
     public long TotalRecords => _totalRecords;
     public long TotalPages => _totalRecords == 0 ? 0 : (_totalRecords - 1) / PageSize + 1;
     public bool IsBusy => IsLoading || IsExporting || _isShuttingDown;
     public bool CanEditFilters => !IsBusy;
-    public bool ShowEmptyMessage => HasLoadedRecords && !IsBusy && Records.Count == 0;
+    public bool ShowEmptyMessage => HasQueried && !IsBusy && Records.Count == 0;
     public string RefreshButtonText => IsLoading ? "查询中…" : "查询 / 刷新";
     public string RecordSummary => $"本页 {Records.Count} 条 / 匹配 {_totalRecords} 条";
     public string PageDescription => $"第 {CurrentPage} / {TotalPages} 页 · 每页 {PageSize} 条";
@@ -70,21 +90,25 @@ public sealed partial class HistoryViewModel : PageViewModel
     }
 
     public event Func<string?>? ExportPathRequested;
-    public event Action<HistoryTrendViewModel>? TrendRequested;
 
     public HistoryViewModel(UserAccount currentUser, HistoryStore historyStore, AlarmStore? alarmStore = null) : base("历史记录")
     {
         _currentUser = currentUser ?? throw new ArgumentNullException(nameof(currentUser));
         _historyStore = historyStore ?? throw new ArgumentNullException(nameof(historyStore));
-        if (_currentUser.Role != UserRole.Administrator || !_currentUser.IsEnabled)
-            throw new UnauthorizedAccessException("只有已启用的管理员可以进入历史记录。");
+        if (!_currentUser.IsEnabled)
+            throw new UnauthorizedAccessException("只有已启用的账户可以进入历史记录。");
         _csvExporter = new HistoryCsvExporter(historyStore);
         Alarms = new AlarmHistoryViewModel(currentUser, alarmStore ?? new AlarmStore(historyStore.DatabasePath));
+       
+        // 默认选中全部设备
         DeviceOptions.Add(_allDevices);
         _selectedDevice = _allDevices;
     }
 
-    /// <summary>按当前输入查询第一页，并把最新保存的记录纳入本次查询。</summary>
+    /// <summary>
+    /// 整理好查询条件，数据库只查第一页
+    /// </summary>
+    /// <returns></returns>
     [RelayCommand(CanExecute = nameof(CanRefreshRecords))]
     private async Task RefreshRecordsAsync()
     {
@@ -93,7 +117,7 @@ public sealed partial class HistoryViewModel : PageViewModel
         try
         {
             HistoryFilter filter = BuildFilter();
-
+            // 只查第一页，给最大编号传入null，得到本次查询的最大记录编号，后续翻页和导出都用这个值，避免混入后来新增的记录。
             await LoadPageAsync(filter, 1, null, refreshDeviceOptions: true);
         }
         catch (Exception ex)
@@ -108,15 +132,25 @@ public sealed partial class HistoryViewModel : PageViewModel
     /// <summary>把筛选输入装成查询条件；启用时间筛选时，先转成数据库使用的 UTC 时间。</summary>
     private HistoryFilter BuildFilter()
     {
+        // 没勾选时间筛选
         if (!UseTimeFilter)
             return new HistoryFilter(SelectedDevice?.DeviceId, PointNameFilter);
 
+        // 勾选了时间筛选
         var range = HistoryQueryTime.ReadRange(StartDate, StartTimeText, EndDate, EndTimeText);
         return new HistoryFilter(SelectedDevice?.DeviceId, PointNameFilter, range.StartUtc, range.EndUtcExclusive);
     }
 
-    /// <summary>后台查一页记录，成功后更新表格和页码，失败就保留旧结果。</summary>
-    private async Task LoadPageAsync(HistoryFilter filter, int page, long? snapshotId, bool refreshDeviceOptions = false)
+    /// <summary>
+    /// 真正取数据，并填入页面，但是只查指定的一页
+    /// 这里说是分页，其实是跳过（当前页数-1）*每页数量条，然后接着查每页数量，就能得到指定页数
+    /// </summary>
+    /// <param name="filter"></param>
+    /// <param name="page">决定查哪页，跟前端选择第几页有关，就是数据库的分页查询条件</param>
+    /// <param name="queryMaxRecordId"></param>
+    /// <param name="refreshDeviceOptions"></param>
+    /// <returns></returns>
+    private async Task LoadPageAsync(HistoryFilter filter, int page, long? queryMaxRecordId, bool refreshDeviceOptions = false)
     {
         IsLoading = true;
         PageMessage = "正在查询历史记录…";
@@ -124,9 +158,11 @@ public sealed partial class HistoryViewModel : PageViewModel
         {
             var result = await Task.Run(() =>
             {
+                // 查有哪些设备，供下拉框使用
                 var options = refreshDeviceOptions ? _historyStore.GetDeviceOptions(_currentUser) : null;
 
-                var data = _historyStore.GetPage(_currentUser, filter, page, PageSize, snapshotId);
+                // 真正查指定页数据，得到的是HistroyPage对象，存储的不仅有历史记录，还有总数、页码和最大记录编号
+                var data = _historyStore.GetPage(_currentUser, filter, page, PageSize, queryMaxRecordId);
 
                 return (Options: options, Data: data);
             });
@@ -134,6 +170,7 @@ public sealed partial class HistoryViewModel : PageViewModel
             if (_isShuttingDown)
                 return;
 
+            // 如果刷新了设备列表，就替换下拉框选项；否则保留原来的显示。
             if (result.Options is not null)
             {
                 DeviceOptions.Clear();
@@ -148,16 +185,13 @@ public sealed partial class HistoryViewModel : PageViewModel
                 }
             }
 
-            long? selectedRecordId = SelectedRecord?.Id;
+            // 把这一页记录放到表格历史记录集合，是HistoryRecord对象，这是一条历史记录
             Records.Clear();
             foreach (HistoryRecord record in result.Data.Records)
                 Records.Add(record);
 
-            SelectedRecord = Records.FirstOrDefault(record => record.Id == selectedRecordId)
-                ?? Records.FirstOrDefault();
-
-            _appliedFilter = filter;
-            _snapshotId = result.Data.SnapshotId;
+            _queryFilter = filter;
+            _queryMaxRecordId = result.Data.SnapshotId;
             _totalRecords = result.Data.TotalRecords;
             _currentPage = _totalRecords == 0 ? 0 : result.Data.PageNumber;
 
@@ -175,7 +209,10 @@ public sealed partial class HistoryViewModel : PageViewModel
         }
     }
 
-    /// <summary>恢复默认筛选条件，再查询第一页。</summary>
+    /// <summary>
+    /// 重置条件按钮，恢复默认查询条件然后查询第一页
+    /// </summary>
+    /// <returns></returns>
     [RelayCommand(CanExecute = nameof(CanRefreshRecords))]
     private async Task ResetFiltersAsync()
     {
@@ -193,64 +230,41 @@ public sealed partial class HistoryViewModel : PageViewModel
     /// <summary>按上次已查询的范围加载上一页。</summary>
     [RelayCommand(CanExecute = nameof(CanPreviousPage))]
     private Task PreviousPageAsync() => CanPreviousPage()
-        ? LoadPageAsync(_appliedFilter!, _currentPage - 1, _snapshotId) : Task.CompletedTask;
+        ? LoadPageAsync(_queryFilter!,
+                        _currentPage - 1,
+                        _queryMaxRecordId) : Task.CompletedTask;
 
     /// <summary>有上次查询结果、当前不忙且不是第一页，才允许上一页。</summary>
-    private bool CanPreviousPage() => !IsBusy && HasLoadedRecords && _currentPage > 1;
+    private bool CanPreviousPage() => !IsBusy && HasQueried && _currentPage > 1;
 
     /// <summary>按同一查询范围加载下一页，不混入后来新增的数据。</summary>
     [RelayCommand(CanExecute = nameof(CanNextPage))]
     private Task NextPageAsync() => CanNextPage()
-        ? LoadPageAsync(_appliedFilter!, _currentPage + 1, _snapshotId) : Task.CompletedTask;
+        ? LoadPageAsync(_queryFilter!, _currentPage + 1, _queryMaxRecordId) : Task.CompletedTask;
 
     /// <summary>有上次查询结果、当前不忙且后面还有页，才允许下一页。</summary>
-    private bool CanNextPage() => !IsBusy && HasLoadedRecords && _currentPage < TotalPages;
+    private bool CanNextPage() => !IsBusy && HasQueried && _currentPage < TotalPages;
 
-    /// <summary>为选中记录的点位打开趋势窗口；趋势会单独查这个点的历史，不只画当前页。</summary>
-    [RelayCommand(CanExecute = nameof(CanShowTrend))]
-    private void ShowTrend()
-    {
-        if (!CanShowTrend())
-            return;
-        if (TrendRequested is null)
-        {
-            PageMessage = "页面尚未准备好，无法打开趋势窗口。";
-            return;
-        }
-        try
-        {
-            // 把所选点位和本次查询范围交给趋势窗口的数据对象。
-            var trend = new HistoryTrendViewModel(_currentUser, _historyStore,
-                SelectedRecord!, _appliedFilter!, _snapshotId);
-            TrendRequested.Invoke(trend);
-        }
-        catch (Exception ex)
-        {
-            PageMessage = $"打开趋势失败：{ex.Message}";
-        }
-    }
-
-    private bool CanShowTrend() => !IsBusy && HasLoadedRecords
-        && SelectedRecord is not null && Records.Contains(SelectedRecord);
-
-    /// <summary>选择文件后，导出本次查询的全部结果，不只当前页。</summary>
+    /// <summary>导出Csv。</summary>
     [RelayCommand(CanExecute = nameof(CanExportRecords), IncludeCancelCommand = true)]
     private async Task ExportRecordsAsync(CancellationToken cancellationToken)
     {
         if (!CanExportRecords())
             return;
 
-        HistoryFilter filter = _appliedFilter!;
-        long snapshot = _snapshotId;
-        long total = _totalRecords;
-        bool exportFinished = false;
+        // 查询条件
+        HistoryFilter filter = _queryFilter!;
+        // 限制的最大记录编号，避免导出时混入后来新增的数据
+        long queryMaxRecordId = _queryMaxRecordId;
         IsExporting = true;
         try
         {
-            if (ExportPathRequested is null)
+            // 保存路径只需要一个结果：调用最后接上的界面，避免连续弹窗，后一次取消覆盖前一次路径。
+            var choosePath = ExportPathRequested?.GetInvocationList().LastOrDefault() as Func<string?>;
+            if (choosePath is null)
                 throw new InvalidOperationException("页面尚未准备好，无法选择导出文件。");
-
-            string? path = ExportPathRequested.Invoke();
+            // 打开路径选择窗口，传回指定的路径
+            string? path = choosePath.Invoke();
             cancellationToken.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(path))
             {
@@ -258,14 +272,10 @@ public sealed partial class HistoryViewModel : PageViewModel
                 return;
             }
 
-            var progress = new Progress<long>(count =>
-            {
-                if (!_isShuttingDown && !exportFinished)
-                    PageMessage = $"正在导出：已写入 {count} / {total} 条，可取消。";
-            });
-
-            long written = await Task.Run(() => _csvExporter.Export(_currentUser, filter, snapshot,
-                path, cancellationToken, progress), cancellationToken);
+            PageMessage = "正在导出历史记录，可取消…";
+            // 真正查询并导出到 CSV 文件
+            long written = await Task.Run(() => _csvExporter.Export(_currentUser, filter, queryMaxRecordId,
+                path, cancellationToken), cancellationToken);
             if (!_isShuttingDown)
                 PageMessage = $"已导出 {written} 条记录：{path}";
         }
@@ -282,13 +292,12 @@ public sealed partial class HistoryViewModel : PageViewModel
         }
         finally
         {
-            exportFinished = true;
             IsExporting = false;
         }
     }
 
     /// <summary>有上次成功查询的结果且当前不忙，才允许导出。</summary>
-    private bool CanExportRecords() => !IsBusy && HasLoadedRecords && _totalRecords > 0;
+    private bool CanExportRecords() => !IsBusy && HasQueried && _totalRecords > 0;
 
     partial void OnIsLoadingChanged(bool value) => NotifyStateChanged();
     partial void OnIsExportingChanged(bool value) => NotifyStateChanged();
@@ -298,7 +307,7 @@ public sealed partial class HistoryViewModel : PageViewModel
     {
         OnPropertyChanged(nameof(IsBusy));
         OnPropertyChanged(nameof(CanEditFilters));
-        OnPropertyChanged(nameof(HasLoadedRecords));
+        OnPropertyChanged(nameof(HasQueried));
         OnPropertyChanged(nameof(ShowEmptyMessage));
         OnPropertyChanged(nameof(RefreshButtonText));
         OnPropertyChanged(nameof(CurrentPage));
@@ -312,7 +321,6 @@ public sealed partial class HistoryViewModel : PageViewModel
         PreviousPageCommand.NotifyCanExecuteChanged();
         NextPageCommand.NotifyCanExecuteChanged();
         ExportRecordsCommand.NotifyCanExecuteChanged();
-        ShowTrendCommand.NotifyCanExecuteChanged();
     }
 
     /// <summary>退出时禁止新操作，取消导出，再等读数与报警历史的查询、导出收尾。</summary>

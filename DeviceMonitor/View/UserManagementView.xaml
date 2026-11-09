@@ -68,7 +68,7 @@
                             <Button x:Name="CreateOperatorButton" Grid.Column="1"
                                     Content="{Binding CreateButtonText}" Height="36"
                                     Style="{StaticResource PrimaryActionButtonStyle}"
-                                    Command="{Binding CreateOperatorCommand}" />
+                                    Click="CreateOperatorButton_Click" IsEnabled="{Binding CanCreateOperator}" />
                         </Grid>
                     </Grid>
                 </Expander>
@@ -89,14 +89,9 @@
                                     Command="{Binding RefreshUsersCommand}"
                                     ToolTip="重新读取账户列表；不清空正在填写的新账户。"
                                     Style="{StaticResource SecondaryActionButtonStyle}" />
-                            <Button x:Name="EnableOperatorButton"
-                                    Content="启用" Height="36" ToolTip="启用当前选中的操作员。"
+                            <Button Content="{Binding OperatorActionText}" Height="36"
                                     Style="{StaticResource SecondaryActionButtonStyle}"
-                                    Command="{Binding EnableOperatorCommand}" />
-                            <Button x:Name="DisableOperatorButton"
-                                    Content="停用" Height="36" Margin="8,0,0,0" ToolTip="停用当前选中的操作员。"
-                                    Style="{StaticResource DangerActionButtonStyle}"
-                                    Command="{Binding DisableOperatorCommand}" />
+                                    Command="{Binding ToggleOperatorCommand}" />
                             <Button x:Name="ResetOperatorPasswordButton" Content="重置密码" Height="36" Margin="8,0,0,0"
                                     Command="{Binding ResetOperatorPasswordCommand}"
                                     ToolTip="仅重置选中操作员的密码，不改变启停状态。"

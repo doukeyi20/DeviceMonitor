@@ -25,16 +25,12 @@ internal sealed class DeviceRow
 
     public string Host { get; set; } = "";
     public int Port { get; set; }
-    public int UnitId
-    {
-        get; set;
-    }
+    public int UnitId { get; set; }
 
     public int SamplingIntervalMilliseconds { get; set; }
     public int ConnectTimeoutMilliseconds { get; set; }
     public int ReadTimeoutMilliseconds { get; set; }
     public int WriteTimeoutMilliseconds { get; set; }
-    public bool IsEnabled { get; set; }
 
     public DeviceCommunicationMode CommunicationMode { get; set; }
     public string SerialPortName { get; set; } = "";
@@ -73,10 +69,7 @@ internal sealed class HistoryRow
 
     public double Value { get; set; }
     public string Unit { get; set; } = "";
-    public DateTime ReadAtUtc
-    {
-        get; set;
-    }
+    public DateTime ReadAtUtc { get; set; }
 }
 
 /// <summary>AlarmRecords 表的一行；相同 EventId 表示同一条报警的后续状态。</summary>
@@ -87,10 +80,7 @@ internal sealed class AlarmRow
 
     public long DeviceId { get; set; }
     public string DeviceName { get; set; } = "";
-    public long? PointId
-    {
-        get; set;
-    }
+    public long? PointId { get; set; }
     public string PointName { get; set; } = "";
 
     public AlarmKind Kind { get; set; }
@@ -103,8 +93,5 @@ internal sealed class AlarmRow
     public DateTime StartedAtUtc { get; set; }
     public DateTime LastSeenAtUtc { get; set; }
     public DateTime? EndedAtUtc { get; set; }
-    public int Occurrences
-    {
-        get; set;
-    }
+    public int Occurrences { get; set; }
 }

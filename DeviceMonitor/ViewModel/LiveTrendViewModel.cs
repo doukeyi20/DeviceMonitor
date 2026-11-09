@@ -1,4 +1,6 @@
 // 选择点位并显示其已有的实时曲线缓存。
+using System.Diagnostics;
+using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using DeviceMonitor.Model;
 
@@ -6,24 +8,23 @@ namespace DeviceMonitor.ViewModel;
 
 public sealed class LiveTrendViewModel : ObservableObject, IDisposable
 {
-    private PointMonitorViewModel? _selectedPoint;
+    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(1);
+    private readonly DispatcherTimer _refreshTimer = new(DispatcherPriority.Background);
+    private readonly Stopwatch _sinceRefresh = new();
+    private PointReadingViewModel? _selectedPoint;
+    // 这份实时曲线显示已释放的标记：Dispose 时打上，之后不再切点或接收刷新，也不重复解绑。
+    // 它只停止这块曲线显示的订阅，不会停止设备采集；这个对象不再清回 false。
     private bool _isDisposed;
 
-    public TimeSpan WindowDuration => PointMonitorViewModel.TrendWindowDuration;
+    public TimeSpan WindowDuration => PointReadingViewModel.TrendWindowDuration;
 
     private IReadOnlyList<LiveTrendSample> _samples = Array.Empty<LiveTrendSample>();
 
     public IReadOnlyList<LiveTrendSample> Samples
     {
         get => _samples;
-        private set
-        {
-            if (SetProperty(ref _samples, value))
-                OnPropertyChanged(nameof(EndTime));
-        }
+        private set => SetProperty(ref _samples, value);
     }
-
-    public DateTimeOffset? EndTime => Samples.Count == 0 ? null : Samples[^1].ReadAt;
 
     private string _axisTitle = "读数";
     public string AxisTitle
@@ -39,8 +40,13 @@ public sealed class LiveTrendViewModel : ObservableObject, IDisposable
         private set => SetProperty(ref _statusText, value);
     }
 
+    public LiveTrendViewModel()
+    {
+        _refreshTimer.Tick += (_, _) => RefreshDisplay();
+    }
+
     /// <summary>切到一个点后，立即显示它已经缓存的曲线，不清空任何点的数据。</summary>
-    public void Select(PointMonitorViewModel? row)
+    public void Select(PointReadingViewModel? row)
     {
         if (_isDisposed)
             return;
@@ -63,14 +69,26 @@ public sealed class LiveTrendViewModel : ObservableObject, IDisposable
     /// <summary>原读数行已经更新了自己的缓存，这里只刷新正在看的图。</summary>
     private void SelectedPoint_TrendChanged()
     {
-        if (_isDisposed)
+        if (_isDisposed || _refreshTimer.IsEnabled)
             return;
-        RefreshDisplay();
+
+        TimeSpan remaining = RefreshInterval - _sinceRefresh.Elapsed;
+        if (Samples.Count == 0 || remaining <= TimeSpan.Zero)
+        {
+            RefreshDisplay();
+            return;
+        }
+
+        // 这一秒内的新点已进缓存，等间隔到了再一次性显示。
+        _refreshTimer.Interval = remaining;
+        _refreshTimer.Start();
     }
 
     /// <summary>拿所选点缓存的一份副本给图表；只改显示，不删除点位缓存。</summary>
     private void RefreshDisplay()
     {
+        _refreshTimer.Stop();
+        _sinceRefresh.Restart();
         // 取所选点的缓存副本显示，不重新采集或清空其他点。
         Samples = _selectedPoint?.TrendSamples.ToArray() ?? Array.Empty<LiveTrendSample>();
 
@@ -88,6 +106,7 @@ public sealed class LiveTrendViewModel : ObservableObject, IDisposable
         if (_isDisposed)
             return;
         _isDisposed = true;
+        _refreshTimer.Stop();
         if (_selectedPoint is not null)
             _selectedPoint.TrendChanged -= SelectedPoint_TrendChanged;
         _selectedPoint = null;

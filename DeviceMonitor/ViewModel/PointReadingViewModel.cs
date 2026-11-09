@@ -1,4 +1,4 @@
-// 维护点位最新读数、报警状态和实时曲线缓存。
+//采集点位的结果
 using System.Collections.Specialized;
 using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -6,7 +6,7 @@ using DeviceMonitor.Model;
 
 namespace DeviceMonitor.ViewModel;
 
-public partial class PointMonitorViewModel : ObservableObject, IDisposable
+public partial class PointReadingViewModel : ObservableObject, IDisposable
 {
     public const int MaximumTrendSamples = 300;
     public static TimeSpan TrendWindowDuration { get; } = TimeSpan.FromMinutes(5);
@@ -14,7 +14,7 @@ public partial class PointMonitorViewModel : ObservableObject, IDisposable
     private readonly List<LiveTrendSample> _trendSamples = new();
     private readonly AlarmMonitor? _alarms;
     private readonly DeviceSamplingViewModel? _samplingTask;
-    private AlarmRecord? _displayedAlarm;
+    private AlarmRecord? CurrentAlarm => _alarms?.GetCurrentAlarm(DeviceId, Point.Id);
     private string? _readFailureMessage;
 
     public long DeviceId { get; }
@@ -27,14 +27,22 @@ public partial class PointMonitorViewModel : ObservableObject, IDisposable
 
     public event Action? TrendChanged;
 
-    [ObservableProperty] private string _valueText = "—";
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(NumberText))]
+    [NotifyPropertyChangedFor(nameof(ValueText))]
+    private double? _value;
+
+    // 数值和单位分开显示；读取失败时为空，不冒充有效读数。
+    public string NumberText => Value?.ToString("0.###", System.Globalization.CultureInfo.CurrentCulture) ?? "—";
+    public string ValueText => Value.HasValue ? NumericValue.Format(Value.Value, Point.Unit) : "—";
     [ObservableProperty] private string _qualityText = "尚未读取";
+
     [ObservableProperty] private string _readTimeText = "—";
 
     // 逻辑使用明确状态，不从中文提示文字反推读取结果。
     public SingleReadState ReadState { get; private set; } = SingleReadState.NotRead;
 
-    public bool IsAlert => _displayedAlarm is not null || _readFailureMessage is not null;
+    public bool IsAlert => CurrentAlarm is not null || _readFailureMessage is not null;
     public string StatusText
     {
         get
@@ -43,18 +51,18 @@ public partial class PointMonitorViewModel : ObservableObject, IDisposable
                 return IsAlert ? "已停止 · 不再监测" : "已停止";
             if (_samplingTask?.IsStopping == true)
                 return "正在停止";
-            if (_displayedAlarm is not null)
-                return _displayedAlarm.State == AlarmState.NotMonitoring ? "不再监测" : _displayedAlarm.KindText;
+            if (CurrentAlarm is not null)
+                return CurrentAlarm.KindText;
             if (_readFailureMessage is not null)
                 return "读取失败";
             return ReadState == SingleReadState.Succeeded ? "正常" : QualityText;
         }
     }
     public string DetailsText => $"{DisplayName}；地址 {Address}。{StatusText}。"
-        + (_displayedAlarm is null ? string.Empty : $" {_displayedAlarm.Message}")
+        + (CurrentAlarm is null ? string.Empty : $" {CurrentAlarm.Message}")
         + (_readFailureMessage is null ? string.Empty : $" {_readFailureMessage}");
 
-    public PointMonitorViewModel(DeviceInfo device, PointInfo point,
+    public PointReadingViewModel(DeviceInfo device, PointInfo point,
     AlarmMonitor? alarms = null, DeviceSamplingViewModel? sampling = null)
     {
         ArgumentNullException.ThrowIfNull(device);
@@ -91,76 +99,61 @@ public partial class PointMonitorViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>更新成功读数并追加曲线样本。</summary>
-    public void ShowResult(PointReadResult result)
+    public void ShowResult(PointReadResult result, TimeSpan elapsed)
     {
         ReadState = SingleReadState.Succeeded;
 
-        ValueText = result.ValueText;
+        Value = result.Value;
         ReadTimeText = result.ReadAt.ToLocalTime().ToString("HH:mm:ss");
         QualityText = "成功";
         _readFailureMessage = null;
         NotifyStatusChanged();
-        AppendTrendSample(result.ReadAt, result.Value);
+        AppendTrendSample(elapsed, result.Value);
         TrendChanged?.Invoke();
     }
 
     /// <summary>清掉有效数值，曲线留断点，不填假 0。</summary>
-    public void ShowFailure(string message)
+    public void ShowFailure(string message, TimeSpan elapsed)
     {
         ReadState = SingleReadState.Failed;
         _readFailureMessage = message;
-        ClearReading(message);
+        ClearReading(message, elapsed);
     }
 
     /// <summary>与设备故障分开，不靠判断提示文字来区分。</summary>
-    public void ShowCanceled()
+    public void ShowCanceled(TimeSpan elapsed)
     {
         ReadState = SingleReadState.Canceled;
         _readFailureMessage = null;
-        ClearReading("读取已取消");
+        ClearReading("读取已取消", elapsed);
     }
 
-    private void ClearReading(string message)
+    private void ClearReading(string message, TimeSpan elapsed)
     {
-        ValueText = "—";
+        Value = null;
         ReadTimeText = "—";
         QualityText = message;
         NotifyStatusChanged();
         // 空值表示曲线断点，读取失败不能画成温度零点。
-        AppendTrendSample(DateTimeOffset.UtcNow, null);
+        AppendTrendSample(elapsed, null);
         TrendChanged?.Invoke();
     }
 
-    private void AppendTrendSample(DateTimeOffset readAt, double? value)
+    private void AppendTrendSample(TimeSpan elapsed, double? value)
     {
-        _trendSamples.Add(new LiveTrendSample(readAt, value));
+        _trendSamples.Add(new LiveTrendSample(elapsed, value));
 
         // 仅裁剪显示缓存，原始历史由独立保存流程维护。
-        DateTimeOffset earliest = readAt - TrendWindowDuration;
-        _trendSamples.RemoveAll(sample => sample.ReadAt < earliest);
+        TimeSpan earliest = elapsed - TrendWindowDuration;
+        _trendSamples.RemoveAll(sample => sample.Elapsed < earliest);
         if (_trendSamples.Count > MaximumTrendSamples)
             _trendSamples.RemoveRange(0, _trendSamples.Count - MaximumTrendSamples);
     }
 
     private void Alarms_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) => RefreshAlarm();
 
-    private void RefreshAlarm()
-    {
-        if (_alarms is null)
-            return;
-        AlarmRecord? current = _alarms.GetCurrentAlarm(DeviceId, Point.Id);
-        if (current is not null)
-            _displayedAlarm = current;
-        else if (_displayedAlarm is not null)
-        {
-            AlarmRecord? endedAlarm = _alarms.Records.FirstOrDefault(item => item.EventId == _displayedAlarm.EventId);
-            if (endedAlarm is not null)
-                _displayedAlarm = endedAlarm.State == AlarmState.NotMonitoring ? endedAlarm : null;
-            else if (_displayedAlarm.State != AlarmState.NotMonitoring)
-                _displayedAlarm = null;
-        }
-        NotifyStatusChanged();
-    }
+    // 报警状态只在 AlarmMonitor 维护，这里收到通知后重新读取，不再缓存另一份。
+    private void RefreshAlarm() => NotifyStatusChanged();
 
     private void Sampling_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
@@ -175,8 +168,7 @@ public partial class PointMonitorViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(DetailsText));
     }
 
-    /// <summary>普通取消勾选不能断开这些通知。</summary>
-
+    /// <summary>点位任务结束后解除通知；切换显示不会释放仍在采集的点位。</summary>
     public void Dispose()
     {
         if (_alarms is not null)

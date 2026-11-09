@@ -1,4 +1,6 @@
-// 按设备管理采集任务，协调启停和配置修改。
+// 按设备编号保存采集任务，供监控、配置和退出流程共用。
+// 所有设备采集任务的入口
+using DeviceMonitor.Services;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -11,25 +13,31 @@ using DeviceMonitor.Model;
 
 namespace DeviceMonitor.ViewModel;
 
-public sealed class DeviceTasks : ObservableObject
+/// <summary>采集管理器，Sessions保存每台设备的采集对象，协调开始、删除和退出；实际循环在 DeviceSamplingViewModel.RunAsync。</summary>
+public sealed class SamplingTasks : ObservableObject
 {
     private readonly UserAccount _currentUser;
     private readonly DeviceStore _deviceStore;
     private readonly HistoryStore _historyStore;
     private readonly Dispatcher _dispatcher = Dispatcher.CurrentDispatcher;
 
-    // 一项对应一台设备的完整采集循环，页面切换不重建任务。
+    // 保存每个设备的采集对象，供监控页和配置页共用；一台设备最多登记一个对象。
+    // 虽然不是字典，但创建DeviceSamplingViewModel时用了设备编号，之后查找也用编号，保证一台设备只会有一个对象。
     private readonly ObservableCollection<DeviceSamplingViewModel> _sessions = new();
 
+    // 按设备编号打删除中标记：开始删除时加入，finally 中移除；期间挡住重复删除和重新启动这台设备。
     private readonly HashSet<long> _deletingDeviceIds = new();
 
     // 重复退出请求共用一个收尾任务，避免重复关闭资源。
+    // 保存停止全部设备并收尾的 Task；重复退出共用它，防止同一批资源被重复收尾。
+    // 任务完成后仍保留，不能把非空理解成还没停完。
     private Task? _shutdownTask;
 
     public event Action<long>? DeviceDeleted;
     public bool IsDeletingDevices => _deletingDeviceIds.Count > 0;
 
     // 单次测试也登记目标；测试收尾结束前，其他页面不能删除这台设备。
+    // 记住正在单点测试哪台设备：测试前填编号，结束后清成 null；期间挡住这台设备的删除和连续采集。
     private long? _singleReadDeviceId;
     public long? SingleReadDeviceId
     {
@@ -37,12 +45,15 @@ public sealed class DeviceTasks : ObservableObject
         internal set => SetProperty(ref _singleReadDeviceId, value);
     }
 
+    // Sessions 是已创建的设备任务，不是线程列表；一台设备最多登记一个采集对象。
     public ReadOnlyObservableCollection<DeviceSamplingViewModel> Sessions { get; }
 
     public int ActiveSamplingCount => _sessions.Count(session => session.IsRunning);
 
     public AlarmMonitor Alarms { get; }
 
+    // 整个采集管理器的退出标记：StopAllAsync 一开始打上，后续拒绝新建、启动等操作。
+    // 它不是全部设备已停止的标记；真正结束要等 _shutdownTask，这个对象退出后不再清回 false。
     private bool _isShuttingDown;
     public bool IsShuttingDown
     {
@@ -50,8 +61,8 @@ public sealed class DeviceTasks : ObservableObject
         private set => SetProperty(ref _isShuttingDown, value);
     }
 
-    public DeviceTasks(UserAccount currentUser, DeviceStore deviceStore, HistoryStore historyStore,
-    AlarmStore? alarmStore = null)
+    public SamplingTasks(UserAccount currentUser, DeviceStore deviceStore, HistoryStore historyStore,
+        AlarmStore? alarmStore = null)
     {
         _currentUser = currentUser ?? throw new ArgumentNullException(nameof(currentUser));
         _deviceStore = deviceStore ?? throw new ArgumentNullException(nameof(deviceStore));
@@ -59,6 +70,7 @@ public sealed class DeviceTasks : ObservableObject
         if (!_currentUser.IsEnabled)
             throw new UnauthorizedAccessException("当前账户不能使用采集任务。");
 
+        // Sessions的存在是为了查询设备的采集对象
         Sessions = new ReadOnlyObservableCollection<DeviceSamplingViewModel>(_sessions);
         Alarms = new AlarmMonitor(currentUser, alarmStore ?? new AlarmStore(historyStore.DatabasePath));
     }
@@ -71,6 +83,10 @@ public sealed class DeviceTasks : ObservableObject
         CheckControlPermission();
 
         // 获取任务时统一检查退出状态，不在同一调用链重复判断。
+        if (SingleReadDeviceId == deviceId)
+            throw new InvalidOperationException("这台设备正在测试，请等待测试完成。");
+
+        // 从Sessions集合得到DeviceSamplingViewModel对象才能开始采集
         GetOrCreateSession(deviceId).Start();
     }
 

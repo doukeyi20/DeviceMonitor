@@ -1,4 +1,5 @@
 // 管理报警历史筛选、分页和 CSV 导出。
+using DeviceMonitor.Services;
 using System;
 using DeviceMonitor;
 using System.Collections.ObjectModel;
@@ -29,6 +30,8 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
     private long _snapshotId;
     private long _totalRecords;
     private int _currentPage;
+    // 报警历史页的退出标记：收尾开始时打上，禁止新查询、翻页、导出，不再把晚返回的查询结果填入列表。
+    // 它只表示已经进入退出阶段，任务是否结束还要等对应 Task；以后不再清回 false。
     private bool _isShuttingDown;
 
     public event Func<string?>? ExportPathRequested;
@@ -43,13 +46,24 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
     };
 
     [ObservableProperty] private DeviceFilterOption? _selectedDevice;
+
     [ObservableProperty] private AlarmCategoryOption? _selectedCategory;
+
+    // 勾选后才按起止时间查报警；重置时取消勾选，恢复查询全部时间。
     [ObservableProperty] private bool _useTimeFilter;
+
     [ObservableProperty] private DateTime? _startDate = DateTime.Today;
+
     [ObservableProperty] private DateTime? _endDate = DateTime.Today;
+
     [ObservableProperty] private string _startTimeText = "00:00:00";
+
     [ObservableProperty] private string _endTimeText = "23:59:59";
+
+    // 正在查询或翻页加载报警的标记：查询前打上，完成或失败后在 finally 清掉，期间挡住重复查询。
     [ObservableProperty] private bool _isLoading;
+
+    // 正在导出报警历史的标记：导出开始时打上，完成、失败或取消后清掉，避免重复导出和中途换筛选。
     [ObservableProperty] private bool _isExporting;
 
     public int CurrentPage => _currentPage;
@@ -76,8 +90,8 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
         _currentUser = currentUser ?? throw new ArgumentNullException(nameof(currentUser));
         _alarmStore = alarmStore ?? throw new ArgumentNullException(nameof(alarmStore));
         _csvExporter = new AlarmCsvExporter(_alarmStore);
-        if (_currentUser.Role != UserRole.Administrator || !_currentUser.IsEnabled)
-            throw new UnauthorizedAccessException("只有已启用的管理员可以查看报警历史。");
+        if (!_currentUser.IsEnabled)
+            throw new UnauthorizedAccessException("只有已启用的账户可以查看报警历史。");
         DeviceOptions.Add(_allDevices);
         _selectedDevice = _allDevices;
         _selectedCategory = CategoryOptions[0];
@@ -206,15 +220,15 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
 
         AlarmFilter filter = _appliedFilter!;
         long snapshot = _snapshotId;
-        long total = _totalRecords;
-        bool exportFinished = false;
         IsExporting = true;
         try
         {
-            if (ExportPathRequested is null)
+            // 保存路径只需要一个结果：调用最后接上的界面，避免连续弹窗，后一次取消覆盖前一次路径。
+            var choosePath = ExportPathRequested?.GetInvocationList().LastOrDefault() as Func<string?>;
+            if (choosePath is null)
                 throw new InvalidOperationException("页面尚未准备好，无法选择导出文件。");
 
-            string? path = ExportPathRequested.Invoke();
+            string? path = choosePath.Invoke();
             cancellationToken.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(path))
             {
@@ -222,14 +236,9 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
                 return;
             }
 
-            var progress = new Progress<long>(count =>
-            {
-                if (!_isShuttingDown && !exportFinished)
-                    PageMessage = $"正在导出报警：已写入 {count} / {total} 条，可取消。";
-            });
-
+            PageMessage = "正在导出报警记录，可取消…";
             long written = await Task.Run(() => _csvExporter.Export(_currentUser, filter, snapshot,
-                path, cancellationToken, progress), cancellationToken);
+                path, cancellationToken), cancellationToken);
             if (!_isShuttingDown)
                 PageMessage = $"已导出 {written} 条报警记录：{path}";
         }
@@ -246,7 +255,6 @@ public sealed partial class AlarmHistoryViewModel : ObservableObject
         }
         finally
         {
-            exportFinished = true;
             IsExporting = false;
         }
     }

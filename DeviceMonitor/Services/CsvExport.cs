@@ -1,9 +1,11 @@
 // 分批导出读数、报警 CSV，成功后替换目标文件。
 using System.Globalization;
 using System.Text;
-using static DeviceMonitor.Model.CsvText;
+using static DeviceMonitor.Services.CsvText;
 
-namespace DeviceMonitor.Model;
+using DeviceMonitor.Model;
+
+namespace DeviceMonitor.Services;
 
 /// <summary>分批导出读数历史；每批最多查 1000 条，不修改数据库。</summary>
 public sealed class HistoryCsvExporter
@@ -20,8 +22,8 @@ public sealed class HistoryCsvExporter
         ArgumentNullException.ThrowIfNull(user);
         ArgumentNullException.ThrowIfNull(filter);
 
-        if (!user.IsEnabled || user.Role != UserRole.Administrator)
-            throw new UnauthorizedAccessException("只有已启用的管理员才能导出历史记录。");
+        if (!user.IsEnabled)
+            throw new UnauthorizedAccessException("只有已启用的账户才能导出历史记录。");
         ArgumentOutOfRangeException.ThrowIfNegative(snapshotId);
         string path = CheckPath(filePath, _store.DatabasePath);
         string directory = Path.GetDirectoryName(path)!;
@@ -94,8 +96,8 @@ public sealed class AlarmCsvExporter
         ArgumentNullException.ThrowIfNull(user);
         ArgumentNullException.ThrowIfNull(filter);
 
-        if (!user.IsEnabled || user.Role != UserRole.Administrator)
-            throw new UnauthorizedAccessException("只有已启用的管理员才能导出报警历史。");
+        if (!user.IsEnabled)
+            throw new UnauthorizedAccessException("只有已启用的账户才能导出报警历史。");
         ArgumentOutOfRangeException.ThrowIfNegative(snapshotId);
         string path = CheckPath(filePath, _store.DatabasePath);
         string directory = Path.GetDirectoryName(path)!;
@@ -165,6 +167,7 @@ public sealed class AlarmCsvExporter
         Field(SafeText(record.Unit)));
 }
 
+/// <summary>两种 CSV 共用的路径检查、字段转义和时间文字；不查询数据库。</summary>
 internal static class CsvText
 {
     internal static string CheckPath(string filePath, string databasePath)
@@ -182,8 +185,10 @@ internal static class CsvText
         return path;
     }
 
+    // CSV 中双引号写成两个双引号，再把整个字段包起来，逗号和换行才不会拆错列。
     internal static string Field(string value) => "\"" + value.Replace("\"", "\"\"") + "\"";
 
+    // 设备名称等外部文字若以公式字符开头，加前导单引号，避免表格软件当公式执行。
     internal static string SafeText(string value)
     {
         string trimmed = value.TrimStart();

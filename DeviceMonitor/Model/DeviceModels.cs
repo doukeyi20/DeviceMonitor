@@ -6,66 +6,28 @@ using System;
 
 namespace DeviceMonitor.Model;
 
-/// <summary>一台设备的一条连接配置，设备表格每行对应一个对象。</summary>
+/// <summary>一条已保存的设备连接配置，采集任务按设备编号使用它。</summary>
 public class DeviceInfo
 {
-    public long Id
-    {
-        get;
-    }
+    public long Id { get; }
     public string Name { get; }
-    public string Host
-    {
-        get;
-    }
-    public int Port
-    {
-        get;
-    }
+    public string Host { get; }
+    public int Port { get; }
     public DeviceCommunicationMode CommunicationMode { get; }
-    public string SerialPortName
-    {
-        get;
-    }
-    public int BaudRate
-    {
-        get;
-    }
-    public Parity Parity
-    {
-        get;
-    }
-    public StopBits StopBits
-    {
-        get;
-    }
+    public string SerialPortName { get; }
+    public int BaudRate { get; }
+    public Parity Parity { get; }
+    public StopBits StopBits { get; }
     public string CommunicationText => CommunicationMode == DeviceCommunicationMode.Rtu ? "Modbus RTU" : "Modbus TCP";
 
     public string Endpoint => CommunicationMode == DeviceCommunicationMode.Rtu
         ? $"{SerialPortName} · {BaudRate},8,{(Parity == Parity.None ? "N" : Parity == Parity.Even ? "E" : "O")},{(StopBits == StopBits.Two ? 2 : 1)}"
         : $"{Host}:{Port}";
-    public byte UnitId
-    {
-        get;
-    }
-    public int SamplingIntervalMilliseconds
-    {
-        get;
-    }
-    public int ConnectTimeoutMilliseconds
-    {
-        get;
-    }
-    public int ReadTimeoutMilliseconds
-    {
-        get;
-    }
-    public int WriteTimeoutMilliseconds
-    {
-        get;
-    }
-
-    public bool IsEnabled { get; }
+    public byte UnitId { get; }
+    public int SamplingIntervalMilliseconds { get; }
+    public int ConnectTimeoutMilliseconds { get; }
+    public int ReadTimeoutMilliseconds { get; }
+    public int WriteTimeoutMilliseconds { get; }
 
     public DeviceInfo(
         long id,
@@ -77,7 +39,6 @@ public class DeviceInfo
         int connectTimeoutMilliseconds,
         int readTimeoutMilliseconds,
         int writeTimeoutMilliseconds,
-        bool isEnabled,
         DeviceCommunicationMode communicationMode = DeviceCommunicationMode.Tcp,
         string serialPortName = "", int baudRate = 4800,
         Parity parity = Parity.None, StopBits stopBits = StopBits.One)
@@ -96,7 +57,6 @@ public class DeviceInfo
         ConnectTimeoutMilliseconds = connectTimeoutMilliseconds;
         ReadTimeoutMilliseconds = readTimeoutMilliseconds;
         WriteTimeoutMilliseconds = writeTimeoutMilliseconds;
-        IsEnabled = isEnabled;
     }
 }
 

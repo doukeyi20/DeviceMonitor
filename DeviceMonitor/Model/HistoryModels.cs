@@ -1,11 +1,11 @@
-// 定义历史记录、筛选条件、分页和趋势结果。
+// 定义历史记录、筛选条件、分页结果和设备筛选选项。
 using System.Collections.Generic;
 using System.Linq;
 using System;
 
 namespace DeviceMonitor.Model;
 
-/// <summary>一条历史读数：哪台设备、哪个点、什么值、什么时间。</summary>
+/// <summary>一条历史读数：哪台设备、哪个点、什么值、什么时间。由DeviceSamplingViewModel 创建交给HistoryStore</summary>
 public sealed class HistoryRecord
 {
     public long Id { get; }
@@ -45,15 +45,14 @@ public sealed class HistoryRecord
     }
 }
 
-/// <summary>记住本次历史查询的条件，翻页、趋势和导出继续用它。</summary>
+/// <summary>一组查询条件</summary>
 public sealed class HistoryFilter
 {
     public long? DeviceId { get; }
-    public string PointName
-    {
-        get;
-    }
+    public string PointName { get; }
+    // 起始时间
     public DateTimeOffset? StartUtc { get; }
+    // 结束时间
     public DateTimeOffset? EndUtcExclusive { get; }
 
     public HistoryFilter(long? deviceId = null, string? pointName = null,
@@ -70,25 +69,13 @@ public sealed class HistoryFilter
     }
 }
 
-/// <summary>一页历史查询结果：本页记录、总数、页码、最大记录编号。</summary>
+/// <summary>一页历史查询结果：本页记录、总数、页码、最大记录编号。包含历史读数</summary>
 public sealed class HistoryPage
 {
-    public IReadOnlyList<HistoryRecord> Records
-    {
-        get;
-    }
-    public long TotalRecords
-    {
-        get;
-    }
-    public int PageNumber
-    {
-        get;
-    }
-    public long SnapshotId
-    {
-        get;
-    }
+    public IReadOnlyList<HistoryRecord> Records { get; }
+    public long TotalRecords { get; }
+    public int PageNumber { get; }
+    public long SnapshotId { get; }
 
     public HistoryPage(IReadOnlyList<HistoryRecord> records, long totalRecords, int pageNumber, long snapshotId)
     {
@@ -99,36 +86,11 @@ public sealed class HistoryPage
     }
 }
 
-/// <summary>趋势查询结果：Records 用来画图，TotalRecords 是符合条件的总条数。</summary>
-public sealed class HistoryTrendData
-{
-    public IReadOnlyList<HistoryRecord> Records { get; }
-    public long TotalRecords { get; }
-    public bool IsTruncated => TotalRecords > Records.Count;
-
-    public HistoryTrendData(IReadOnlyList<HistoryRecord> records, long totalRecords)
-    {
-        ArgumentNullException.ThrowIfNull(records);
-        ArgumentOutOfRangeException.ThrowIfNegative(totalRecords);
-        if (totalRecords < records.Count)
-            throw new ArgumentException("总记录数不能少于实际返回的记录数。", nameof(totalRecords));
-
-        Records = Array.AsReadOnly(records.ToArray());
-        TotalRecords = totalRecords;
-    }
-}
-
-/// <summary>设备筛选下拉框的一项，来自历史表，不要求这台设备的配置仍然存在。</summary>
+/// <summary>条件查询中设备筛选下拉框的一项。</summary>
 public sealed class DeviceFilterOption
 {
-    public long? DeviceId
-    {
-        get;
-    }
-    public string DisplayName
-    {
-        get;
-    }
+    public long? DeviceId { get; }
+    public string DisplayName { get; }
 
     public DeviceFilterOption(long? deviceId, string name)
     {

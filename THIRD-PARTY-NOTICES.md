@@ -25,3 +25,18 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+## ScottPlot.WPF 5.1.59
+
+Source: https://github.com/ScottPlot/ScottPlot
+License: MIT. Copyright (c) Scott W. Harden and contributors.
+Used to draw live and historical point trends. The MIT terms above also apply.
+
+## Serilog.Sinks.File 7.0.0
+
+Source: https://github.com/serilog/serilog-sinks-file
+License: Apache-2.0 — https://www.apache.org/licenses/LICENSE-2.0
+Used for daily and size-based log file rolling and retention.
+
+ScottPlot also brings SkiaSharp and OpenTK components. Serilog.Sinks.File brings Serilog.
+These packages retain their upstream copyright and license notices in the NuGet distributions.

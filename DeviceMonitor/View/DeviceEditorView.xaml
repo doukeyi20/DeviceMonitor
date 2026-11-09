@@ -1,0 +1,292 @@
+<!-- 设备连接参数的内嵌表单，不再额外打开编辑窗口。 -->
+<UserControl
+    Foreground="{StaticResource PrimaryTextBrush}"
+    x:Class="DeviceMonitor.View.DeviceEditorView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:view="clr-namespace:DeviceMonitor.View">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter
+            x:Key="BoolToVisibility" />
+    </UserControl.Resources>
+    <Grid
+        Margin="0">
+        <Grid.RowDefinitions>
+            <RowDefinition
+                Height="*" />
+            <RowDefinition
+                Height="Auto" />
+        </Grid.RowDefinitions>
+        <ScrollViewer
+            Margin="0,0,0,14"
+            IsEnabled="{Binding CanEdit}"
+            VerticalScrollBarVisibility="Auto"
+            HorizontalScrollBarVisibility="Disabled">
+            <StackPanel>
+                <Border
+                    Style="{StaticResource SectionCardStyle}"
+                    Margin="0,0,0,12">
+                    <StackPanel>
+                        <TextBlock
+                            Text="设备与连接"
+                            Style="{StaticResource SectionHeadingStyle}"
+                            Margin="0,0,0,12" />
+                        <Grid
+                            Margin="0,0,0,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition />
+                                <ColumnDefinition
+                                    Width="18" />
+                                <ColumnDefinition />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock
+                                    Text="设备名称"
+                                    Style="{StaticResource SubtleTextStyle}" />
+                                <TextBox
+                                    x:Name="DeviceNameInput"
+                                    Text="{Binding DeviceName, UpdateSourceTrigger=PropertyChanged}"
+                                    Height="36"
+                                    Margin="0,5,0,0" />
+                            </StackPanel>
+                            <StackPanel
+                                Grid.Column="2">
+                                <TextBlock
+                                    Text="通信方式"
+                                    Style="{StaticResource SubtleTextStyle}" />
+                                <ComboBox
+                                    ItemsSource="{Binding CommunicationOptions}"
+                                    DisplayMemberPath="Value"
+                                    SelectedValuePath="Key"
+                                    SelectedValue="{Binding SelectedCommunicationMode}"
+                                    Height="36"
+                                    Margin="0,5,0,0" />
+                            </StackPanel>
+                        </Grid>
+                        <!-- TCP 配置，整个Grid的内容显示与否与IsTcp绑定 -->
+                        <Grid
+                            Visibility="{Binding IsTcp, Converter={StaticResource BoolToVisibility}}"
+                            Margin="0,0,0,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition />
+                                <ColumnDefinition
+                                    Width="18" />
+                                <ColumnDefinition />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock
+                                    Text="主机地址 / IP"
+                                    Style="{StaticResource SubtleTextStyle}" />
+                                <TextBox
+                                    x:Name="HostInput"
+                                    Text="{Binding Host, UpdateSourceTrigger=PropertyChanged}"
+                                    Height="36"
+                                    Margin="0,5,0,0" />
+                            </StackPanel>
+                            <StackPanel
+                                Grid.Column="2">
+                                <TextBlock
+                                    Text="TCP 端口"
+                                    Style="{StaticResource SubtleTextStyle}" />
+                                <TextBox
+                                    x:Name="PortInput"
+                                    Text="{Binding PortText, UpdateSourceTrigger=PropertyChanged}"
+                                    Height="36"
+                                    Margin="0,5,0,0" />
+                            </StackPanel>
+                        </Grid>
+                        <!-- RTU 配置，整个StackPanel的内容显示与否与IsRtu绑定 --> 
+                        <StackPanel
+                            Visibility="{Binding IsRtu, Converter={StaticResource BoolToVisibility}}">
+                            <TextBlock
+                                Text="COM 口"
+                                Style="{StaticResource SubtleTextStyle}" />
+                            <DockPanel
+                                Margin="0,5,0,0">
+                                <Button
+                                    DockPanel.Dock="Right"
+                                    Content="刷新串口"
+                                    Command="{Binding RefreshSerialPortsCommand}"
+                                    Style="{StaticResource SecondaryActionButtonStyle}"
+                                    Width="96"
+                                    Height="36"
+                                    Margin="8,0,0,0" />
+                                <ComboBox
+                                    x:Name="SerialPortNameInput"
+                                    ItemsSource="{Binding SerialPorts}"
+                                    IsEditable="True"
+                                    Text="{Binding SerialPortName, UpdateSourceTrigger=PropertyChanged}"
+                                    Height="36" />
+                            </DockPanel>
+                            <TextBlock
+                                Text="{Binding PortHint}"
+                                Style="{StaticResource StatusMessageTextStyle}"
+                                TextWrapping="Wrap"
+                                Margin="0,5,0,12" />
+                            <Grid
+                                Margin="0,0,0,12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition />
+                                    <ColumnDefinition
+                                        Width="18" />
+                                    <ColumnDefinition />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock
+                                        Text="波特率"
+                                        Style="{StaticResource SubtleTextStyle}" />
+                                    <ComboBox
+                                        IsEditable="True"
+                                        ItemsSource="{Binding BaudRates}"
+                                        x:Name="BaudRateInput"
+                                        Text="{Binding BaudRateText, UpdateSourceTrigger=PropertyChanged}"
+                                        Height="36"
+                                        Margin="0,5,0,0" />
+                                </StackPanel>
+                                <StackPanel
+                                    Grid.Column="2">
+                                    <TextBlock
+                                        Text="校验位"
+                                        Style="{StaticResource SubtleTextStyle}" />
+                                    <ComboBox
+                                        ItemsSource="{Binding ParityOptions}"
+                                        DisplayMemberPath="Value"
+                                        SelectedValuePath="Key"
+                                        SelectedValue="{Binding SelectedParity}"
+                                        Height="36"
+                                        Margin="0,5,0,0" />
+                                </StackPanel>
+                            </Grid>
+                            <TextBlock
+                                Text="数据位固定 8 位；串口参数须与设备一致。"
+                                Style="{StaticResource SubtleTextStyle}"
+                                TextWrapping="Wrap"
+                                Margin="0,0,0,12" />
+                        </StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition />
+                                <ColumnDefinition
+                                    Width="18" />
+                                <ColumnDefinition />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock
+                                    Text="{Binding StationLabel}"
+                                    Style="{StaticResource SubtleTextStyle}" />
+                                <TextBox
+                                    x:Name="UnitIdInput"
+                                    Text="{Binding UnitIdText, UpdateSourceTrigger=PropertyChanged}"
+                                    Height="36"
+                                    Margin="0,5,0,0" />
+                            </StackPanel>
+                            <StackPanel
+                                Grid.Column="2"
+                                Visibility="{Binding IsRtu, Converter={StaticResource BoolToVisibility}}">
+                                <TextBlock
+                                    Text="停止位"
+                                    Style="{StaticResource SubtleTextStyle}" />
+                                <ComboBox
+                                    ItemsSource="{Binding StopBitOptions}"
+                                    DisplayMemberPath="Value"
+                                    SelectedValuePath="Key"
+                                    SelectedValue="{Binding SelectedStopBits}"
+                                    Height="36"
+                                    Margin="0,5,0,0" />
+                            </StackPanel>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+                <Border
+                    Style="{StaticResource SectionCardStyle}">
+                    <StackPanel>
+                        <TextBlock
+                            Text="采集间隔（毫秒）"
+                            FontWeight="SemiBold" />
+                        <TextBox
+                            Text="{Binding SamplingIntervalText, UpdateSourceTrigger=PropertyChanged}"
+                            Height="36"
+                            Margin="0,7,0,0"
+                            ToolTip="一轮读取和保存完成后等待这段时间。1000 毫秒 = 1 秒。" />
+                        <Expander
+                            Header="更多设置 · 超时"
+                            Margin="0,16,0,0">
+                            <Grid
+                                Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition />
+                                    <ColumnDefinition
+                                        Width="12" />
+                                    <ColumnDefinition />
+                                    <ColumnDefinition
+                                        Width="12" />
+                                    <ColumnDefinition />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel
+                                    Visibility="{Binding IsTcp, Converter={StaticResource BoolToVisibility}}">
+                                    <TextBlock
+                                        Text="连接超时（毫秒）"
+                                        Style="{StaticResource SubtleTextStyle}" />
+                                    <TextBox
+                                        Text="{Binding ConnectTimeoutText, UpdateSourceTrigger=PropertyChanged}"
+                                        Height="36"
+                                        Margin="0,5,0,0" />
+                                </StackPanel>
+                                <StackPanel
+                                    Grid.Column="2">
+                                    <TextBlock
+                                        Text="读取超时（毫秒）"
+                                        Style="{StaticResource SubtleTextStyle}" />
+                                    <TextBox
+                                        Text="{Binding ReadTimeoutText, UpdateSourceTrigger=PropertyChanged}"
+                                        Height="36"
+                                        Margin="0,5,0,0" />
+                                </StackPanel>
+                                <StackPanel
+                                    Grid.Column="4">
+                                    <TextBlock
+                                        Text="发送超时（毫秒）"
+                                        Style="{StaticResource SubtleTextStyle}" />
+                                    <TextBox
+                                        Text="{Binding WriteTimeoutText, UpdateSourceTrigger=PropertyChanged}"
+                                        Height="36"
+                                        Margin="0,5,0,0" />
+                                </StackPanel>
+                            </Grid>
+                        </Expander>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+        <Border
+            Grid.Row="1"
+            Padding="0,12,0,0"
+            BorderThickness="0,1,0,0"
+            BorderBrush="{StaticResource BorderBrushNeutral}">
+            <StackPanel>
+                <TextBlock
+                    Text="{Binding PageMessage}"
+                    Style="{StaticResource StatusMessageTextStyle}"
+                    TextWrapping="Wrap"
+                    Margin="0,0,0,8" />
+                <StackPanel
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right">
+                    <Button
+                        Content="撤销输入"
+                        Height="36"
+                        Command="{Binding DataContext.ResetDeviceCommand, RelativeSource={RelativeSource AncestorType={x:Type view:DeviceManagementView}}}"
+                        Style="{StaticResource SecondaryActionButtonStyle}" />
+                    <Button
+                        x:Name="SaveDeviceButton"
+                        Content="{Binding SaveButtonText}"
+                        Width="120"
+                        Height="36"
+                        Margin="10,0,0,0"
+                        Command="{Binding SaveCommand}"
+                        Style="{StaticResource PrimaryActionButtonStyle}" />
+                </StackPanel>
+            </StackPanel>
+        </Border>
+    </Grid>
+</UserControl>

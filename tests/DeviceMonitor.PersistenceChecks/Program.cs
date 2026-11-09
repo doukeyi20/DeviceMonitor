@@ -1,4 +1,5 @@
 // 验证项目功能及异常处理的回归检查。
+using DeviceMonitor.Services;
 using System.IO;
 using DeviceMonitor.Model;
 using Microsoft.Data.Sqlite;
@@ -59,9 +60,7 @@ internal static class Program
             Check(devices.TryAddDevice(admin!, Input("Device'One")), "带单引号的设备名正确保存");
             Check(!devices.TryAddDevice(admin!, Input("device'one")), "设备名仍按 NOCASE 判重");
             var device = devices.GetDevices(admin!).Single();
-            Check(!device.IsEnabled && devices.GetDevices(admin!, true).Count == 0, "新设备默认停用");
-            Check(devices.TrySetDeviceEnabled(admin!, device.Id, true), "启用设备");
-            Check(devices.GetDevice(admin!, device.Id, true) is not null, "按编号和启用条件查询");
+            Check(devices.GetDevice(admin!, device.Id) is not null, "新设备保存后即可配置与采集");
             Check(devices.TryUpdateDevice(admin!, device.Id, Input("Device'One")), "未改变值的编辑仍表示找到并保存该设备");
             Throws<UnauthorizedAccessException>(() => devices.TryAddDevice(worker, Input("Denied")), "写设备仍检查权限");
 
@@ -108,9 +107,6 @@ internal static class Program
             Check(history.GetPage(admin!, new HistoryFilter(pointName: "humidity")).TotalRecords == 0, "历史点名包含保留大小写规则");
             Check(history.GetDeviceOptions(admin!).Single().DisplayName == $"NewName（#{device.Id}）", "历史设备选项取最后一条名称");
             var fresh = history.GetPage(admin!, new());
-            var trend = history.GetPointTrend(admin!, device.Id, point.Id, new(), fresh.SnapshotId, 2);
-            Check(trend.TotalRecords == 5 && trend.Records.Count == 2 && trend.IsTruncated, "趋势统计全部匹配，但仅取指定条数");
-            Check(trend.Records[0].ReadAt <= trend.Records[1].ReadAt, "趋势按旧到新返回");
             var exported = new List<HistoryRecord>();
             while (true)
             {
@@ -176,8 +172,8 @@ internal static class Program
             var factory = new MonitorDbContextFactory(path);
             using (var db = factory.Create())
             {
-                Check(db.Database.GetAppliedMigrations().Count() == 3 &&
-                    db.Database.GetAppliedMigrations().First().EndsWith("_InitialCreate"), "建表、数值换算和自动编号迁移均已登记");
+                Check(db.Database.GetAppliedMigrations().Count() == 5 &&
+                    db.Database.GetAppliedMigrations().First().EndsWith("_InitialCreate"), "建表、数值换算、自动编号和配置简化迁移均已登记");
                 Check(!db.Database.GetPendingMigrations().Any(), "没有尚未应用的迁移");
                 Check(!db.Database.HasPendingModelChanges(), "模型快照与当前表配置一致");
                 Check(db.Database.GenerateCreateScript().Contains("sqlite_sequence", StringComparison.OrdinalIgnoreCase) == false,
@@ -225,7 +221,7 @@ internal static class Program
                 command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE name = '__EFMigrationsHistory'";
                 Check(Convert.ToInt32(command.ExecuteScalar()) == 1, "EF 迁移历史表已创建");
                 command.CommandText = "SELECT COUNT(*) FROM __EFMigrationsHistory";
-                Check(Convert.ToInt32(command.ExecuteScalar()) == 3, "三次迁移各登记一次");
+                Check(Convert.ToInt32(command.ExecuteScalar()) == 5, "五次迁移各登记一次");
                 command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('Users','Devices','DevicePoints','HistoryRecords','AlarmRecords')";
                 Check(Convert.ToInt32(command.ExecuteScalar()) == 5, "首次迁移一次创建五张业务表");
                 command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN ('IX_Devices_RtuStation','IX_HistoryRecords_DeviceId_ReadAtUtc','IX_HistoryRecords_ReadAtUtc_Id','IX_AlarmRecords_StartedAtUtc_Id','IX_AlarmRecords_DeviceId_StartedAtUtc_Id')";
@@ -235,7 +231,7 @@ internal static class Program
             Check(users.CheckLogin("Admin", "Admin123") is not null && history.GetPage(admin!, new()).TotalRecords == 46,
                 "重新初始化不清空已有账户和历史");
             using (var db = factory.Create())
-                Check(db.Database.GetAppliedMigrations().Count() == 3, "重复启动不重复执行已有迁移");
+                Check(db.Database.GetAppliedMigrations().Count() == 5, "重复启动不重复执行已有迁移");
             Console.WriteLine($"ALL {_checks} EF PERSISTENCE CHECKS PASSED\nTemporary database: {path}");
             return 0;
         }
@@ -262,7 +258,7 @@ internal static class Program
         var devices = new DeviceStore(path);
         devices.TryAddDevice(user, Input("保留设备"));
         var device = devices.GetDevices(user).Single();
-        devices.TrySetDeviceEnabled(user, device.Id, true);
+
         devices.TryAddPoint(user, device.Id, new PointInput
         {
             Name = "保留点位", RegisterType = RegisterType.Holding, DataType = PointDataType.UInt16
@@ -395,7 +391,7 @@ internal static class Program
         var store = new DeviceStore(path);
         store.TryAddDevice(user, Input("旧设备"));
         var device = store.GetDevices(user).Single();
-        store.TrySetDeviceEnabled(user, device.Id, true);
+
         string time = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
         using (var db = new MonitorDbContext(options))
         {
@@ -438,7 +434,6 @@ internal static class Program
         var saved = history.GetRecentRecords(user).First();
         Check(saved.ValueText == "48.6 %RH", "修改点位后，旧历史仍保留当时的值和单位");
         var page = history.GetPage(user, new());
-        Check(history.GetPointTrend(user, device.Id, humidity.Id, new(), page.SnapshotId, unit: "%RH").Records.Count == 1, "历史趋势不混画不同单位");
         string csv = Path.Combine(folder, "engineering-values.csv");
         new HistoryCsvExporter(history).Export(user, new(), page.SnapshotId, csv);
         Check(File.ReadAllText(csv).Contains("\"48.6\",\"%RH\""), "CSV 分列导出实际值和单位");

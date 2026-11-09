@@ -1,4 +1,5 @@
 // 维护报警触发、持续、恢复状态，并保存报警更新。
+using DeviceMonitor.Services;
 using System;
 using DeviceMonitor;
 using System.Collections.Generic;
@@ -12,6 +13,7 @@ using DeviceMonitor.Model;
 
 namespace DeviceMonitor.ViewModel;
 
+/// <summary>维护本次会话的报警状态并交给 AlarmStore 保存；不执行设备通信。</summary>
 public sealed class AlarmMonitor : ObservableObject
 {
     public const int DisplayLimit = 500;
@@ -31,15 +33,13 @@ public sealed class AlarmMonitor : ObservableObject
     private readonly ObservableCollection<AlarmRecord> _recentAlarms = new();
 
     // 同事件只保留最新待存版本；数据库失败时留待后续补试。
+    // 活动、最近、待存三份名单用途不同，不是三份独立报警状态。
     private readonly Dictionary<string, AlarmRecord> _pendingSaves = new();
 
     private int _droppedUpdateCount;
     private string _persistenceStatusText = string.Empty;
 
-    public ReadOnlyObservableCollection<AlarmRecord> Records
-    {
-        get;
-    }
+    public ReadOnlyObservableCollection<AlarmRecord> Records { get; }
     public string PersistenceStatusText
     {
         get => _persistenceStatusText;
@@ -49,6 +49,9 @@ public sealed class AlarmMonitor : ObservableObject
 
     public int DroppedUpdateCount => _droppedUpdateCount;
     public int ActiveCount => _activeAlarms.Count;
+    // 当前报警从活动字典取得；最近记录可能已裁剪，不能代替活动状态。
+    public IEnumerable<AlarmRecord> ActiveRecords => _activeAlarms.Values.OrderByDescending(record => record.StartedAt);
+    public bool HasActiveAlarms => ActiveCount > 0;
 
     public AlarmMonitor(UserAccount currentUser, AlarmStore store)
     {
@@ -62,8 +65,6 @@ public sealed class AlarmMonitor : ObservableObject
     {
         _dispatcher.VerifyAccess();
 
-        if (_activeAlarms.TryGetValue((deviceId, pointId, AlarmKind.AcquisitionFailure), out AlarmRecord? failure))
-            return failure;
         if (_activeAlarms.TryGetValue((deviceId, null, AlarmKind.AcquisitionFailure), out AlarmRecord? deviceFailure))
             return deviceFailure;
         if (_activeAlarms.TryGetValue((deviceId, pointId, AlarmKind.HighLimit), out AlarmRecord? high))
@@ -75,11 +76,12 @@ public sealed class AlarmMonitor : ObservableObject
     public async Task ReportReadingsAsync(DeviceInfo device, IReadOnlyList<PointReadResult> results)
     {
         _dispatcher.VerifyAccess();
-        // 成功读取先解除通信异常，再独立判断上下限。
+        // 成功读取先解除整台设备的通信异常，再独立判断每个点的上下限。
+        if (results.Count > 0)
+            RecoverAlarm(device.Id, null, AlarmKind.AcquisitionFailure, results[0].ReadAt, "通信已恢复。");
         foreach (PointReadResult result in results)
         {
             PointInfo point = result.Point;
-            RecoverAlarm(device.Id, point.Id, AlarmKind.AcquisitionFailure, result.ReadAt, "此点已重新读取成功。");
             EvaluateLimit(device, result, AlarmKind.HighLimit, point.UpperLimit,
                 point.UpperLimit.HasValue && result.Value > point.UpperLimit.Value);
             EvaluateLimit(device, result, AlarmKind.LowLimit, point.LowerLimit,
@@ -103,17 +105,7 @@ public sealed class AlarmMonitor : ObservableObject
             result.Value, limit, result.ReadAt, result.Point.Unit);
     }
 
-    /// <summary>为本批点位登记采集故障并保存报警变化。</summary>
-    public async Task ReportFailuresAsync(DeviceInfo device, IReadOnlyList<PointInfo> points, string message)
-    {
-        _dispatcher.VerifyAccess();
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-        foreach (PointInfo point in points)
-            RecordOrUpdateAlarm(device.Id, device.Name, point.Id, point.Name, AlarmKind.AcquisitionFailure,
-                message, null, null, now);
-        await FlushAsync();
-    }
-
+    /// <summary>通信失败属于整台设备，只记一条故障，不为每个点复制相同报警。</summary>
     public async Task ReportDeviceFailureAsync(long deviceId, string deviceName, string message)
     {
         _dispatcher.VerifyAccess();
@@ -165,7 +157,15 @@ public sealed class AlarmMonitor : ObservableObject
 
         _activeAlarms[key] = record;
         UpdateDisplayAndPendingSave(record);
+        NotifyActiveAlarms();
+
+    }
+
+    private void NotifyActiveAlarms()
+    {
         OnPropertyChanged(nameof(ActiveCount));
+        OnPropertyChanged(nameof(ActiveRecords));
+        OnPropertyChanged(nameof(HasActiveAlarms));
     }
 
     /// <summary>找到同类活动报警就标记恢复；没有旧报警就不做处理。</summary>
@@ -188,7 +188,7 @@ public sealed class AlarmMonitor : ObservableObject
             LastSeenAt = time,
             Message = record.Message + " " + reason
         });
-        OnPropertyChanged(nameof(ActiveCount));
+        NotifyActiveAlarms();
     }
 
     /// <summary>设备停止采集后，把未恢复的报警标记为“不再监测”，不是“已恢复”。</summary>
@@ -263,7 +263,7 @@ public sealed class AlarmMonitor : ObservableObject
             catch (Exception ex)
             {
                 AppLog.Error("报警保存失败", $"待存={_pendingSaves.Count}", ex, "alarm-save");
-                PersistenceStatusText = $"报警保存失败：{ex.Message}。待保存 {_pendingSaves.Count} 条；后续会重试。" + GetDroppedUpdatesMessage();
+                PersistenceStatusText = $"报警保存失败，待存 {_pendingSaves.Count} 条；下一轮重试。" + GetDroppedUpdatesMessage();
                 return;
             }
 
@@ -276,8 +276,7 @@ public sealed class AlarmMonitor : ObservableObject
             }
 
             OnPropertyChanged(nameof(PendingSaveCount));
-            PersistenceStatusText = (_pendingSaves.Count == 0 ? "报警记录已保存。"
-                : $"本批报警已保存，另有 {_pendingSaves.Count} 条更新待保存。") + GetDroppedUpdatesMessage();
+            PersistenceStatusText = (_pendingSaves.Count == 0 ? "" : $"报警待保存 {_pendingSaves.Count} 条") + GetDroppedUpdatesMessage();
         }
         finally
         {

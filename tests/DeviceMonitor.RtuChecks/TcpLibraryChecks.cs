@@ -1,4 +1,5 @@
 // 验证项目功能及异常处理的回归检查。
+using DeviceMonitor.Services;
 using System.Buffers.Binary;
 using System.IO;
 using System.Net;
@@ -10,6 +11,33 @@ internal static class TcpLibraryChecks
     internal static async Task RunAsync(Action<bool, string> check)
     {
         await CheckPersistentAsync(check);
+        int groupedRequests = 0;
+        PointInfo[] groupedPoints =
+        [
+            new(1, 1, "跳号点", RegisterType.Holding, 5, PointDataType.UInt16),
+            new(2, 1, "保持点", RegisterType.Holding, 0, PointDataType.UInt16),
+            new(3, 1, "输入点", RegisterType.Input, 0, PointDataType.UInt16)
+        ];
+        var grouped = await ReadPointsAsync(request =>
+        {
+            groupedRequests++;
+            ushort start = BinaryPrimitives.ReadUInt16BigEndian(request.AsSpan(8, 2));
+            return Response(request, (ushort)(start + (request[7] == 4 ? 100 : 0)));
+        }, groupedPoints, expectedRequests: 3);
+        check(groupedRequests == 3 && grouped.Select(result => result.Value).SequenceEqual(new double[] { 5, 0, 100 }),
+            "TCP 按地址和03/04自动分组，各组结果仍对应原点位顺序");
+
+        int partialRequests = 0;
+        try
+        {
+            await ReadPointsAsync(request => ++partialRequests == 1 ? Response(request, 1) : null,
+                groupedPoints, timeout: 100, expectedRequests: 3);
+            throw new Exception("后续分组失败不能返回整轮成功");
+        }
+        catch (TimeoutException)
+        {
+            check(partialRequests == 2, "TCP 后续分组失败拒绝整轮，不把前一组成功伪装成完整结果");
+        }
         PointInfo[] batchPoints =
         [
             new(2, 1, "温度", RegisterType.Holding, 11, PointDataType.Int16, scale: 0.1, unit: "℃"),
@@ -47,32 +75,33 @@ internal static class TcpLibraryChecks
             await ReadPointsAsync(_ => null, batchPoints, timeout: 100);
             throw new Exception("批量静默应当超时");
         }
-        catch (TimeoutException) { check(true, "批量无响应由库的读取超时退出"); }
+        catch (TimeoutException) { check(true, "批量无响应由 TCP 读取超时退出"); }
 
         PointReadResult humidity = await ReadAsync(request =>
         {
             check(request.Length == 12 && request[2] == 0 && request[3] == 0 && request[5] == 6,
-                "库生成 TCP MBAP 头及长度");
+                "生成 TCP MBAP 头及长度");
             check(request[6] == 255 && request[7] == 3 && request[8] == 0 && request[9] == 0
-                && request[10] == 0 && request[11] == 1, "库生成站号 255、03、地址 0、数量 1");
+                && request[10] == 0 && request[11] == 1, "生成站号 255、03、地址 0、数量 1");
             return Response(request, 486);
         }, splitDelay: 2, scale: 0.1, unit: "%RH");
         check(humidity.RawValue == 486 && humidity.Value == 48.6 && humidity.ValueText.Contains("%RH"),
-            "TCP 分批响应经库解析后应用倍率和单位");
+            "TCP 分批响应经解析后应用倍率和单位");
 
         PointReadResult temperature = await ReadAsync(request =>
         {
-            check(request[7] == 4 && request[9] == 1, "输入寄存器调用库的 04 读取方法");
+            check(request[7] == 4 && request[9] == 1, "输入寄存器发送 04 请求");
             return Response(request, 0xFF9F);
         }, RegisterType.Input, PointDataType.Int16, address: 1, scale: 0.1, unit: "℃");
         check(temperature.RawValue == 0xFF9F && temperature.DecodedValue == -97 && Math.Abs(temperature.Value + 9.7) < 1e-9,
             "TCP 负温度先按 Int16 解释，再换算为 -9.7℃");
         check((await ReadAsync(r => Response(r, ushort.MaxValue))).Value == ushort.MaxValue, "TCP UInt16 上限不变负数");
 
-        await RejectAsync<IOException>(r => { var b = Response(r, 42); b[1]++; return b; }, "库拒绝事务号不匹配", check);
-        await RejectAsync<IOException>(r => { var b = Response(r, 42); b[6]--; return b; }, "库拒绝站号不匹配", check);
-        await RejectAsync<IOException>(r => { var b = Response(r, 42); b[7] = 4; return b; }, "库拒绝功能码不匹配", check);
-        await RejectAsync<FormatException>(r => { var b = Response(r, 42); b[8] = 4; return b; }, "库拒绝数据字节数不匹配", check);
+        await RejectAsync<IOException>(r => { var b = Response(r, 42); b[1]++; return b; }, "拒绝事务号不匹配", check);
+        await RejectAsync<IOException>(r => { var b = Response(r, 42); b[3] = 1; return b; }, "拒绝协议编号不为零", check);
+        await RejectAsync<IOException>(r => { var b = Response(r, 42); b[6]--; return b; }, "拒绝站号不匹配", check);
+        await RejectAsync<IOException>(r => { var b = Response(r, 42); b[7] = 4; return b; }, "拒绝功能码不匹配", check);
+        await RejectAsync<FormatException>(r => { var b = Response(r, 42); b[8] = 4; return b; }, "拒绝数据字节数不匹配", check);
         await RejectAsync<FormatException>(r =>
         {
             var b = Response(r, 42); b[5] = 6; b[8] = 3; return [.. b, 0];
@@ -82,7 +111,7 @@ internal static class TcpLibraryChecks
             byte[] b = new byte[261]; r.AsSpan(0, 7).CopyTo(b);
             BinaryPrimitives.WriteUInt16BigEndian(b.AsSpan(4, 2), 65535);
             return b;
-        }, "库收到声明长度但连接提前结束时拒绝响应", check);
+        }, "拒绝超出协议上限的长度字段", check);
         await RejectAsync<IOException>(r => Response(r, 42)[..9], "断开前只回半帧不会返回假成功", check);
 
         try
@@ -92,7 +121,7 @@ internal static class TcpLibraryChecks
         }
         catch (InvalidOperationException ex)
         {
-            check(ex.Message.Contains("0x02") && ex.Message.Contains("地址"), "库解析异常帧，项目提示地址错误");
+            check(ex.Message.Contains("0x02") && ex.Message.Contains("地址"), "解析异常帧并提示地址错误");
         }
 
         PointReadResult first = await ReadAsync(r => [.. Response(r, 486), .. Response(r, 123)]);
@@ -111,7 +140,7 @@ internal static class TcpLibraryChecks
         catch (OperationCanceledException)
         {
             check(elapsed.ElapsedMilliseconds >= 200 && elapsed.ElapsedMilliseconds < 1500,
-                "停止等待当前库读取超时后退出，不强制关闭也不遗留后台任务");
+                "停止等待当前 TCP 读取超时后退出，不强制关闭也不遗留后台任务");
         }
         PointReadResult recovered = await ReadAsync(r => Response(r, 99));
         check(recovered.Value == 99, "取消后下一次读取可重新连接");
@@ -126,7 +155,7 @@ internal static class TcpLibraryChecks
         listener.Start();
         int port = ((IPEndPoint)listener.LocalEndpoint).Port, accepts = 0, requestNumber = 0;
         Task server = ServeAsync();
-        var device = new DeviceInfo(1, "长连接模拟", "127.0.0.1", port, 1, 100, 1000, 150, 500, true);
+        var device = new DeviceInfo(1, "长连接模拟", "127.0.0.1", port, 1, 100, 1000, 150, 500);
         var point = new PointInfo(1, 1, "点", RegisterType.Holding, 0, PointDataType.UInt16);
         var reader = new ModbusPointReader(device, new[] { point });
         try
@@ -231,14 +260,14 @@ internal static class TcpLibraryChecks
     }
 
     private static async Task<IReadOnlyList<PointReadResult>> ReadPointsAsync(Func<byte[], byte[]?> makeResponse,
-        IReadOnlyList<PointInfo> points, int timeout = 500, int splitDelay = 0, CancellationToken token = default)
+        IReadOnlyList<PointInfo> points, int timeout = 500, int splitDelay = 0, CancellationToken token = default, int expectedRequests = 1)
     {
         using var deadline = new CancellationTokenSource(5000);
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         int port = ((IPEndPoint)listener.LocalEndpoint).Port;
         Task server = ServeAsync();
-        var device = new DeviceInfo(1, "本机模拟", "127.0.0.1", port, 255, 1000, 1000, timeout, 500, true);
+        var device = new DeviceInfo(1, "本机模拟", "127.0.0.1", port, 255, 1000, 1000, timeout, 500);
         var reader = new ModbusPointReader(device, points);
         try { return await reader.ReadAsync(token); }
         finally
@@ -252,25 +281,30 @@ internal static class TcpLibraryChecks
         {
             using TcpClient client = await listener.AcceptTcpClientAsync(deadline.Token);
             using NetworkStream stream = client.GetStream();
-            byte[] request = new byte[12];
-            await stream.ReadExactlyAsync(request, deadline.Token);
-            byte[]? response = makeResponse(request);
-            if (response is null)
+            for (int i = 0; i < expectedRequests && !deadline.IsCancellationRequested; i++)
             {
-                int count = await stream.ReadAsync(new byte[1], deadline.Token);
-                if (count != 0) throw new Exception("静默测试不应收到第二条请求。");
-                return;
-            }
-            try
-            {
-                if (splitDelay == 0) await stream.WriteAsync(response, deadline.Token);
-                else foreach (byte item in response)
+                byte[] request = new byte[12];
+                try { await stream.ReadExactlyAsync(request, deadline.Token); }
+                catch (EndOfStreamException) { return; }
+                catch (IOException) { return; }
+                byte[]? response = makeResponse(request);
+                if (response is null)
                 {
-                    await stream.WriteAsync(new byte[] { item }, deadline.Token);
-                    await Task.Delay(splitDelay, deadline.Token);
+                    int count = await stream.ReadAsync(new byte[1], deadline.Token);
+                    if (count != 0) throw new Exception("静默测试不应收到第二条请求。");
+                    return;
                 }
+                try
+                {
+                    if (splitDelay == 0) await stream.WriteAsync(response, deadline.Token);
+                    else foreach (byte item in response)
+                    {
+                        await stream.WriteAsync(new byte[] { item }, deadline.Token);
+                        await Task.Delay(splitDelay, deadline.Token);
+                    }
+                }
+                catch (IOException) { return; }
             }
-            catch (IOException) { /* 客户端拒绝响应或取消后，会主动断开。 */ }
         }
     }
 }

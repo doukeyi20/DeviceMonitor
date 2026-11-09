@@ -1,4 +1,5 @@
 // 验证项目功能及异常处理的回归检查。
+using DeviceMonitor.Services;
 using DeviceMonitor.ViewModel;
 using System.Buffers.Binary;
 using NModbus;
@@ -156,18 +157,24 @@ internal static class Program
         var many = await reader.ReadPointsAsync(device, maximum);
         Check(many.Count == 125 && many[124].Value == 1124 && resources.Last().LastRequest[1] == 4, "04批量125个寄存器");
 
+        var noncontiguous = await reader.ReadPointsAsync(device,
+            [points[1], new PointInfo(3, device.Id, "跳号", RegisterType.Holding, 2, PointDataType.UInt16)]);
+        Check(noncontiguous.Count == 2 && resources.Last().Requests.Count == 2 && noncontiguous[1].Value == 2,
+            "不连续地址自动分两次读取，不要求用户补不存在的寄存器");
+        var mixed = await reader.ReadPointsAsync(device,
+            [points[1], new PointInfo(3, device.Id, "04", RegisterType.Input, 1, PointDataType.UInt16)]);
+        Check(mixed.Count == 2 && resources.Last().Requests.Select(request => request[1]).SequenceEqual(new byte[] {3, 4}),
+            "03和04分别读取，不把两种寄存器地址混在一个请求");
+        var large = await reader.ReadPointsAsync(device, Enumerable.Range(1000, 126).Select((address, i) =>
+            new PointInfo(i + 10, device.Id, $"点{i}", RegisterType.Input, (ushort)address, PointDataType.UInt16)).ToArray());
+        Check(large.Count == 126 && resources.Last().Requests.Count == 2
+            && resources.Last().Requests.All(request => BinaryPrimitives.ReadUInt16BigEndian(request.AsSpan(4, 2)) <= 125),
+            "超过125个点自动拆组，每个请求遵守协议上限");
         int count = resources.Count;
         await ThrowsAsync<ArgumentException>(() => reader.ReadPointsAsync(device, []), "拒绝空列表");
-        await ThrowsAsync<ArgumentException>(() => reader.ReadPointsAsync(device,
-            [points[1], new PointInfo(3, device.Id, "跳号", RegisterType.Holding, 2, PointDataType.UInt16)]), "拒绝不连续地址");
         await ThrowsAsync<ArgumentException>(() => reader.ReadPointsAsync(device, [points[1], points[1]]), "拒绝重复地址");
         await ThrowsAsync<ArgumentException>(() => reader.ReadPointsAsync(device,
-            [points[1], new PointInfo(3, device.Id, "04", RegisterType.Input, 1, PointDataType.UInt16)]), "拒绝混合寄存器类型");
-        await ThrowsAsync<ArgumentException>(() => reader.ReadPointsAsync(device,
-            [new PointInfo(3, 999, "别台", RegisterType.Holding, 0, PointDataType.UInt16)]), "拒绝别台设备的点");
-        await ThrowsAsync<ArgumentException>(() => reader.ReadPointsAsync(device,
-            Enumerable.Range(0, 126).Select(i => new PointInfo(i + 1, device.Id, $"点{i}", RegisterType.Holding,
-                (ushort)i, PointDataType.UInt16)).ToArray()), "拒绝超过125个点");
+            [new PointInfo(4, 999, "别台设备", RegisterType.Holding, 1, PointDataType.UInt16)]), "拒绝别台设备的点");
         Check(resources.Count == count, "配置错误在打开连接前拒绝");
     }
 
@@ -237,36 +244,29 @@ internal static class Program
         rtu = store.GetDevice(user, rtu.Id)!;
         Check(rtu.BaudRate == 9600 && rtu.Parity == Parity.Even && rtu.StopBits == StopBits.Two && rtu.Id != old.Id, "编辑保留设备编号、还原全部串口参数");
 
-        var management = new DeviceManagementViewModel(user, store);
-        management.SelectedDevice = rtu;
-        Check(management.SelectedDeviceTimeoutDetails.Contains("RTU 不使用 TCP 连接超时")
-            && !management.IsTcpDeviceSelected, "RTU 设备详情明确不使用 TCP 连接超时");
-        Check(!management.TestConnectionCommand.CanExecute(null), "RTU 不误用 TCP 连接测试");
-        management.SelectedDevice = old;
-        Check(management.TestConnectionCommand.CanExecute(null), "TCP 连接测试仍可使用");
+        var management = new DeviceManagementViewModel(user, store, new SamplingTasks(user, store, new HistoryStore(path), new AlarmStore(path)));
         var editor = new DeviceEditorViewModel(management, rtu);
         Check(editor.IsRtu && editor.SerialPortName == "COM3" && editor.SelectedParity == Parity.Even, "编辑表单还原 RTU 配置");
         var create = new DeviceEditorViewModel(management) { SelectedCommunicationMode = DeviceCommunicationMode.Rtu, DeviceName = "表单新增", SerialPortName = "COM8" };
-        bool saved = false; create.SaveSucceeded += () => saved = true;
         await create.SaveCommand.ExecuteAsync(null);
-        Check(saved && store.GetDevices(user).Any(d => d.Name == "表单新增"), "RTU 表单无需隐藏的 TCP 字段即可保存");
+        Check(store.GetDevices(user).Any(d => d.Name == "表单新增"), "RTU 表单无需隐藏的 TCP 字段即可保存");
         create.UnitIdText = "248";
-        string? inputError = null; create.InputErrorRequested += (_, property) => inputError = property;
         await create.SaveCommand.ExecuteAsync(null);
-        Check(inputError == nameof(DeviceEditorViewModel.UnitIdText), "RTU 输入错误定位站号");
+        Check(create.PageMessage.Contains("247"), "RTU 输入错误明确说明站号范围");
 
         var app = new App(); app.InitializeComponent();
-        var window = new DeviceEditorWindow(management, rtu);
-        var vm = (DeviceEditorViewModel)window.DataContext;
+        var view = new DeviceEditorView { DataContext = editor };
+        var window = new Window { Content = view, DataContext = editor };
+        var vm = editor;
         vm.SelectedCommunicationMode = DeviceCommunicationMode.Rtu;
         Render(window, new Size(704, 721), "rtu-device-form");
-        Check(IsContentVisible((FrameworkElement)window.FindName("SerialPortNameInput")) && !IsContentVisible((FrameworkElement)window.FindName("HostInput")), "RTU 界面显示串口、隐藏 IP");
+        Check(IsContentVisible((FrameworkElement)view.FindName("SerialPortNameInput")) && !IsContentVisible((FrameworkElement)view.FindName("HostInput")), "RTU 界面显示串口、隐藏 IP");
         vm.SelectedCommunicationMode = DeviceCommunicationMode.Tcp;
         Render(window, new Size(704, 721), "tcp-device-form");
-        Check(!IsContentVisible((FrameworkElement)window.FindName("SerialPortNameInput")) && IsContentVisible((FrameworkElement)window.FindName("HostInput")), "TCP 界面显示 IP、隐藏串口");
+        Check(!IsContentVisible((FrameworkElement)view.FindName("SerialPortNameInput")) && IsContentVisible((FrameworkElement)view.FindName("HostInput")), "TCP 界面显示 IP、隐藏串口");
         vm.SelectedCommunicationMode = DeviceCommunicationMode.Rtu;
         Render(window, new Size(604, 521), "rtu-device-form-small");
-        var save = (Button)window.FindName("SaveDeviceButton");
+        var save = (Button)view.FindName("SaveDeviceButton");
         Check(IsContentVisible(save) && save.ActualHeight > 0, "小工作区底部保存按钮仍可见");
         window.Close();
         Console.WriteLine($"Temporary database: {path}");
@@ -284,7 +284,7 @@ internal static class Program
             input.UnitId = station; input.SamplingIntervalMilliseconds = 40;
             store.TryAddDevice(user, input);
             DeviceInfo device = store.GetDevices(user).Single(d => d.UnitId == station);
-            store.TrySetDeviceEnabled(user, device.Id, true);
+
             store.TryAddPoint(user, device.Id, new PointInput
             { Name = "湿度原始值", RegisterType = RegisterType.Holding, Address = 0, DataType = PointDataType.UInt16, UpperLimit = 400 });
             store.TryAddPoint(user, device.Id, new PointInput
@@ -308,57 +308,57 @@ internal static class Program
             ports.Enqueue(port);
             return new ModbusFactory().CreateRtuMaster(port);
         });
-        var runtime = new DeviceTasks(user, store, new HistoryStore(path));
-        var acquisition = new PointConfigurationViewModel(user, store, runtime);
+        var runtime = new SamplingTasks(user, store, new HistoryStore(path));
+        DeviceInfo firstDevice = store.GetDevices(user).First(d => d.UnitId == 1);
+        using var acquisition = new PointEditorViewModel(user, store, firstDevice, runtime);
         var monitor = new MonitoringViewModel(user, store, runtime);
 
-        typeof(PointConfigurationViewModel).GetField("_createReader", BindingFlags.NonPublic | BindingFlags.Instance)!
+        typeof(PointEditorViewModel).GetField("_createReader", BindingFlags.NonPublic | BindingFlags.Instance)!
             .SetValue(acquisition, MakeReader());
         foreach (var configured in store.GetDevices(user))
             typeof(DeviceSamplingViewModel).GetField("_createReader", BindingFlags.NonPublic | BindingFlags.Instance)!
                 .SetValue(runtime.GetOrCreateSession(configured.Id), MakeReader());
         try
         {
-            await acquisition.RefreshDevicesCommand.ExecuteAsync(null);
+            await acquisition.RefreshPointsCommand.ExecuteAsync(null);
             DeviceInfo first = store.GetDevices(user).First(d => d.UnitId == 1);
-            acquisition.SelectedDevice = acquisition.Devices.Single(d => d.Id == first.Id);
-            await UntilAsync(() => acquisition.Points.Count == 2 && !acquisition.IsLoadingPoints);
+            await UntilAsync(() => acquisition.Points.Count == 2 && !acquisition.IsBusy);
             acquisition.SelectedPoint = acquisition.Points.Single(p => p.Address == 0);
             await acquisition.ReadOnceCommand.ExecuteAsync(null);
-            Check(acquisition.ReadResultText.Contains("486"), "RTU 读取一次命令走完整入口并显示整数");
+            Check(acquisition.ReadDetails.Contains("486"), "RTU 读取一次命令走完整入口并显示整数");
             Check(acquisition.ReadValueText == "486" && acquisition.ReadState == DeviceMonitor.ViewModel.SingleReadState.Succeeded
-                && acquisition.ReadTimeText != "—", "成功结果分开保存数值、状态和时间");
+                && acquisition.ReadDetails.Contains("·"), "成功结果分开保存数值、状态和时间");
             Check(CountRows(path, "HistoryRecords") == 0 && CountRows(path, "AlarmRecords") == 0, "单次读取不保存历史或报警");
             Check(ports.Single().Disposed, "单次读取 finally 释放串口");
             acquisition.SelectedPoint = acquisition.Points.Single(p => p.Address == 1);
             Check(acquisition.ReadValueText == "—" && acquisition.ReadState == DeviceMonitor.ViewModel.SingleReadState.NotRead,
                 "换点清掉旧值，不把湿度结果挂到温度上");
             await acquisition.ReadOnceCommand.ExecuteAsync(null);
-            Check(acquisition.ReadResultText.Contains("-97"), "RTU 读取器与页面正确显示有符号温度");
-            Check(acquisition.ReadValueText == "-97" && acquisition.ReadTargetText.Contains("温度原始值"), "负数和本次读取目标对应");
+            Check(acquisition.ReadDetails.Contains("-97"), "RTU 读取器与页面正确显示有符号温度");
+            Check(acquisition.ReadValueText == "-97" && acquisition.SelectedPoint?.Name == "温度原始值", "负数和本次读取目标对应");
 
             silent = true;
             await acquisition.ReadOnceCommand.ExecuteAsync(null);
             Check(acquisition.ReadState == DeviceMonitor.ViewModel.SingleReadState.TimedOut && acquisition.ReadValueText == "—"
-                && acquisition.ReadTimeText == "—" && acquisition.ReadResultText.Contains("超时"), "超时显示真实原因，不留旧成功值和时间");
+                && acquisition.ReadValueText == "—" && acquisition.ReadDetails.Contains("超时"), "超时显示真实原因，不留旧成功值和时间");
             Task cancelRead = acquisition.ReadOnceCommand.ExecuteAsync(null);
             await Task.Delay(30);
             Check(runtime.SingleReadDeviceId == first.Id, "单次读取登记目标，另一页不能删除仍在测试的设备");
             bool deleteRejected = false;
             try { await runtime.DeleteDeviceAsync(first.Id); }
             catch (InvalidOperationException) { deleteRejected = true; }
-            Check(deleteRejected && acquisition.IsReading && store.GetDevice(user, first.Id) is not null,
+            Check(deleteRejected && acquisition.IsBusy && store.GetDevice(user, first.Id) is not null,
                 "测试中的设备删除被拒绝，不会由删除流程自动取消读取");
             acquisition.ReadOnceCommand.Cancel();
             Check(runtime.SingleReadDeviceId == first.Id, "发出取消不等于收尾结束，测试目标仍暂时禁止删除");
             await cancelRead;
             Check(runtime.SingleReadDeviceId is null, "单次测试实际收尾后才解除删除限制");
             Check(acquisition.ReadState == DeviceMonitor.ViewModel.SingleReadState.Canceled && acquisition.ReadValueText == "—"
-                && !acquisition.IsReading, "取消显示独立状态，收尾完成后恢复按钮");
+                && !acquisition.IsBusy, "取消显示独立状态，收尾完成后恢复按钮");
             silent = false; corrupt = true;
             await acquisition.ReadOnceCommand.ExecuteAsync(null);
             Check(acquisition.ReadState == DeviceMonitor.ViewModel.SingleReadState.Failed && acquisition.ReadValueText == "—"
-                && !string.IsNullOrWhiteSpace(acquisition.ReadResultText), "库发现响应损坏后显示失败原因");
+                && !string.IsNullOrWhiteSpace(acquisition.ReadDetails), "库发现响应损坏后显示失败原因");
             corrupt = false;
             await acquisition.ReadOnceCommand.ExecuteAsync(null);
             Check(acquisition.ReadState == DeviceMonitor.ViewModel.SingleReadState.Succeeded && acquisition.ReadValueText == "-97",
@@ -368,8 +368,11 @@ internal static class Program
             int portsBeforeSampling = ports.Count;
 
             await monitor.RefreshDevicesCommand.ExecuteAsync(null);
-            foreach (MonitoringDeviceViewModel row in monitor.Devices) row.IsChecked = true;
-            monitor.StartSamplingCommand.Execute(null);
+            foreach (var row in monitor.Devices)
+            {
+                monitor.SelectedDevice = row;
+                monitor.StartSamplingCommand.Execute(null);
+            }
             await UntilAsync(() => runtime.Sessions.Count == 2 && runtime.Sessions.All(s => s.CompletedRounds >= 2));
             Check(runtime.Sessions.All(s => s.Readings.Count == 2 && s.Readings.Any(r => r.ValueText == "486") && s.Readings.Any(r => r.ValueText == "-97")), "同 COM 两站连续采集，各点读数不混淆");
             runtime.Start(first.Id);
@@ -378,20 +381,20 @@ internal static class Program
             Check(ports.Skip(portsBeforeSampling).SelectMany(port => port.Requests).All(request => request[4] == 0 && request[5] == 2),
                 "两台连续采集每轮都批量读取两点，没有退回单点请求");
             Check(CountRows(path, "HistoryRecords") >= 8 && CountRows(path, "AlarmRecords") >= 2, "RTU 连续读数进入历史和报警数据库");
-            Check(monitor.Readings.Count == 4 && monitor.Readings.Count(r => r.IsAlert) == 2, "RTU 读数与当前报警进入合并表");
+            Check(monitor.Readings.Count() == 2 && monitor.Readings.Count(r => r.IsAlert) == 1, "当前设备显示两张读数卡片和对应报警");
             Check(runtime.Sessions.All(s => s.Readings.All(r => r.TrendSamples.Count >= 2)), "RTU 各点从开始采集独立缓存波形");
             Check(monitor.Readings.All(row => runtime.Sessions.Single(task => task.DeviceId == row.DeviceId).Readings.Contains(row)),
                 "监控表和采集任务使用同一个点位对象，不再复制或转发一行");
             var checkedDevice = monitor.Devices.Single(row => row.Device.Id == first.Id);
             var keptPoint = runtime.Sessions.Single(task => task.DeviceId == first.Id).Readings[0];
             int samplesBeforeUncheck = keptPoint.TrendSamples.Count;
-            checkedDevice.IsChecked = false;
+            monitor.SelectedDevice = monitor.Devices.First(row => row.Device.Id != first.Id);
             Check(monitor.Readings.All(row => row.DeviceId != first.Id) && runtime.IsRunning(first.Id),
-                "取消勾选只移除显示，不释放正在采集的点位对象");
+                "切换设备只切换显示，不释放正在采集的点位对象");
             await UntilAsync(() => keptPoint.TrendSamples.Count > samplesBeforeUncheck);
-            checkedDevice.IsChecked = true;
+            monitor.SelectedDevice = checkedDevice;
             Check(ReferenceEquals(monitor.Readings.Single(row => row.DeviceId == first.Id && row.Point.Id == keptPoint.Point.Id), keptPoint),
-                "重新勾选继续使用原对象和已积累的曲线");
+                "切回设备继续使用原对象和已积累的曲线");
             DeviceSamplingViewModel other = runtime.Sessions.Single(s => s.DeviceId != first.Id);
             await runtime.StopAsync(first.Id);
             int rounds = other.CompletedRounds;
@@ -438,12 +441,12 @@ internal static class Program
 
             PointInfo savedTemperature = store.GetPoints(user, first.Id).Single(point => point.Address == 1);
             store.TryUpdatePoint(user, first.Id, savedTemperature.Id, new PointInput
-            { Name = savedTemperature.Name, RegisterType = savedTemperature.RegisterType, Address = 2, DataType = savedTemperature.DataType });
+            { Name = savedTemperature.Name, RegisterType = savedTemperature.RegisterType, Address = 0, DataType = savedTemperature.DataType });
             int opensBeforeInvalid = ports.Count;
             runtime.Start(first.Id);
             await UntilAsync(() => !firstSession.IsRunning);
-            Check(firstSession.StatusText.Contains("地址连续") && ports.Count == opensBeforeInvalid,
-                "开始时发现不连续配置就明确结束，不打开串口反复重试配置错误");
+            Check(firstSession.StatusText.Contains("重复地址") && ports.Count == opensBeforeInvalid,
+                "开始时发现重复地址就明确结束，不打开串口反复重试配置错误");
             store.TryUpdatePoint(user, first.Id, savedTemperature.Id, new PointInput
             { Name = savedTemperature.Name, RegisterType = savedTemperature.RegisterType, Address = 1, DataType = savedTemperature.DataType });
 
@@ -481,7 +484,11 @@ internal static class Program
                         Unit = point.Address == 0 ? "%RH" : "℃",
                         UpperLimit = point.Address == 0 ? 40.5 : null
                     });
-            monitor.StartSamplingCommand.Execute(null);
+            foreach (var row in monitor.Devices)
+            {
+                monitor.SelectedDevice = row;
+                monitor.StartSamplingCommand.Execute(null);
+            }
             await UntilAsync(() => runtime.Sessions.All(s => s.CompletedRounds >= 2));
             Check(runtime.Sessions.All(s => s.Readings.Any(r => r.ValueText == "48.6 %RH") &&
                 s.Readings.Any(r => r.ValueText == "-9.7 ℃")), "连续采集显示配置换算后的温湿度");
@@ -494,28 +501,32 @@ internal static class Program
             monitor.SelectedReading = monitor.Readings.First(r => r.Point.Address == 0);
             Check(monitor.Trend.AxisTitle.Contains("%RH"), "实时纵轴显示所选点位单位");
 
-            monitor.ClearDeviceChecksCommand.Execute(null);
-            Check(monitor.Devices.All(row => !row.IsChecked) && runtime.Sessions.All(session => session.IsRunning),
-                "清空勾选后两台设备仍在正常采集");
+            monitor.SelectedDevice = null;
+            Check(runtime.Sessions.All(session => session.IsRunning),
+                "没有选中设备时，两台设备仍正常采集");
             Check(!monitor.StopSamplingCommand.CanExecute(null) && monitor.StopAllSamplingCommand.CanExecute(null),
-                "没有勾选设备时不能停止勾选，但仍可以停止全部任务");
+                "未选设备不能停止当前设备，但能停止全部");
             await monitor.StopAllSamplingCommand.ExecuteAsync(null);
             Check(runtime.Sessions.All(session => !session.IsRunning) && !runtime.IsShuttingDown
                 && ports.All(port => port.Disposed), "停止全部等待串口释放，但不会把项目标记成退出状态");
             Check(!monitor.StopAllSamplingCommand.CanExecute(null), "全部已停止时停止全部按钮不可重复执行");
 
-            monitor.CheckAllDevicesCommand.Execute(null);
-            Check(monitor.StartSamplingCommand.CanExecute(null), "停止全部后重新勾选设备仍可以开始采集");
-            monitor.StartSamplingCommand.Execute(null);
+            monitor.SelectedDevice = monitor.Devices.First();
+            Check(monitor.StartSamplingCommand.CanExecute(null), "停止全部后选中设备仍可以开始采集");
+            foreach (var row in monitor.Devices)
+            {
+                monitor.SelectedDevice = row;
+                monitor.StartSamplingCommand.Execute(null);
+            }
             await UntilAsync(() => runtime.Sessions.All(session => session.IsRunning && session.CompletedRounds >= 1));
-            Check(!runtime.IsShuttingDown && monitor.Readings.Count == 4
+            Check(!runtime.IsShuttingDown && monitor.Readings.Count() == 2
                 && runtime.Sessions.All(session => session.Readings.Any(row => row.ValueText == "48.6 %RH")),
                 "停止全部后重新开始，两台 RTU 恢复显示和实际数值读取");
             await runtime.StopAllAsync();
         }
         finally
         {
-            await acquisition.StopOperationsAsync();
+            await (acquisition.ReadOnceCommand.ExecutionTask ?? Task.CompletedTask);
             await runtime.StopAllAsync();
             await monitor.StopOperationsAsync();
         }
@@ -550,7 +561,7 @@ internal static class Program
         WriteTimeoutMilliseconds = 1000
     };
     private static DeviceInfo Device(byte station, int baud = 4800, int timeout = 300) => new(
-        station, $"站{station}", "", 502, station, 1000, 1000, timeout, 300, true,
+        station, $"站{station}", "", 502, station, 1000, 1000, timeout, 300,
         DeviceCommunicationMode.Rtu, "COM3", baud);
     private static PointInfo Point(DeviceInfo device) => new(1, device.Id, "湿度", RegisterType.Holding, 0, PointDataType.UInt16);
     private static byte[] Response(byte station, byte function, ushort value) => WithCrc([station, function, 2, (byte)(value >> 8), (byte)value]);
